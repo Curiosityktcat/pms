@@ -1,22 +1,26 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Card, Table, Button, Form, Input, Select, Drawer, Space, Popconfirm,
-  App, Tag, Typography, Divider, Descriptions, Alert, Collapse, Modal,
-  Tooltip,
+  App, Tag, Typography, Divider, Descriptions, Alert, Modal,
+  Tooltip, Upload, List,
 } from 'antd'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type UploadRequestOption = any
+import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, DownloadOutlined, EditOutlined, DeleteOutlined,
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
-  SaveOutlined, AppstoreOutlined,
+  SaveOutlined, AppstoreOutlined, UploadOutlined, FileOutlined,
 } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
+import axios from 'axios'
 import {
   getEligibleProjects, getAnnouncements, createAnnouncement, updateAnnouncement,
   deleteAnnouncement, generateAnnouncementWord,
   submitAnnouncement, confirmAnnouncement, revokeAnnouncement,
-  QUAL_DEFAULTS,
+  listFiles, deleteFile, downloadFileUrl,
+  QUALIFICATIONS_DEFAULT,
 } from '../services/announcement'
-import type { Announcement, AnnProject } from '../services/announcement'
+import type { Announcement, AnnProject, AnnAttachment } from '../services/announcement'
 import {
   getTemplates, createTemplate, updateTemplate, deleteTemplate,
 } from '../services/agencyTemplate'
@@ -40,25 +44,123 @@ const STATUS_COLOR: Record<string, string> = {
   已确认: 'green',
 }
 
-/** 根据报名起止时间自动生成默认备注 */
 function buildDefaultRegNote(start: string, end: string): string {
   if (!start || !end) return ''
   return `${start}-${end}报名时间（上午08时30分至12时00分，下午14时30分至17时00分）。`
 }
 
-/** 获取状态 Tag */
-function StatusTag({ status }: { status: string }) {
-  return <Tag color={STATUS_COLOR[status] || 'default'}>{status}</Tag>
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 子组件：代理机构模板管理抽屉
+// 附件管理（编辑已存在的公告时显示）
+// ─────────────────────────────────────────────────────────────────
+function AttachmentSection({ annId }: { annId: number }) {
+  const { message } = App.useApp()
+  const [files, setFiles] = useState<AnnAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const res = await listFiles(annId)
+      setFiles(res.data.data)
+    } catch { /* ignore */ }
+  }, [annId])
+
+  useEffect(() => { load() }, [load])
+
+  const customUpload = async (options: UploadRequestOption) => {
+    const { file, onSuccess, onError } = options
+    setUploading(true)
+    const formData = new FormData()
+    formData.append('file', file as Blob)
+    try {
+      const res = await axios.post(`/api/announcements/${annId}/files`, formData, {
+        withCredentials: true,
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      onSuccess?.(res.data)
+      message.success('上传成功')
+      load()
+    } catch (err: any) {
+      onError?.(err)
+      message.error(err.response?.data?.error || '上传失败')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDelete = async (fileId: number) => {
+    try {
+      await deleteFile(annId, fileId)
+      message.success('已删除')
+      load()
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '删除失败')
+    }
+  }
+
+  return (
+    <div>
+      <Upload
+        customRequest={customUpload}
+        showUploadList={false}
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.zip,.rar"
+        disabled={uploading}
+      >
+        <Button icon={<UploadOutlined />} loading={uploading}>
+          点击上传（支持 PDF / Word / Excel / 图片 / 压缩包）
+        </Button>
+      </Upload>
+      {files.length > 0 && (
+        <List
+          size="small"
+          style={{ marginTop: 8 }}
+          dataSource={files}
+          renderItem={(f) => (
+            <List.Item
+              actions={[
+                <a key="dl" href={downloadFileUrl(annId, f.id)} download={f.original_name}>
+                  下载
+                </a>,
+                <Popconfirm
+                  key="del"
+                  title="确认删除该附件？"
+                  onConfirm={() => handleDelete(f.id)}
+                >
+                  <Button type="link" danger size="small">删除</Button>
+                </Popconfirm>,
+              ]}
+            >
+              <Space>
+                <FileOutlined style={{ color: '#1677ff' }} />
+                <Text>{f.original_name}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{formatSize(f.file_size)}</Text>
+              </Space>
+            </List.Item>
+          )}
+        />
+      )}
+      {files.length === 0 && (
+        <div style={{ color: '#aaa', fontSize: 12, marginTop: 6 }}>
+          暂无附件。生成Word时附件名将自动列于文档末尾。
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 代理机构模板管理抽屉
 // ─────────────────────────────────────────────────────────────────
 interface TemplateMgrProps {
   open: boolean
-  agencyCode: string        // 当前操作的代理机构
+  agencyCode: string
   onClose: () => void
-  onApply: (tpl: AgencyTemplate) => void  // 套用模板回调
+  onApply: (tpl: AgencyTemplate) => void
 }
 
 function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrProps) {
@@ -83,16 +185,13 @@ function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrPr
   const openNew = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldValue('agency_code', agencyCode)
     setModalOpen(true)
   }
-
   const openEdit = (tpl: AgencyTemplate) => {
     setEditing(tpl)
     form.setFieldsValue(tpl)
     setModalOpen(true)
   }
-
   const handleSave = async () => {
     try { await form.validateFields() } catch { return }
     const values = form.getFieldsValue()
@@ -110,7 +209,6 @@ function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrPr
       message.error(err.response?.data?.error || '操作失败')
     }
   }
-
   const handleDelete = async (id: number) => {
     try {
       await deleteTemplate(id)
@@ -127,58 +225,45 @@ function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrPr
         title={<><AppstoreOutlined style={{ marginRight: 6 }} />代理机构预设模板</>}
         open={open}
         onClose={onClose}
-        width={580}
+        width={560}
         extra={<Button type="primary" size="small" icon={<PlusOutlined />} onClick={openNew}>新增模板</Button>}
       >
-        {templates.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#aaa', padding: 40 }}>暂无模板，点击右上角新增</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {templates.map(tpl => (
-              <Card
-                key={tpl.id}
-                size="small"
-                title={<Text strong>{tpl.template_name}</Text>}
-                extra={
-                  <Space size={4}>
-                    <Button size="small" type="primary" ghost onClick={() => { onApply(tpl); onClose() }}>
-                      套用
-                    </Button>
-                    <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(tpl)} />
-                    <Popconfirm title="确认删除该模板？" onConfirm={() => handleDelete(tpl.id)}>
-                      <Button size="small" danger icon={<DeleteOutlined />} />
-                    </Popconfirm>
-                  </Space>
-                }
-              >
-                <div style={{ fontSize: 12, color: '#555', lineHeight: 1.8 }}>
-                  {tpl.agency_address && <div>📍 {tpl.agency_address}</div>}
-                  {tpl.agency_email && <div>📧 {tpl.agency_email}</div>}
-                  {tpl.agency_contact && <div>👤 {tpl.agency_contact}  📞 {tpl.agency_contact_phone}</div>}
-                  {tpl.agency_reg_phone && <div>📞 报名：{tpl.agency_reg_phone}</div>}
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
+        {templates.length === 0
+          ? <div style={{ textAlign: 'center', color: '#aaa', padding: 40 }}>暂无模板，点击右上角新增</div>
+          : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {templates.map(tpl => (
+                <Card key={tpl.id} size="small" title={<Text strong>{tpl.template_name}</Text>}
+                  extra={
+                    <Space size={4}>
+                      <Button size="small" type="primary" ghost onClick={() => { onApply(tpl); onClose() }}>套用</Button>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(tpl)} />
+                      <Popconfirm title="确认删除该模板？" onConfirm={() => handleDelete(tpl.id)}>
+                        <Button size="small" danger icon={<DeleteOutlined />} />
+                      </Popconfirm>
+                    </Space>
+                  }
+                >
+                  <div style={{ fontSize: 12, color: '#555', lineHeight: 1.8 }}>
+                    {tpl.agency_address && <div>📍 {tpl.agency_address}</div>}
+                    {tpl.agency_email && <div>📧 {tpl.agency_email}</div>}
+                    {tpl.agency_contact && <div>👤 {tpl.agency_contact}  📞 {tpl.agency_contact_phone}</div>}
+                    {tpl.agency_reg_phone && <div>📞 报名：{tpl.agency_reg_phone}</div>}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )
+        }
       </Drawer>
-
-      {/* 新增/编辑模板 Modal */}
-      <Modal
-        title={editing ? '编辑模板' : '新增模板'}
-        open={modalOpen}
-        onOk={handleSave}
-        onCancel={() => setModalOpen(false)}
-        okText="保存"
-        cancelText="取消"
-        width={500}
-        destroyOnClose
+      <Modal title={editing ? '编辑模板' : '新增模板'} open={modalOpen}
+        onOk={handleSave} onCancel={() => setModalOpen(false)}
+        okText="保存" cancelText="取消" width={480} destroyOnClose
       >
         <Form form={form} layout="vertical" size="middle">
           <Form.Item label="模板名称" name="template_name"
             rules={[{ required: true, message: '请填写模板名称' }]}
-            extra="如：总部地址、分部地址"
-          >
+            extra="如：总部地址">
             <Input placeholder="模板名称" />
           </Form.Item>
           <Form.Item label="代理机构地址" name="agency_address">
@@ -189,18 +274,18 @@ function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrPr
           </Form.Item>
           <div style={{ display: 'flex', gap: 12 }}>
             <Form.Item label="代理机构邮箱" name="agency_email" style={{ flex: 1 }}>
-              <Input placeholder="邮箱" />
+              <Input />
             </Form.Item>
             <Form.Item label="报名咨询电话" name="agency_reg_phone" style={{ flex: 1 }}>
-              <Input placeholder="电话" />
+              <Input />
             </Form.Item>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <Form.Item label="联系人" name="agency_contact" style={{ flex: 1 }}>
-              <Input placeholder="联系人姓名" />
+              <Input />
             </Form.Item>
             <Form.Item label="联系电话" name="agency_contact_phone" style={{ flex: 1 }}>
-              <Input placeholder="联系电话" />
+              <Input />
             </Form.Item>
           </div>
         </Form>
@@ -226,7 +311,7 @@ export default function AnnouncementPage() {
   const [selectedProject, setSelectedProject] = useState<AnnProject | null>(null)
 
   const isAgency = user?.role === 'agency'
-  const canConfirm = user?.role === 'officer' || user?.role === 'assistant' || user?.role === 'leader'
+  const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
 
   const load = async () => {
     setTableLoading(true)
@@ -246,7 +331,7 @@ export default function AnnouncementPage() {
 
   useEffect(() => { load() }, [])
 
-  // 监听报名时间变化，自动生成默认备注（仅当 reg_note 为空时）
+  // 报名时间变化时自动生成备注（仅当备注为空）
   const regStart: string = Form.useWatch('reg_start', form) ?? ''
   const regEnd: string = Form.useWatch('reg_end', form) ?? ''
   const regNote: string = Form.useWatch('reg_note', form) ?? ''
@@ -263,12 +348,7 @@ export default function AnnouncementPage() {
     form.setFieldsValue({
       round_number: 1,
       ann_type: 'procurement',
-      qual_1: QUAL_DEFAULTS[0],
-      qual_2: QUAL_DEFAULTS[1],
-      qual_3: QUAL_DEFAULTS[2],
-      qual_4: QUAL_DEFAULTS[3],
-      qual_5: QUAL_DEFAULTS[4],
-      qual_6: QUAL_DEFAULTS[5],
+      qualifications: QUALIFICATIONS_DEFAULT,
     })
     setDrawerOpen(true)
   }
@@ -282,13 +362,8 @@ export default function AnnouncementPage() {
       ann_type: ann.ann_type,
       round_number: ann.round_number,
       project_intro: ann.project_intro,
+      qualifications: ann.qualifications || QUALIFICATIONS_DEFAULT,
       special_req: ann.special_req,
-      qual_1: ann.qual_1 || QUAL_DEFAULTS[0],
-      qual_2: ann.qual_2 || QUAL_DEFAULTS[1],
-      qual_3: ann.qual_3 || QUAL_DEFAULTS[2],
-      qual_4: ann.qual_4 || QUAL_DEFAULTS[3],
-      qual_5: ann.qual_5 || QUAL_DEFAULTS[4],
-      qual_6: ann.qual_6 || QUAL_DEFAULTS[5],
       reg_start: ann.reg_start,
       reg_end: ann.reg_end,
       reg_note: ann.reg_note,
@@ -303,12 +378,6 @@ export default function AnnouncementPage() {
     setDrawerOpen(true)
   }
 
-  const handleProjectChange = (id: number) => {
-    const p = projects.find(x => x.id === id) || null
-    setSelectedProject(p)
-  }
-
-  /** 套用代理机构模板 */
   const applyTemplate = (tpl: AgencyTemplate) => {
     form.setFieldsValue({
       agency_address: tpl.agency_address,
@@ -385,9 +454,7 @@ export default function AnnouncementPage() {
   const handleGenerate = async (ann: Announcement) => {
     try {
       const res = await generateAnnouncementWord(ann.id)
-      const suffix = ann.round_number > 1
-        ? `（第${'一二三四五'[ann.round_number - 1]}次）`
-        : ''
+      const suffix = ann.round_number > 1 ? `（第${'一二三四五'[ann.round_number - 1]}次）` : ''
       const blob = new Blob([res.data], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
@@ -401,8 +468,7 @@ export default function AnnouncementPage() {
     } catch (err: any) {
       if (err.response?.data instanceof Blob) {
         const text = await err.response.data.text()
-        try { message.error(JSON.parse(text).error || '生成失败') }
-        catch { message.error('生成失败') }
+        try { message.error(JSON.parse(text).error || '生成失败') } catch { message.error('生成失败') }
       } else {
         message.error(err.response?.data?.error || '生成失败')
       }
@@ -410,86 +476,40 @@ export default function AnnouncementPage() {
   }
 
   const columns: ColumnsType<Announcement> = [
+    { title: '项目编号', dataIndex: 'project_number', width: 200, render: (v) => <Text code>{v}</Text> },
+    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
+    { title: '代理机构', dataIndex: 'agency_name', width: 150, ellipsis: true },
     {
-      title: '项目编号',
-      dataIndex: 'project_number',
-      width: 200,
-      render: (v) => <Text code>{v}</Text>,
-    },
-    {
-      title: '项目名称',
-      dataIndex: 'project_name',
-      ellipsis: true,
-    },
-    {
-      title: '代理机构',
-      dataIndex: 'agency_name',
-      width: 150,
-      ellipsis: true,
-    },
-    {
-      title: '开标次数',
-      dataIndex: 'round_number',
-      width: 90,
+      title: '开标次数', dataIndex: 'round_number', width: 90,
       render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
     },
+    { title: '报名截止', dataIndex: 'reg_end', width: 120 },
+    { title: '响应截止', dataIndex: 'response_deadline', width: 160 },
     {
-      title: '报名截止',
-      dataIndex: 'reg_end',
-      width: 120,
+      title: '状态', dataIndex: 'status', width: 80,
+      render: (v) => <Tag color={STATUS_COLOR[v] || 'default'}>{v}</Tag>,
     },
+    { title: '编制人', dataIndex: 'created_by', width: 90, render: (v) => v || '—' },
     {
-      title: '响应截止',
-      dataIndex: 'response_deadline',
-      width: 160,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      width: 80,
-      render: (v) => <StatusTag status={v} />,
-    },
-    {
-      title: '编制人',
-      dataIndex: 'created_by',
-      width: 90,
-      render: (v) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '操作',
-      width: 260,
+      title: '操作', width: 240,
       render: (_, record) => (
         <Space size={4} wrap>
-          {/* 下载 Word */}
-          <Button
-            size="small"
-            icon={<DownloadOutlined />}
-            type="primary"
-            onClick={() => handleGenerate(record)}
-          >
+          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
             Word
           </Button>
-
-          {/* 编辑（草稿/待确认可编辑；已确认仅经办人可编辑） */}
           {(record.status !== '已确认' || canConfirm) && (
             <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
           )}
-
-          {/* 代理机构：提交确认 */}
           {isAgency && record.status === '草稿' && (
             <Popconfirm title="确认提交给经办人确认？" onConfirm={() => handleSubmit(record.id)}>
-              <Button size="small" icon={<SendOutlined />} type="default">提交</Button>
+              <Button size="small" icon={<SendOutlined />}>提交</Button>
             </Popconfirm>
           )}
-
-          {/* 经办人：确认 */}
           {canConfirm && record.status === '待确认' && (
             <Popconfirm title="确认通过该公告？" onConfirm={() => handleConfirm(record.id)}>
               <Button size="small" icon={<CheckCircleOutlined />} type="primary" ghost>确认</Button>
             </Popconfirm>
           )}
-
-          {/* 经办人：撤回已确认 */}
           {canConfirm && record.status === '已确认' && (
             <Tooltip title="撤回确认，恢复为草稿">
               <Popconfirm title="撤回确认，恢复为草稿？" onConfirm={() => handleRevoke(record.id)}>
@@ -497,8 +517,6 @@ export default function AnnouncementPage() {
               </Popconfirm>
             </Tooltip>
           )}
-
-          {/* 删除（已确认不可删） */}
           {record.status !== '已确认' && (
             <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
@@ -509,21 +527,17 @@ export default function AnnouncementPage() {
     },
   ]
 
-  // 当前代理机构 code（用于模板管理）
-  const currentAgencyCode =
-    isAgency
-      ? user?.agency_code || ''
-      : selectedProject?.agency_code || ''
+  const currentAgencyCode = isAgency
+    ? user?.agency_code || ''
+    : selectedProject?.agency_code || ''
 
   return (
     <Card>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ fontSize: 18, fontWeight: 600, color: '#2c3e50' }}>
-          <FileWordOutlined style={{ marginRight: 8, color: '#1677ff' }} />
-          采购公告
+          <FileWordOutlined style={{ marginRight: 8, color: '#1677ff' }} />采购公告
         </div>
         <Space>
-          {/* 代理机构可管理自己的模板 */}
           {isAgency && (
             <Button icon={<AppstoreOutlined />} onClick={() => setTplDrawerOpen(true)}>
               预设模板
@@ -537,22 +551,14 @@ export default function AnnouncementPage() {
 
       <Alert
         type="info" showIcon
-        message={
-          isAgency
-            ? '代理机构可编制公告，提交后由经办人确认。'
-            : '仅显示已正式立项且走代理机构的项目。生成后请盖章发布至医院官网及四川招投标网。'
-        }
+        message={isAgency
+          ? '代理机构可编制公告，提交后由经办人确认。'
+          : '仅显示已正式立项且走代理机构的项目。生成后请盖章发布至医院官网及四川招投标网。'}
         style={{ marginBottom: 16 }}
       />
 
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={list}
-        loading={tableLoading}
-        size="small"
-        pagination={{ pageSize: 15 }}
-      />
+      <Table rowKey="id" columns={columns} dataSource={list}
+        loading={tableLoading} size="small" pagination={{ pageSize: 15 }} />
 
       {/* ── 新建/编辑 Drawer ─────────────────────────── */}
       <Drawer
@@ -570,73 +576,51 @@ export default function AnnouncementPage() {
         }
       >
         <Form form={form} layout="vertical" size="middle">
-          {/* 项目选择 */}
-          <Form.Item
-            label="关联项目"
-            name="project_id"
-            rules={[{ required: true, message: '请选择项目' }]}
-          >
-            <Select
-              showSearch
-              placeholder="搜索项目名称或编号"
+          {/* 关联项目 */}
+          <Form.Item label="关联项目" name="project_id"
+            rules={[{ required: true, message: '请选择项目' }]}>
+            <Select showSearch placeholder="搜索项目名称或编号" disabled={!!editId}
               filterOption={(input, opt) =>
-                (opt?.label as string || '').toLowerCase().includes(input.toLowerCase())
-              }
-              onChange={handleProjectChange}
-              disabled={!!editId}
-              options={projects.map(p => ({
-                value: p.id,
-                label: `${p.number}  ${p.name}`,
-              }))}
+                (opt?.label as string || '').toLowerCase().includes(input.toLowerCase())}
+              onChange={(id: number) => {
+                const p = projects.find(x => x.id === id) || null
+                setSelectedProject(p)
+              }}
+              options={projects.map(p => ({ value: p.id, label: `${p.number}  ${p.name}` }))}
             />
           </Form.Item>
 
           {selectedProject && (
             <Descriptions size="small" bordered column={2} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="项目编号">
-                <Text code>{selectedProject.number}</Text>
-              </Descriptions.Item>
+              <Descriptions.Item label="项目编号"><Text code>{selectedProject.number}</Text></Descriptions.Item>
               <Descriptions.Item label="代理机构">{selectedProject.agency_name}</Descriptions.Item>
             </Descriptions>
           )}
 
-          {/* 开标次数 */}
           <Form.Item label="开标次数" name="round_number" style={{ width: 180 }}>
             <Select options={ROUND_OPTIONS} />
           </Form.Item>
 
           <Divider plain>招标内容</Divider>
 
-          <Form.Item
-            label="招标项目简介"
-            name="project_intro"
+          <Form.Item label="招标项目简介" name="project_intro"
             rules={[{ required: true, message: '请填写招标项目简介' }]}
-            extra="对应公告 1.3 节正文"
-          >
+            extra="对应公告 1.3 节正文">
             <TextArea rows={4} placeholder="如：本项目拟采购XX耗材，用于临床科室日常使用，采购数量详见竞选文件。" />
           </Form.Item>
 
-          {/* 一般资格要求（折叠面板，默认展开） */}
-          <Collapse
-            defaultActiveKey={['quals']}
-            style={{ marginBottom: 16 }}
-            items={[{
-              key: 'quals',
-              label: '一般资格要求（6条，可直接修改）',
-              children: (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(['qual_1', 'qual_2', 'qual_3', 'qual_4', 'qual_5', 'qual_6'] as const).map((key, i) => (
-                    <Form.Item key={key} name={key} style={{ marginBottom: 0 }}>
-                      <Input
-                        addonBefore={<span style={{ fontSize: 12, color: '#888', minWidth: 30 }}>({i + 1})</span>}
-                        size="small"
-                      />
-                    </Form.Item>
-                  ))}
-                </div>
-              ),
-            }]}
-          />
+          {/* 一般资格要求：与特殊要求相同形式，预设6条 */}
+          <Form.Item
+            label="一般资格要求（预设6条，可直接修改）"
+            name="qualifications"
+            extra="对应公告 1.5 节一至六条；每行一条，按行填入Word文档"
+          >
+            <TextArea
+              rows={7}
+              placeholder={QUALIFICATIONS_DEFAULT}
+              style={{ fontFamily: 'inherit', fontSize: 13 }}
+            />
+          </Form.Item>
 
           <Form.Item
             label="特殊要求（第七项，选填）"
@@ -649,96 +633,83 @@ export default function AnnouncementPage() {
           <Divider plain>时间安排</Divider>
 
           <div style={{ display: 'flex', gap: 16 }}>
-            <Form.Item
-              label="报名开始日期"
-              name="reg_start"
-              rules={[{ required: true, message: '请填写' }]}
-              style={{ flex: 1 }}
-            >
+            <Form.Item label="报名开始日期" name="reg_start"
+              rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
               <Input placeholder="如：2026年6月1日" />
             </Form.Item>
-            <Form.Item
-              label="报名截止日期"
-              name="reg_end"
-              rules={[{ required: true, message: '请填写' }]}
-              style={{ flex: 1 }}
-            >
+            <Form.Item label="报名截止日期" name="reg_end"
+              rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
               <Input placeholder="如：2026年6月10日" />
             </Form.Item>
           </div>
 
-          <Form.Item
-            label="报名时间备注"
-            name="reg_note"
-            extra="将出现在公告「注：」行；根据报名起止时间自动生成，可直接修改"
-          >
-            <TextArea
-              rows={2}
-              placeholder="如：2026年6月1日-2026年6月10日报名时间（上午08时30分至12时00分，下午14时30分至17时00分）。"
-            />
+          <Form.Item label="报名时间备注" name="reg_note"
+            extra="根据报名起止时间自动生成，可直接修改；对应公告「注：」行">
+            <TextArea rows={2}
+              placeholder="如：2026年6月1日-2026年6月10日报名时间（上午08时30分至12时00分，下午14时30分至17时00分）。" />
           </Form.Item>
 
-          <Form.Item
-            label="响应文件截止时间"
-            name="response_deadline"
+          <Form.Item label="响应文件截止时间" name="response_deadline"
             rules={[{ required: true, message: '请填写' }]}
-            extra="精确到小时分钟，如：2026年6月20日15:00"
-          >
+            extra="精确到小时分钟，如：2026年6月20日15:00">
             <Input placeholder="如：2026年6月20日15:00" style={{ maxWidth: 280 }} />
           </Form.Item>
 
           <Divider plain>
             代理机构信息
             {selectedProject?.agency_code && (
-              <Button
-                size="small"
-                type="link"
-                icon={<AppstoreOutlined />}
-                style={{ marginLeft: 8 }}
-                onClick={() => setTplDrawerOpen(true)}
-              >
+              <Button size="small" type="link" icon={<AppstoreOutlined />}
+                style={{ marginLeft: 8 }} onClick={() => setTplDrawerOpen(true)}>
                 从模板套用
               </Button>
             )}
           </Divider>
 
-          <Form.Item
-            label="代理机构地址（获取文件/递交文件地点）"
-            name="agency_address"
-            rules={[{ required: true, message: '请填写' }]}
-          >
+          <Form.Item label="代理机构地址（获取文件/递交文件地点）" name="agency_address"
+            rules={[{ required: true, message: '请填写' }]}>
             <Input placeholder="如：内江市市中区XX路XX号" />
           </Form.Item>
-
-          <Form.Item
-            label="递交响应文件地点（如与上述不同则填写）"
-            name="delivery_address"
-            extra="留空则自动使用代理机构地址"
-          >
+          <Form.Item label="递交响应文件地点（如与上述不同则填写）" name="delivery_address"
+            extra="留空则自动使用代理机构地址">
             <Input placeholder="留空则与代理机构地址相同" />
           </Form.Item>
-
           <div style={{ display: 'flex', gap: 16 }}>
             <Form.Item label="代理机构邮箱" name="agency_email"
               rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="用于接收报名材料" />
+              <Input />
             </Form.Item>
             <Form.Item label="报名咨询电话" name="agency_reg_phone"
               rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="代理机构报名联系电话" />
+              <Input />
             </Form.Item>
           </div>
-
           <div style={{ display: 'flex', gap: 16 }}>
             <Form.Item label="代理联系人" name="agency_contact"
               rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="代理机构联系人姓名" />
+              <Input />
             </Form.Item>
             <Form.Item label="代理联系电话" name="agency_contact_phone"
               rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="代理联系人电话" />
+              <Input />
             </Form.Item>
           </div>
+
+          {/* 附件上传（仅编辑已存在的公告时显示） */}
+          {editId && (
+            <>
+              <Divider plain>采购文件附件</Divider>
+              <Form.Item
+                label="上传附件"
+                extra="上传采购需求、报名表等文件；生成Word时附件名自动列于文档末尾"
+              >
+                <AttachmentSection annId={editId} />
+              </Form.Item>
+            </>
+          )}
+          {!editId && (
+            <Alert type="info" showIcon style={{ marginTop: 8 }}
+              message="保存草稿后，在「编辑」中可上传采购需求、报名表等附件文件。" />
+          )}
         </Form>
       </Drawer>
 

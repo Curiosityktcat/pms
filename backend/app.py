@@ -39,6 +39,7 @@ def create_app():
     # 确保所有表都已创建（新模型自动建表）
     with app.app_context():
         from models.announcement import Announcement  # noqa: F401
+        from models.announcement_attachment import AnnouncementAttachment  # noqa: F401
         from models.agency_template import AgencyTemplate  # noqa: F401
         db.create_all()
 

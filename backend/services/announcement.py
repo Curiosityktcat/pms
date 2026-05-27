@@ -4,7 +4,8 @@
 import io
 import os
 from docx import Document
-from models.announcement import QUAL_DEFAULTS
+from docx.shared import Pt
+from models.announcement import QUALIFICATIONS_DEFAULT
 
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -15,11 +16,8 @@ ROUND_CN = ["", "一", "二", "三", "四", "五"]
 
 
 def _r(para, idx):
-    """安全获取 run，越界返回 None。"""
     runs = para.runs
-    if idx < len(runs):
-        return runs[idx]
-    return None
+    return runs[idx] if idx < len(runs) else None
 
 
 def _set(para, idx, text):
@@ -33,23 +31,10 @@ def _clear_from(para, start_idx):
         para.runs[i].text = ""
 
 
-def _set_para_full(para, text: str):
-    """用第一个 run 写入全文，其余 run 清空。保留字体格式。"""
-    runs = para.runs
-    if not runs:
-        return
-    runs[0].text = text
-    for r in runs[1:]:
-        r.text = ""
-
-
-def generate(project, ann, agency_name):
+def generate(project, ann, agency_name, attachment_names: list = None):
     """
     生成采购公告 Word 文档，返回 BytesIO。
-
-    project: Project model 实例
-    ann: Announcement model 实例
-    agency_name: 代理机构名称字符串
+    attachment_names: 附件文件名列表（写入文档末尾）
     """
     doc = Document(TEMPLATE_PATH)
     ps = doc.paragraphs
@@ -66,32 +51,30 @@ def generate(project, ann, agency_name):
     _set(ps[2], 0, agency_name)
     _set(ps[2], 4, project_name)
 
-    # ── 项目编号 Para[3]: run[2] ──────────────────────────────────
+    # ── 项目编号 Para[3] ──────────────────────────────────────────
     _set(ps[3], 2, project_number + "；")
 
-    # ── 项目名称 Para[4]: run[2] ──────────────────────────────────
+    # ── 项目名称 Para[4] ──────────────────────────────────────────
     _set(ps[4], 2, project_name + "；")
 
-    # ── 招标项目简介 Para[6]: run[0] ────────────────────────────
+    # ── 招标项目简介 Para[6] ──────────────────────────────────────
     _set(ps[6], 0, ann.project_intro or "")
 
-    # ── 一般资格要求 Para[11-16]：每段单 run，直接替换 ───────────
-    quals = [
-        ann.qual_1 or QUAL_DEFAULTS[0],
-        ann.qual_2 or QUAL_DEFAULTS[1],
-        ann.qual_3 or QUAL_DEFAULTS[2],
-        ann.qual_4 or QUAL_DEFAULTS[3],
-        ann.qual_5 or QUAL_DEFAULTS[4],
-        ann.qual_6 or QUAL_DEFAULTS[5],
-    ]
-    for i, q_text in enumerate(quals):
+    # ── 一般资格要求 Para[11-16]：按行拆分 qualifications ─────────
+    qual_text = (ann.qualifications or QUALIFICATIONS_DEFAULT).strip()
+    qual_lines = [line.strip() for line in qual_text.split("\n") if line.strip()]
+    for i in range(6):
         p = ps[11 + i]
-        if p.runs:
-            p.runs[0].text = q_text
-            for r in p.runs[1:]:
-                r.text = ""
+        if not p.runs:
+            continue
+        if i < len(qual_lines):
+            p.runs[0].text = qual_lines[i]
+        else:
+            p.runs[0].text = ""
+        for r in p.runs[1:]:
+            r.text = ""
 
-    # ── 特殊要求（七）Para[17]: run[0] ──────────────────────────
+    # ── 特殊要求（七）Para[17] ────────────────────────────────────
     if ann.special_req:
         _set(ps[17], 0, "（七）" + ann.special_req)
 
@@ -105,7 +88,6 @@ def generate(project, ann, agency_name):
     # ── 报名备注 Para[23]：run[0]="注：" run[1]=备注正文 ─────────
     reg_note = (ann.reg_note or "").strip()
     if not reg_note:
-        # 自动生成默认备注
         reg_note = (
             f"{reg_start}-{reg_end}报名时间"
             f"（上午08时30分至12时00分，下午14时30分至17时00分）。"
@@ -135,17 +117,32 @@ def generate(project, ann, agency_name):
     _set(ps[36], 2, delivery_addr)
     _set(ps[36], 7, agency_name)
 
-    # ── 代理机构名 Para[44]: run[4] ──────────────────────────────
+    # ── 代理机构名 Para[44] ──────────────────────────────────────
     _set(ps[44], 4, agency_name)
 
-    # ── 代理地址 Para[45]: run[1] ────────────────────────────────
+    # ── 代理地址 Para[45] ────────────────────────────────────────
     _set(ps[45], 1, agency_addr)
 
-    # ── 代理联系人 Para[47]: run[1] ──────────────────────────────
+    # ── 代理联系人 Para[47] ──────────────────────────────────────
     _set(ps[47], 1, ann.agency_contact or "")
 
-    # ── 代理联系电话 Para[48]: run[1] ────────────────────────────
+    # ── 代理联系电话 Para[48] ────────────────────────────────────
     _set(ps[48], 1, ann.agency_contact_phone or "")
+
+    # ── 附件列表（追加到文档末尾）────────────────────────────────
+    if attachment_names:
+        # 空行
+        doc.add_paragraph("")
+        title_para = doc.add_paragraph("附件：")
+        if title_para.runs:
+            title_para.runs[0].bold = True
+        for idx, name in enumerate(attachment_names, start=1):
+            p = doc.add_paragraph(f"{idx}. {name}")
+            if p.runs:
+                try:
+                    p.runs[0].font.size = Pt(10.5)
+                except Exception:
+                    pass
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -154,7 +151,6 @@ def generate(project, ann, agency_name):
 
 
 def get_filename(project, ann):
-    """生成下载文件名。"""
     suffix = ""
     if ann.round_number and ann.round_number > 1:
         cn = ROUND_CN[min(ann.round_number, len(ROUND_CN) - 1)]
