@@ -1,0 +1,344 @@
+import { useEffect, useState } from 'react'
+import {
+  Form, Input, InputNumber, Select, Checkbox, Radio, Button, Card,
+  Space, Divider, Typography, App, Descriptions,
+} from 'antd'
+import type { CheckboxChangeEvent } from 'antd/es/checkbox'
+import { useNavigate, useParams } from 'react-router-dom'
+import {
+  getProjectMeta, getProject, createProject, updateProject,
+} from '../services/project'
+import type { Agency } from '../services/project'
+import { useAuth } from '../hooks/useAuth'
+
+const { TextArea } = Input
+const { Text } = Typography
+
+const M_YIJIA  = '院内议价'
+const M_XUNJIA = '院内询价'
+const M_JINGXUAN = '院内竞选'
+const M_SOLE   = '院内单一来源采购'
+const M_JINGJI = '医用耗材紧急采购'
+
+const METHOD_HINT: Record<string, string> = {
+  [M_YIJIA]:   '2万以下的货物/工程/服务',
+  [M_XUNJIA]:  '2万(含)～5万',
+  [M_JINGXUAN]:'5万(含)以上，需指派代理机构',
+  [M_SOLE]:    '需专家论证+公示；可走可不走代理（下方选择）',
+  [M_JINGJI]:  '医用耗材紧急采购，不分金额，不走代理机构',
+}
+
+function autoMethod(amount: number | null, isUnitPrice: boolean): string {
+  if (isUnitPrice) return M_JINGXUAN
+  if (!amount) return M_YIJIA
+  if (amount < 20000) return M_YIJIA
+  if (amount < 50000) return M_XUNJIA
+  return M_JINGXUAN
+}
+
+export default function ProjectFormPage() {
+  const { id } = useParams<{ id?: string }>()
+  const isEdit = !!id
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  const { message } = App.useApp()
+  const [form] = Form.useForm()
+
+  const [agencies, setAgencies] = useState<Agency[]>([])
+  const [statuses, setStatuses] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [pageLoading, setPageLoading] = useState(isEdit)
+  const [isDraft, setIsDraft] = useState(false)
+  const [isLocked, setIsLocked] = useState(false) // 已正式立项，编号锁定
+  const [lockedNumber, setLockedNumber] = useState('')
+  const [lockedLine, setLockedLine] = useState('')
+  const [lockedAgencyCode, setLockedAgencyCode] = useState('')
+
+  // 监听表单字段
+  const methodVal = Form.useWatch('method', form)
+  const isUnitPrice = Form.useWatch('is_unit_price', form)
+  const soleUseAgency = Form.useWatch('sole_use_agency', form)
+
+  // 紧急采购永不走代理；竞选必须走代理；单一来源看用户选择
+  const needsAgency =
+    methodVal === M_JINGXUAN ||
+    (methodVal === M_SOLE && soleUseAgency === 'yes')
+  // 紧急采购：金额变化不改变采购方式
+  const isJingji = methodVal === M_JINGJI
+
+  useEffect(() => {
+    const loadMeta = async () => {
+      try {
+        const res = await getProjectMeta()
+        setAgencies(res.data.agencies)
+        setStatuses(res.data.statuses)
+      } catch {
+        message.error('加载基础数据失败')
+      }
+    }
+    loadMeta()
+  }, [])
+
+  useEffect(() => {
+    if (!isEdit) {
+      form.setFieldsValue({
+        officer: user?.display_name || '',
+        method: M_YIJIA,
+        year: `${new Date().getFullYear()}年`,
+      })
+      return
+    }
+    const load = async () => {
+      try {
+        const res = await getProject(Number(id))
+        const p = res.data.data
+        setAgencies(res.data.agencies)
+        setStatuses(res.data.statuses)
+        setIsDraft(p.is_draft)
+        if (!p.is_draft) {
+          setIsLocked(true)
+          setLockedNumber(p.number)
+          setLockedLine(p.line)
+          setLockedAgencyCode(p.agency_code)
+        }
+        form.setFieldsValue({
+          name: p.name,
+          amount: (p.amount && p.amount > 0) ? p.amount : null,
+          is_unit_price: !p.amount || p.amount === 0,
+          method: p.method,
+          sole_use_agency: 'no',
+          agency_code: p.agency_code,
+          demand_dept: p.demand_dept,
+          manage_dept: p.manage_dept,
+          officer: p.officer,
+          content: p.content,
+          bid_time: p.bid_time,
+          status: p.status,
+          category: p.category,
+          year: p.year,
+        })
+      } catch (err: any) {
+        message.error(err.response?.data?.error || '加载项目失败')
+        navigate('/flow')
+      } finally {
+        setPageLoading(false)
+      }
+    }
+    load()
+  }, [id])
+
+  const handleAmountChange = (val: number | null) => {
+    if (isLocked) return
+    const cur = form.getFieldValue('method')
+    // 单一来源和紧急采购是手动选择，金额变化不自动覆盖
+    if (cur === M_SOLE || cur === M_JINGJI) return
+    form.setFieldValue('method', autoMethod(val, false))
+  }
+
+  const handleUnitPriceChange = (e: CheckboxChangeEvent) => {
+    if (isLocked) return
+    const checked = e.target.checked
+    if (checked) {
+      form.setFieldValue('amount', null)
+      form.setFieldValue('method', M_JINGXUAN)
+    } else {
+      form.setFieldValue('method', autoMethod(form.getFieldValue('amount'), false))
+    }
+  }
+
+  const submit = async (action: 'submit' | 'draft') => {
+    try {
+      await form.validateFields()
+    } catch {
+      return
+    }
+    const values = form.getFieldsValue()
+    const payload = { ...values, action }
+
+    setLoading(true)
+    try {
+      let res
+      if (isEdit) {
+        res = await updateProject(Number(id), payload)
+      } else {
+        res = await createProject(payload)
+      }
+      message.success(res.data.message)
+      navigate('/flow')
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '操作失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (pageLoading) return <Card loading />
+
+  const title = isEdit ? (isDraft ? '编辑草稿（可正式立项）' : '编辑项目') : '项目立项'
+
+  return (
+    <Card>
+      <div style={{ fontSize: 18, fontWeight: 600, color: '#2c3e50', marginBottom: 20 }}>{title}</div>
+
+      {isLocked && (
+        <Descriptions size="small" bordered style={{ marginBottom: 20 }} column={3}>
+          <Descriptions.Item label="项目编号">
+            <Text strong>{lockedNumber}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="流程线">线 {lockedLine}</Descriptions.Item>
+          <Descriptions.Item label="代理机构">
+            {lockedAgencyCode
+              ? agencies.find(a => a.code === lockedAgencyCode)?.name || lockedAgencyCode
+              : <Text type="secondary">无</Text>}
+          </Descriptions.Item>
+        </Descriptions>
+      )}
+
+      <Form form={form} layout="vertical" size="middle">
+        <Form.Item label="项目名称" name="name" rules={[{ required: true, message: '请填写项目名称' }]}>
+          <Input placeholder="如：2026年XX耗材采购项目" />
+        </Form.Item>
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          <Form.Item
+            label="采购项目分类"
+            name="category"
+            rules={[{ required: true, message: '请选择分类' }]}
+            style={{ flex: 1 }}
+          >
+            <Radio.Group>
+              <Radio value="货物">货物</Radio>
+              <Radio value="服务">服务</Radio>
+              <Radio value="工程">工程</Radio>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item
+            label="采购年度"
+            name="year"
+            rules={[{ required: true, message: '请填写采购年度' }]}
+            style={{ width: 140 }}
+          >
+            <Select options={
+              Array.from({ length: 5 }, (_, i) => {
+                const y = `${new Date().getFullYear() - 1 + i}年`
+                return { value: y, label: y }
+              })
+            } />
+          </Form.Item>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          <Form.Item label="预算金额（元）" name="amount" style={{ flex: 1 }}>
+            <InputNumber
+              style={{ width: '100%' }}
+              placeholder="填具体金额"
+              min={0}
+              step={1000}
+              disabled={isUnitPrice}
+              onChange={handleAmountChange}
+              formatter={(v) => v ? `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : ''}
+              parser={(v) => v?.replace(/,/g, '') as any}
+            />
+          </Form.Item>
+          <Form.Item label=" " name="is_unit_price" valuePropName="checked" style={{ flex: 1, marginTop: 4 }}>
+            <Checkbox onChange={handleUnitPriceChange} disabled={isLocked}>
+              挂网耗材/招单价（无固定预算，按≥5万竞选）
+            </Checkbox>
+          </Form.Item>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          <Form.Item label="采购方式（按金额自动，可手动改为单一来源或紧急采购）" name="method" style={{ flex: 1 }}>
+            <Select
+              disabled={isLocked}
+              onChange={() => {}}
+              options={[
+                { value: M_YIJIA,   label: M_YIJIA },
+                { value: M_XUNJIA,  label: M_XUNJIA },
+                { value: M_JINGXUAN,label: M_JINGXUAN },
+                { value: M_SOLE,    label: M_SOLE },
+                { value: M_JINGJI,  label: M_JINGJI,
+                  // 紧急采购在已锁定时不可切换（同单一来源逻辑）
+                  disabled: isLocked },
+              ]}
+            />
+          </Form.Item>
+          {methodVal && (
+            <Form.Item label=" " style={{ flex: 1 }}>
+              <Text type="secondary" style={{ fontSize: 13 }}>{METHOD_HINT[methodVal]}</Text>
+            </Form.Item>
+          )}
+        </div>
+
+        {methodVal === M_SOLE && !isLocked && (
+          <Form.Item label="单一来源：是否走代理机构？" name="sole_use_agency" style={{ maxWidth: 320 }}>
+            <Select options={[
+              { value: 'no', label: '不走代理（NJYYXJ）' },
+              { value: 'yes', label: '走代理（NJYYJX）' },
+            ]} />
+          </Form.Item>
+        )}
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          {!isLocked && !isJingji && (
+            <Form.Item
+              label="代理机构（走代理时必选）"
+              name="agency_code"
+              style={{ flex: 1 }}
+              rules={[{
+                validator: (_, val) =>
+                  needsAgency && !val
+                    ? Promise.reject('走代理的项目必须选择代理机构')
+                    : Promise.resolve(),
+              }]}
+            >
+              <Select
+                allowClear
+                placeholder="（不走代理免选）"
+                options={agencies.map(a => ({ value: a.code, label: a.name }))}
+              />
+            </Form.Item>
+          )}
+          <Form.Item label="项目经办人" name="officer" style={{ flex: 1 }}>
+            <Input disabled={user?.role === 'officer'} />
+          </Form.Item>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          <Form.Item label="需求科室" name="demand_dept" style={{ flex: 1 }}>
+            <Input />
+          </Form.Item>
+          <Form.Item label="归口管理科室" name="manage_dept" style={{ flex: 1 }}>
+            <Input />
+          </Form.Item>
+        </div>
+
+        {isEdit && !isDraft && (
+          <div style={{ display: 'flex', gap: 16 }}>
+            <Form.Item label="当前状态" name="status" style={{ flex: 1 }}>
+              <Select options={statuses.map(s => ({ value: s, label: s }))} />
+            </Form.Item>
+            <Form.Item label="开标时间" name="bid_time" style={{ flex: 1 }}>
+              <Input placeholder="如 2026年5月27日16:00" />
+            </Form.Item>
+          </div>
+        )}
+
+        <Form.Item label="包号及采购内容" name="content">
+          <TextArea rows={3} />
+        </Form.Item>
+
+        <Divider />
+        <Space>
+          <Button type="primary" loading={loading} onClick={() => submit('submit')}>
+            {isDraft ? '正式立项（生成编号）' : isEdit ? '保存修改' : '正式立项（生成编号）'}
+          </Button>
+          {(!isEdit || isDraft) && (
+            <Button onClick={() => submit('draft')} loading={loading}>存草稿</Button>
+          )}
+          <Button onClick={() => navigate('/flow')}>取消</Button>
+        </Space>
+      </Form>
+    </Card>
+  )
+}
