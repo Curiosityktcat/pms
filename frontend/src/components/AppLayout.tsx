@@ -168,9 +168,9 @@ export default function AppLayout() {
     // ─── 5. 采购文件编制 ──────────────────────────────────────
     {
       key: 'doc',
-      label: <DevLabel label="5. 采购文件编制" />,
+      label: '5. 采购文件编制',
       icon: <FileTextOutlined />,
-      disabled: true,
+      onClick: () => navigate('/procurement-doc'),
     },
 
     // ─── 6. 挂网管理 ──────────────────────────────────────────
@@ -258,7 +258,7 @@ export default function AppLayout() {
   const CONTROLLED_KEYS = new Set([
     'procurement-demand-gov', 'internal-bid-demand', 'procurement-demand-sole',
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
-    'agency-agreement',
+    'agency-agreement', 'doc',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
     'inquiry', 'procurement-result', 'contract',
     'people-manage',

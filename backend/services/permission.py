@@ -47,6 +47,12 @@ PERMISSION_CATALOG = [
         ],
     },
     {
+        "group": "采购文件编制",
+        "items": [
+            {"key": "doc", "label": "5. 采购文件编制"},
+        ],
+    },
+    {
         "group": "挂网管理",
         "items": [
             {"key": "announcement", "label": "6.1 采购公告"},
@@ -79,7 +85,7 @@ DEFAULT_ROLE_PERMS = {
     "assistant": [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
-        "agency-agreement",
+        "agency-agreement", "doc",
         "flow", "bid", "bid-board", "auth-letter", "announcement",
         "inquiry", "procurement-result", "contract",
         "people-manage", "email-settings", "scraper-settings",
@@ -88,7 +94,7 @@ DEFAULT_ROLE_PERMS = {
     "officer": [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
-        "agency-agreement",
+        "agency-agreement", "doc",
         "new", "flow", "bid", "bid-board", "auth-letter", "announcement",
         "inquiry", "procurement-result", "contract",
     ],
