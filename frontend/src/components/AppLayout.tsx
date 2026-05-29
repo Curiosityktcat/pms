@@ -231,9 +231,9 @@ export default function AppLayout() {
     // ─── 11. 归档 ─────────────────────────────────────────────
     {
       key: 'archive',
-      label: <DevLabel label="11. 归档" />,
+      label: '11. 归档',
       icon: <FileDoneOutlined />,
-      disabled: true,
+      onClick: () => navigate('/archive'),
     },
 
     // ─── 12. 基础数据维护 ─────────────────────────────────────
@@ -265,7 +265,7 @@ export default function AppLayout() {
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
     'agency-agreement', 'doc',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
-    'inquiry', 'procurement-result', 'contract',
+    'inquiry', 'procurement-result', 'contract', 'archive',
     'people-manage', 'template-manage',
   ])
   const permSet = new Set(user?.perms || [])

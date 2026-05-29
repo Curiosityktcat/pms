@@ -67,6 +67,12 @@ PERMISSION_CATALOG = [
         ],
     },
     {
+        "group": "归档",
+        "items": [
+            {"key": "archive", "label": "11. 归档"},
+        ],
+    },
+    {
         "group": "基础数据维护",
         "items": [
             {"key": "people-manage", "label": "12.1 人员维护"},
@@ -88,7 +94,7 @@ DEFAULT_ROLE_PERMS = {
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
         "agency-agreement", "doc",
         "flow", "bid", "bid-board", "auth-letter", "announcement",
-        "inquiry", "procurement-result", "contract",
+        "inquiry", "procurement-result", "contract", "archive",
         "people-manage", "template-manage", "email-settings", "scraper-settings",
     ],
     # 项目经办人：立项及项目执行

@@ -25,6 +25,7 @@ import InquiryPage from './pages/InquiryPage'
 import AgencyAgreementPage from './pages/AgencyAgreementPage'
 import ProcurementDocPage from './pages/ProcurementDocPage'
 import TemplateManagePage from './pages/TemplateManagePage'
+import ArchivePage from './pages/ArchivePage'
 import EmailSettingsPage from './pages/EmailSettingsPage'
 import ScraperSettingsPage from './pages/ScraperSettingsPage'
 import PermissionManagePage from './pages/PermissionManagePage'
@@ -100,6 +101,7 @@ export default function App() {
               <Route path="inquiry" element={<InquiryPage />} />
               <Route path="agency-agreement" element={<AgencyAgreementPage />} />
               <Route path="procurement-doc" element={<ProcurementDocPage />} />
+              <Route path="archive" element={<ArchivePage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
             </Route>
             {/* 后台管理系统 — 与业务系统独立的一套界面，仅管理员可进入 */}
