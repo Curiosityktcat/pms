@@ -43,6 +43,8 @@ def create_project():
     if session["role"] != "officer":
         return jsonify({"ok": False, "error": "仅项目经办人可立项"}), 403
     data = request.get_json(force=True) or {}
+    demand_id   = data.pop("demand_id",   None)  # 从采购需求立项时传入
+    demand_type = data.pop("demand_type", None)  # 'gov' / 'competition' / 'sole_source' 等
     try:
         p, number = svc.create_project(data, session["user"], session["display_name"])
         if p.is_draft:
@@ -50,6 +52,24 @@ def create_project():
         else:
             use_agency = bool(p.agency_code)
             msg = f"立项成功，编号 {number}（{'走代理' if use_agency else '不走代理'}，线{p.line}）"
+            # 政府采购项目立项后直接归档
+            if demand_type == "gov":
+                p.status = "已归档"
+                db.session.commit()
+                msg += "（政府采购，已自动归档）"
+            # 如果是从采购需求立项，标记需求为已立项
+            if demand_id:
+                try:
+                    from models.procurement_demand import ProcurementDemand
+                    demand = db.session.get(ProcurementDemand, int(demand_id))
+                    if demand:
+                        demand.project_id = p.id
+                        demand.status = "已立项"
+                        import datetime as _dt
+                        demand.updated_at = _dt.datetime.now().isoformat(timespec="seconds")
+                        db.session.commit()
+                except Exception:
+                    pass  # 非致命错误，不影响立项本身
         return jsonify({"ok": True, "message": msg, "data": p.to_dict()}), 201
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400

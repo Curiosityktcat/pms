@@ -4,7 +4,7 @@
 import io
 import os
 from docx import Document
-from docx.shared import Pt
+
 from models.announcement import QUALIFICATIONS_DEFAULT
 
 TEMPLATE_PATH = os.path.join(
@@ -31,7 +31,7 @@ def _clear_from(para, start_idx):
         para.runs[i].text = ""
 
 
-def generate(project, ann, agency_name, attachment_names: list = None):
+def generate(project, ann, agency_name):
     """
     生成采购公告 Word 文档，返回 BytesIO。
     attachment_names: 附件文件名列表（写入文档末尾）
@@ -128,21 +128,6 @@ def generate(project, ann, agency_name, attachment_names: list = None):
 
     # ── 代理联系电话 Para[48] ────────────────────────────────────
     _set(ps[48], 1, ann.agency_contact_phone or "")
-
-    # ── 附件列表（追加到文档末尾）────────────────────────────────
-    if attachment_names:
-        # 空行
-        doc.add_paragraph("")
-        title_para = doc.add_paragraph("附件：")
-        if title_para.runs:
-            title_para.runs[0].bold = True
-        for idx, name in enumerate(attachment_names, start=1):
-            p = doc.add_paragraph(f"{idx}. {name}")
-            if p.runs:
-                try:
-                    p.runs[0].font.size = Pt(10.5)
-                except Exception:
-                    pass
 
     buf = io.BytesIO()
     doc.save(buf)

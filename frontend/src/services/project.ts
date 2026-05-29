@@ -4,6 +4,8 @@ export interface Project {
   id: number
   number: string
   name: string
+  round: number
+  display_name: string
   amount: number | null
   line: string
   method: string

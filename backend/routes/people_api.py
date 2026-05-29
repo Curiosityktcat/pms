@@ -46,6 +46,7 @@ def create_person():
 
     id_card = request.form.get('id_card', '').strip()
     department = request.form.get('department', '').strip()
+    position = request.form.get('position', '').strip()
     role_type = request.form.get('role_type', 'representative')
 
     # 检查同名（警告，不阻止）
@@ -66,7 +67,7 @@ def create_person():
 
     p = People(
         name=name, id_card=id_card, department=department,
-        role_type=role_type, photo=photo_path, active=1,
+        position=position, role_type=role_type, photo=photo_path, active=1,
     )
     db.session.add(p)
     db.session.commit()
@@ -89,6 +90,7 @@ def update_person(pid):
     p.name = name
     p.id_card = request.form.get('id_card', p.id_card or '').strip()
     p.department = request.form.get('department', p.department or '').strip()
+    p.position = request.form.get('position', p.position or '').strip()
     if 'role_type' in request.form:
         p.role_type = request.form['role_type']
 

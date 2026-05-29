@@ -17,6 +17,7 @@ interface Person {
   name: string
   id_card: string
   department: string
+  position: string
   photo: string
   role_type: 'supervisor' | 'representative'
   active: number
@@ -71,6 +72,7 @@ export default function PeopleManagePage() {
       name: p.name,
       id_card: p.id_card,
       department: p.department,
+      position: p.position,
       role_type: p.role_type,
     })
     setDrawerOpen(true)
@@ -99,6 +101,7 @@ export default function PeopleManagePage() {
     fd.append('name', values.name)
     fd.append('id_card', values.id_card || '')
     fd.append('department', values.department || '')
+    fd.append('position', values.position || '')
     fd.append('role_type', values.role_type)
     if (fileList.length > 0 && fileList[0].originFileObj) {
       fd.append('photo', fileList[0].originFileObj)
@@ -145,7 +148,8 @@ export default function PeopleManagePage() {
     const matchSearch = !q ||
       p.name.includes(q) ||
       p.id_card.includes(q) ||
-      p.department.includes(q)
+      p.department.includes(q) ||
+      (p.position || '').includes(q)
     return matchRole && matchSearch
   })
 
@@ -164,6 +168,13 @@ export default function PeopleManagePage() {
       dataIndex: 'department',
       width: 140,
       render: (v: string) => v || <Text type="secondary">未填</Text>,
+    },
+    {
+      title: '职位',
+      dataIndex: 'position',
+      width: 180,
+      ellipsis: true,
+      render: (v: string) => v || <Text type="secondary">—</Text>,
     },
     {
       title: '身份证号',
@@ -302,6 +313,10 @@ export default function PeopleManagePage() {
             extra="有同名人员时请填写以便区分"
           >
             <Input placeholder="如：外科、设备科、行政办公室…" />
+          </Form.Item>
+
+          <Form.Item label="职位" name="position">
+            <Input placeholder="如：主任、副主任、护士长…" />
           </Form.Item>
 
           <Form.Item label="身份证号" name="id_card">

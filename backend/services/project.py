@@ -85,6 +85,7 @@ def create_project(data, created_by, display_name):
 
     common = dict(
         name=name, method=method,
+        round=int(data.get("round") or 1),
         demand_dept=(data.get("demand_dept") or "").strip(),
         manage_dept=(data.get("manage_dept") or "").strip(),
         officer=officer,
@@ -163,6 +164,8 @@ def update_project(pid, data, role, agency_code_session, officer_session):
     p.officer = (data.get("officer") or "").strip()
     p.content = (data.get("content") or "").strip()
     p.bid_time = (data.get("bid_time") or "").strip()
+    if "round" in data:
+        p.round = int(data.get("round") or 1)
     if data.get("category"):
         p.category = data["category"].strip()
     if data.get("year"):
@@ -206,6 +209,8 @@ def _submit_draft(p, data, now):
     p.bid_time = (data.get("bid_time") or "").strip()
     p.category = (data.get("category") or p.category or "").strip()
     p.year = (data.get("year") or p.year or "").strip()
+    if "round" in data:
+        p.round = int(data.get("round") or 1)
     p.status = "立项"
     p.is_draft = 0
     p.updated_at = now

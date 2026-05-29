@@ -10,10 +10,20 @@ import LoginPage from './pages/LoginPage'
 import ProjectFlowPage from './pages/ProjectFlowPage'
 import ProjectFormPage from './pages/ProjectFormPage'
 import BidManagePage from './pages/BidManagePage'
+import BidBoardPage from './pages/BidBoardPage'
 import ChpwdPage from './pages/ChpwdPage'
 import AuthLetterPage from './pages/AuthLetterPage'
 import PeopleManagePage from './pages/PeopleManagePage'
 import AnnouncementPage from './pages/AnnouncementPage'
+import PublicAnnouncementDetailPage from './pages/PublicAnnouncementDetailPage'
+import ProcurementDemandPage from './pages/ProcurementDemandPage'
+import ProcurementResultPage from './pages/ProcurementResultPage'
+import ContractPage from './pages/ContractPage'
+import InternalBidDemandPage from './pages/InternalBidDemandPage'
+import InquiryPage from './pages/InquiryPage'
+import EmailSettingsPage from './pages/EmailSettingsPage'
+import ScraperSettingsPage from './pages/ScraperSettingsPage'
+import PermissionManagePage from './pages/PermissionManagePage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -53,6 +63,11 @@ export default function App() {
                 </AuthContext.Provider>
               }
             />
+            {/* 公开公告详情页 — 无需登录 */}
+            <Route
+              path="/public/announcement/:id"
+              element={<PublicAnnouncementDetailPage />}
+            />
             <Route
               path="/*"
               element={
@@ -66,9 +81,21 @@ export default function App() {
               <Route path="new" element={<ProjectFormPage />} />
               <Route path="project/:id" element={<ProjectFormPage />} />
               <Route path="bid" element={<BidManagePage />} />
+              <Route path="bid-board" element={<BidBoardPage />} />
               <Route path="auth-letter" element={<AuthLetterPage />} />
               <Route path="people-manage" element={<PeopleManagePage />} />
               <Route path="announcement" element={<AnnouncementPage />} />
+              {/* 采购需求编制：无 type 参数时显示总览（供助理分发用） */}
+              <Route path="procurement-demand" element={<ProcurementDemandPage />} />
+              {/* 各类型子板块：gov / competition / sole_source / inquiry / emergency */}
+              <Route path="procurement-demand/:type" element={<ProcurementDemandPage />} />
+              <Route path="procurement-result" element={<ProcurementResultPage />} />
+              <Route path="contract" element={<ContractPage />} />
+              <Route path="internal-bid-demand" element={<InternalBidDemandPage />} />
+              <Route path="inquiry" element={<InquiryPage />} />
+              <Route path="email-settings" element={<EmailSettingsPage />} />
+              <Route path="scraper-settings" element={<ScraperSettingsPage />} />
+              <Route path="permission-manage" element={<PermissionManagePage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
             </Route>
           </Routes>

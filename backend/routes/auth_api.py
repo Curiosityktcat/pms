@@ -1,5 +1,6 @@
 from flask import Blueprint, request, session, jsonify
 from services.auth import check_login, change_password
+from services.permission import get_user_perms
 from routes.utils import login_required, ROLE_CN
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
@@ -23,6 +24,8 @@ def login():
         "role_cn": ROLE_CN.get(user.role, user.role),
         "display_name": user.display_name,
         "agency_code": user.agency_code or "",
+        "perms": get_user_perms(user.username, user.role),
+        "is_admin": user.username == "admin",
     }})
 
 
@@ -41,6 +44,8 @@ def me():
         "role_cn": ROLE_CN.get(session["role"], session["role"]),
         "display_name": session["display_name"],
         "agency_code": session.get("agency_code", ""),
+        "perms": get_user_perms(session["user"], session["role"]),
+        "is_admin": session["user"] == "admin",
     }})
 
 

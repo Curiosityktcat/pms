@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   Card, Table, Button, Form, Input, Select, Drawer, Space, Popconfirm,
   App, Tag, Typography, Divider, Descriptions, Alert, Modal,
-  Tooltip, Upload, List,
+  Tooltip, Upload, List, Tabs, Badge,
 } from 'antd'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UploadRequestOption = any
@@ -11,6 +11,7 @@ import {
   PlusOutlined, DownloadOutlined, EditOutlined, DeleteOutlined,
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
   SaveOutlined, AppstoreOutlined, UploadOutlined, FileOutlined,
+  SearchOutlined, ClockCircleOutlined, CheckSquareOutlined, HourglassOutlined,
 } from '@ant-design/icons'
 import axios from 'axios'
 import {
@@ -30,6 +31,8 @@ import { useAuth } from '../hooks/useAuth'
 const { TextArea } = Input
 const { Text } = Typography
 
+type AnnTab = 'pending' | 'published' | 'opened'
+
 const ROUND_OPTIONS = [
   { value: 1, label: '第一次' },
   { value: 2, label: '第二次' },
@@ -42,6 +45,47 @@ const STATUS_COLOR: Record<string, string> = {
   草稿: 'default',
   待确认: 'orange',
   已确认: 'green',
+}
+
+// ── 解析中文日期时间字符串 ───────────────────────────────────────────
+function parseDeadline(s: string): Date | null {
+  if (!s) return null
+  // 兼容全角冒号 '：' 和半角冒号 ':'
+  const m = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2})[：:](\d{2})/)
+  if (m) {
+    return new Date(
+      parseInt(m[1]),
+      parseInt(m[2]) - 1,
+      parseInt(m[3]),
+      parseInt(m[4]),
+      parseInt(m[5]),
+    )
+  }
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
+function isDeadlinePassed(deadline: string): boolean {
+  const d = parseDeadline(deadline)
+  if (!d) return false
+  return d.getTime() < Date.now()
+}
+
+function getCountdown(deadline: string): { text: string; color: string } {
+  const d = parseDeadline(deadline)
+  if (!d) return { text: '开标时间未填', color: '#aaa' }
+  const diff = d.getTime() - Date.now()
+  if (diff <= 0) return { text: '已开标', color: '#ff4d4f' }
+
+  const totalMins = Math.floor(diff / 60000)
+  const days = Math.floor(totalMins / 1440)
+  const hours = Math.floor((totalMins % 1440) / 60)
+  const mins = totalMins % 60
+
+  if (days > 3) return { text: `距开标还有 ${days} 天`, color: '#52c41a' }
+  if (days > 0) return { text: `距开标还有 ${days} 天 ${hours} 小时`, color: '#fa8c16' }
+  if (hours > 0) return { text: `距开标还有 ${hours} 小时 ${mins} 分`, color: '#ff7a00' }
+  return { text: `距开标还有 ${mins} 分钟`, color: '#ff4d4f' }
 }
 
 function buildDefaultRegNote(start: string, end: string): string {
@@ -310,6 +354,11 @@ export default function AnnouncementPage() {
   const [form] = Form.useForm()
   const [selectedProject, setSelectedProject] = useState<AnnProject | null>(null)
 
+  // 搜索/筛选/标签
+  const [tab, setTab] = useState<AnnTab>('pending')
+  const [search, setSearch] = useState('')
+  const [filterAgency, setFilterAgency] = useState<string | undefined>()
+
   const isAgency = user?.role === 'agency'
   const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
 
@@ -341,6 +390,36 @@ export default function AnnouncementPage() {
     }
   }, [regStart, regEnd])
 
+  // ── 按标签分组 ────────────────────────────────────────────────
+  const pendingList = list.filter(a => ['草稿', '待确认'].includes(a.status))
+  const publishedList = list.filter(a => a.status === '已确认' && !isDeadlinePassed(a.response_deadline))
+  const openedList = list.filter(a => a.status === '已确认' && isDeadlinePassed(a.response_deadline))
+
+  // ── 搜索/筛选 ─────────────────────────────────────────────────
+  const agencyOptions = Array.from(
+    new Set(list.map(a => a.agency_name).filter(Boolean))
+  ).sort().map(a => ({ value: a, label: a }))
+
+  const applyFilter = (data: Announcement[]) => {
+    const q = search.trim().toLowerCase()
+    return data.filter(a => {
+      const matchSearch = !q ||
+        (a.project_name || '').toLowerCase().includes(q) ||
+        (a.project_number || '').toLowerCase().includes(q)
+      const matchAgency = !filterAgency || a.agency_name === filterAgency
+      return matchSearch && matchAgency
+    })
+  }
+
+  const filteredPending = applyFilter(pendingList)
+  const filteredPublished = applyFilter(publishedList)
+  const filteredOpened = applyFilter(openedList)
+
+  const currentData = tab === 'pending' ? filteredPending
+    : tab === 'published' ? filteredPublished
+    : filteredOpened
+
+  // ── 表单操作 ──────────────────────────────────────────────────
   const openNew = () => {
     setEditId(null)
     setSelectedProject(null)
@@ -424,7 +503,7 @@ export default function AnnouncementPage() {
   const handleSubmit = async (id: number) => {
     try {
       await submitAnnouncement(id)
-      message.success('已提交，等待经办人确认')
+      message.success('已提交，等待经办人确认发布')
       load()
     } catch (err: any) {
       message.error(err.response?.data?.error || '提交失败')
@@ -434,7 +513,7 @@ export default function AnnouncementPage() {
   const handleConfirm = async (id: number) => {
     try {
       await confirmAnnouncement(id)
-      message.success('公告已确认')
+      message.success('公告已确认发布，将在登录页面公开展示')
       load()
     } catch (err: any) {
       message.error(err.response?.data?.error || '确认失败')
@@ -475,7 +554,8 @@ export default function AnnouncementPage() {
     }
   }
 
-  const columns: ColumnsType<Announcement> = [
+  // ── 列定义（待挂网） ──────────────────────────────────────────
+  const pendingColumns: ColumnsType<Announcement> = [
     { title: '项目编号', dataIndex: 'project_number', width: 200, render: (v) => <Text code>{v}</Text> },
     { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
     { title: '代理机构', dataIndex: 'agency_name', width: 150, ellipsis: true },
@@ -483,49 +563,132 @@ export default function AnnouncementPage() {
       title: '开标次数', dataIndex: 'round_number', width: 90,
       render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
     },
-    { title: '报名截止', dataIndex: 'reg_end', width: 120 },
-    { title: '响应截止', dataIndex: 'response_deadline', width: 160 },
+    { title: '响应截止（开标时间）', dataIndex: 'response_deadline', width: 180 },
     {
-      title: '状态', dataIndex: 'status', width: 80,
+      title: '状态', dataIndex: 'status', width: 90,
       render: (v) => <Tag color={STATUS_COLOR[v] || 'default'}>{v}</Tag>,
     },
     { title: '编制人', dataIndex: 'created_by', width: 90, render: (v) => v || '—' },
     {
-      title: '操作', width: 240,
+      title: '操作', width: 260,
       render: (_, record) => (
         <Space size={4} wrap>
           <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
             Word
           </Button>
-          {(record.status !== '已确认' || canConfirm) && (
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          {/* 代理机构：草稿 → 提交给采购人 */}
+          {isAgency && record.status === '草稿' && (
+            <Popconfirm title="提交后由采购人确认发布，确认提交？" onConfirm={() => handleSubmit(record.id)}>
+              <Button size="small" icon={<SendOutlined />} type="primary" ghost>提交</Button>
+            </Popconfirm>
+          )}
+          {/* 经办人：草稿状态可直接发布 */}
+          {canConfirm && record.status === '草稿' && (
+            <Popconfirm
+              title="直接发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认发布？"
+              onConfirm={() => handleConfirm(record.id)}
+            >
+              <Button size="small" icon={<CheckCircleOutlined />} type="primary">直接发布</Button>
+            </Popconfirm>
+          )}
+          {/* 经办人：待确认 → 确认发布 */}
+          {canConfirm && record.status === '待确认' && (
+            <Popconfirm
+              title="确认发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认？"
+              onConfirm={() => handleConfirm(record.id)}
+            >
+              <Button size="small" icon={<CheckCircleOutlined />} type="primary">确认发布</Button>
+            </Popconfirm>
+          )}
+          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  // ── 列定义（挂网进行中） ──────────────────────────────────────
+  const publishedColumns: ColumnsType<Announcement> = [
+    { title: '项目编号', dataIndex: 'project_number', width: 180, render: (v) => <Text code>{v}</Text> },
+    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
+    { title: '代理机构', dataIndex: 'agency_name', width: 140, ellipsis: true },
+    {
+      title: '开标次数', dataIndex: 'round_number', width: 90,
+      render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
+    },
+    {
+      title: '开标时间（响应截止）', dataIndex: 'response_deadline', width: 190,
+      render: (v) => v || <Text type="secondary">未填写</Text>,
+    },
+    {
+      title: '距开标倒计时', width: 180,
+      render: (_, record) => {
+        const { text, color } = getCountdown(record.response_deadline)
+        return (
+          <span style={{ color, fontWeight: 500 }}>
+            <ClockCircleOutlined style={{ marginRight: 4 }} />{text}
+          </span>
+        )
+      },
+    },
+    { title: '确认人', dataIndex: 'confirmed_by', width: 90, render: (v) => v || '—' },
+    {
+      title: '操作', width: 200,
+      render: (_, record) => (
+        <Space size={4} wrap>
+          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
+            Word
+          </Button>
+          {canConfirm && (
             <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
           )}
-          {isAgency && record.status === '草稿' && (
-            <Popconfirm title="确认提交给经办人确认？" onConfirm={() => handleSubmit(record.id)}>
-              <Button size="small" icon={<SendOutlined />}>提交</Button>
-            </Popconfirm>
-          )}
-          {canConfirm && record.status === '待确认' && (
-            <Popconfirm title="确认通过该公告？" onConfirm={() => handleConfirm(record.id)}>
-              <Button size="small" icon={<CheckCircleOutlined />} type="primary" ghost>确认</Button>
-            </Popconfirm>
-          )}
-          {canConfirm && record.status === '已确认' && (
-            <Tooltip title="撤回确认，恢复为草稿">
-              <Popconfirm title="撤回确认，恢复为草稿？" onConfirm={() => handleRevoke(record.id)}>
-                <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
+          {canConfirm && (
+            <Tooltip title="撤回发布，恢复为草稿">
+              <Popconfirm title="撤回后公告将从挂网页面撤下，确认撤回？" onConfirm={() => handleRevoke(record.id)}>
+                <Button size="small" icon={<RollbackOutlined />} danger>撤回</Button>
               </Popconfirm>
             </Tooltip>
-          )}
-          {record.status !== '已确认' && (
-            <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>
           )}
         </Space>
       ),
     },
   ]
+
+  // ── 列定义（已开标） ──────────────────────────────────────────
+  const openedColumns: ColumnsType<Announcement> = [
+    { title: '项目编号', dataIndex: 'project_number', width: 180, render: (v) => <Text code>{v}</Text> },
+    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
+    { title: '代理机构', dataIndex: 'agency_name', width: 140, ellipsis: true },
+    {
+      title: '开标次数', dataIndex: 'round_number', width: 90,
+      render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
+    },
+    {
+      title: '开标时间（响应截止）', dataIndex: 'response_deadline', width: 190,
+      render: (v) => v || '—',
+    },
+    { title: '确认人', dataIndex: 'confirmed_by', width: 90, render: (v) => v || '—' },
+    {
+      title: '状态', width: 80,
+      render: () => <Tag color="default" icon={<CheckSquareOutlined />}>已开标</Tag>,
+    },
+    {
+      title: '操作', width: 120,
+      render: (_, record) => (
+        <Space size={4}>
+          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
+            Word
+          </Button>
+        </Space>
+      ),
+    },
+  ]
+
+  const currentColumns = tab === 'pending' ? pendingColumns
+    : tab === 'published' ? publishedColumns
+    : openedColumns
 
   const currentAgencyCode = isAgency
     ? user?.agency_code || ''
@@ -533,7 +696,8 @@ export default function AnnouncementPage() {
 
   return (
     <Card>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      {/* ── 顶部标题 + 操作 ──────────────────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div style={{ fontSize: 18, fontWeight: 600, color: '#2c3e50' }}>
           <FileWordOutlined style={{ marginRight: 8, color: '#1677ff' }} />采购公告
         </div>
@@ -549,18 +713,114 @@ export default function AnnouncementPage() {
         </Space>
       </div>
 
-      <Alert
-        type="info" showIcon
-        message={isAgency
-          ? '代理机构可编制公告，提交后由经办人确认。'
-          : '仅显示已正式立项且走代理机构的项目。生成后请盖章发布至医院官网及四川招投标网。'}
-        style={{ marginBottom: 16 }}
+      {/* ── 搜索/筛选栏 ──────────────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Input
+          prefix={<SearchOutlined />}
+          placeholder="搜索项目名称或编号"
+          allowClear
+          style={{ width: 240 }}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <Select
+          placeholder="筛选代理机构"
+          allowClear
+          style={{ width: 180 }}
+          value={filterAgency}
+          onChange={setFilterAgency}
+          options={agencyOptions}
+        />
+        <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
+          {tab === 'pending' ? `待挂网 ${filteredPending.length} 条`
+            : tab === 'published' ? `挂网进行中 ${filteredPublished.length} 条`
+            : `已开标 ${filteredOpened.length} 条`}
+        </Text>
+      </div>
+
+      {/* ── 三栏标签页 ──────────────────────────────────────────── */}
+      <Tabs
+        activeKey={tab}
+        onChange={(k) => setTab(k as AnnTab)}
+        items={[
+          {
+            key: 'pending',
+            label: (
+              <span>
+                <HourglassOutlined style={{ marginRight: 4 }} />
+                待挂网
+                {pendingList.length > 0 && (
+                  <Badge count={pendingList.length} size="small"
+                    style={{ marginLeft: 6, backgroundColor: '#faad14' }} />
+                )}
+              </span>
+            ),
+          },
+          {
+            key: 'published',
+            label: (
+              <span>
+                <ClockCircleOutlined style={{ marginRight: 4 }} />
+                挂网进行中
+                {publishedList.length > 0 && (
+                  <Badge count={publishedList.length} size="small"
+                    style={{ marginLeft: 6, backgroundColor: '#52c41a' }} />
+                )}
+              </span>
+            ),
+          },
+          {
+            key: 'opened',
+            label: (
+              <span>
+                <CheckSquareOutlined style={{ marginRight: 4 }} />
+                已开标
+                {openedList.length > 0 && (
+                  <Badge count={openedList.length} size="small"
+                    style={{ marginLeft: 6, backgroundColor: '#aaa' }} />
+                )}
+              </span>
+            ),
+          },
+        ]}
       />
 
-      <Table rowKey="id" columns={columns} dataSource={list}
-        loading={tableLoading} size="small" pagination={{ pageSize: 15 }} />
+      {/* ── 说明提示 ─────────────────────────────────────────────── */}
+      {tab === 'pending' && (
+        <Alert
+          type="info" showIcon
+          message={isAgency
+            ? '代理机构可编制公告草稿并提交；经采购人确认后正式挂网。'
+            : '待挂网：草稿状态或已提交待采购人确认发布的公告。点击「确认发布」后将在登录页面公开展示。'}
+          style={{ marginBottom: 12 }}
+        />
+      )}
+      {tab === 'published' && (
+        <Alert
+          type="success" showIcon
+          message="挂网进行中：已公开发布，供应商可在登录页面查看。表格中实时显示距开标剩余时间。"
+          style={{ marginBottom: 12 }}
+        />
+      )}
+      {tab === 'opened' && (
+        <Alert
+          type="info" showIcon
+          message="已开标：响应截止时间已过的公告，可下载Word存档备查。"
+          style={{ marginBottom: 12 }}
+        />
+      )}
 
-      {/* ── 新建/编辑 Drawer ─────────────────────────── */}
+      <Table
+        rowKey="id"
+        columns={currentColumns}
+        dataSource={currentData}
+        loading={tableLoading}
+        size="small"
+        pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 条` }}
+        locale={{ emptyText: '暂无数据' }}
+      />
+
+      {/* ── 新建/编辑 Drawer ──────────────────────────────────────── */}
       <Drawer
         title={editId ? '编辑采购公告' : '新建采购公告'}
         open={drawerOpen}
@@ -609,7 +869,6 @@ export default function AnnouncementPage() {
             <TextArea rows={4} placeholder="如：本项目拟采购XX耗材，用于临床科室日常使用，采购数量详见竞选文件。" />
           </Form.Item>
 
-          {/* 一般资格要求：与特殊要求相同形式，预设6条 */}
           <Form.Item
             label="一般资格要求（预设6条，可直接修改）"
             name="qualifications"
@@ -649,9 +908,9 @@ export default function AnnouncementPage() {
               placeholder="如：2026年6月1日-2026年6月10日报名时间（上午08时30分至12时00分，下午14时30分至17时00分）。" />
           </Form.Item>
 
-          <Form.Item label="响应文件截止时间" name="response_deadline"
+          <Form.Item label="响应文件截止时间（开标时间）" name="response_deadline"
             rules={[{ required: true, message: '请填写' }]}
-            extra="精确到小时分钟，如：2026年6月20日15:00">
+            extra="精确到小时分钟，如：2026年6月20日15:00；此时间用于判断挂网进行中/已开标">
             <Input placeholder="如：2026年6月20日15:00" style={{ maxWidth: 280 }} />
           </Form.Item>
 
@@ -713,7 +972,7 @@ export default function AnnouncementPage() {
         </Form>
       </Drawer>
 
-      {/* ── 代理机构模板管理 Drawer ──────────────────── */}
+      {/* ── 代理机构模板管理 Drawer ────────────────────────────────── */}
       <TemplateMgrDrawer
         open={tplDrawerOpen}
         agencyCode={currentAgencyCode}

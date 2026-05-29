@@ -1,4 +1,6 @@
 import datetime
+import html as html_module
+import io
 import os
 import uuid
 from flask import Blueprint, request, session, jsonify, send_file
@@ -84,6 +86,160 @@ def _apply_fields(ann: Announcement, data: dict):
     ann.agency_reg_phone = (data.get("agency_reg_phone") or "").strip()
     ann.agency_contact = (data.get("agency_contact") or "").strip()
     ann.agency_contact_phone = (data.get("agency_contact_phone") or "").strip()
+
+
+# ── 公开列表（无需登录，供登录页展示） ───────────────────────────────
+@bp.route("/public", methods=["GET"])
+def public_announcements():
+    """无需登录：返回所有已确认（已挂网）的公告，供登录页面公开展示"""
+    ann_type = request.args.get("type", "procurement")
+    rows = db.session.execute(
+        db.select(Announcement)
+        .where(Announcement.ann_type == ann_type)
+        .where(Announcement.status == "已确认")
+        .order_by(Announcement.id.desc())
+        .limit(50)
+    ).scalars().all()
+    return jsonify({"ok": True, "data": [_enrich(a) for a in rows]})
+
+
+# ── 公开单条详情（无需登录） ──────────────────────────────────────────
+@bp.route("/public/<int:aid>", methods=["GET"])
+def public_announcement_detail(aid):
+    """无需登录：返回单条已发布公告的完整内容"""
+    ann = db.session.get(Announcement, aid)
+    if not ann or ann.status != "已确认":
+        return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    return jsonify({"ok": True, "data": _enrich(ann)})
+
+
+# ── 公开附件列表（无需登录） ──────────────────────────────────────────
+@bp.route("/public/<int:aid>/files", methods=["GET"])
+def public_list_files(aid):
+    """无需登录：返回已发布公告的附件列表"""
+    ann = db.session.get(Announcement, aid)
+    if not ann or ann.status != "已确认":
+        return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    rows = db.session.execute(
+        db.select(AnnouncementAttachment)
+        .where(AnnouncementAttachment.announcement_id == aid)
+        .order_by(AnnouncementAttachment.id)
+    ).scalars().all()
+    return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
+
+
+# ── 公开附件下载（无需登录） ──────────────────────────────────────────
+@bp.route("/public/<int:aid>/files/<int:fid>", methods=["GET"])
+def public_download_file(aid, fid):
+    """无需登录：下载已发布公告的附件"""
+    ann = db.session.get(Announcement, aid)
+    if not ann or ann.status != "已确认":
+        return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    att = db.session.get(AnnouncementAttachment, fid)
+    if not att or att.announcement_id != aid:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    path = os.path.join(_file_dir(aid), att.saved_name)
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "文件已丢失，请联系管理员"}), 404
+    return send_file(path, as_attachment=True, download_name=att.original_name)
+
+
+# ── 公开 Word 下载（无需登录，实时生成） ──────────────────────────────
+@bp.route("/public/<int:aid>/word", methods=["GET"])
+def public_generate_word(aid):
+    """无需登录：为已发布公告实时生成并下载 Word 文档"""
+    ann = db.session.get(Announcement, aid)
+    if not ann or ann.status != "已确认":
+        return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not project:
+        return jsonify({"ok": False, "error": "关联项目不存在"}), 400
+
+    agency_name = _get_agency_name(project.agency_code) if project.agency_code else ""
+    try:
+        buf = svc.generate(project, ann, agency_name)
+        filename = svc.get_filename(project, ann)
+        return send_file(
+            buf,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
+
+
+# ── 公开 HTML 渲染（无需登录，用 python-docx 精准提取格式） ──────────
+@bp.route("/public/<int:aid>/html", methods=["GET"])
+def public_announcement_html(aid):
+    """无需登录：把已发布公告的 Word 转成保留格式的 HTML 片段返回"""
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    ann = db.session.get(Announcement, aid)
+    if not ann or ann.status != "已确认":
+        return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not project:
+        return jsonify({"ok": False, "error": "关联项目不存在"}), 400
+
+    agency_name = _get_agency_name(project.agency_code) if project.agency_code else ""
+    try:
+        buf = svc.generate(project, ann, agency_name)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
+
+    doc = Document(buf)
+    parts = []
+
+    for para in doc.paragraphs:
+        raw = para.text
+        # 跳过完全空行，但保留只有空格的行（避免丢失间距）
+        if not raw.strip():
+            parts.append('<p style="margin:0;line-height:1.5em;">&nbsp;</p>')
+            continue
+
+        # 对齐方式
+        align = para.alignment
+        if align == WD_ALIGN_PARAGRAPH.CENTER:
+            align_style = "text-align:center;"
+        elif align == WD_ALIGN_PARAGRAPH.RIGHT:
+            align_style = "text-align:right;"
+        elif align == WD_ALIGN_PARAGRAPH.JUSTIFY:
+            align_style = "text-align:justify;"
+        else:
+            align_style = "text-align:left;"
+
+        # 首行缩进：304800 EMU ≈ 2字符（模板标准值）
+        first_indent = para.paragraph_format.first_line_indent
+        indent_style = ""
+        if first_indent and first_indent > 100000 and align != WD_ALIGN_PARAGRAPH.CENTER:
+            indent_style = "text-indent:2em;"
+
+        style = f"margin:4px 0;line-height:1.8;font-size:16px;{align_style}{indent_style}"
+
+        # 逐 run 拼 span
+        inner = ""
+        for run in para.runs:
+            if not run.text:
+                continue
+            t = html_module.escape(run.text)
+            run_styles = []
+            if run.bold:
+                run_styles.append("font-weight:bold")
+            if run.underline:
+                run_styles.append("text-decoration:underline")
+            if run.font.size:
+                pt = run.font.size.pt
+                run_styles.append(f"font-size:{pt}pt")
+            if run_styles:
+                inner += f'<span style="{";".join(run_styles)}">{t}</span>'
+            else:
+                inner += t
+
+        parts.append(f'<p style="{style}">{inner}</p>')
+
+    return jsonify({"ok": True, "html": "\n".join(parts)})
 
 
 # ── 列表 ──────────────────────────────────────────────────────────
@@ -218,23 +374,31 @@ def submit_announcement(aid):
     return jsonify({"ok": True, "message": "已提交，等待经办人确认", "data": _enrich(ann)})
 
 
-# ── 确认 ──────────────────────────────────────────────────────────
+# ── 确认/发布 ─────────────────────────────────────────────────────
 @bp.route("/<int:aid>/confirm", methods=["POST"])
 @login_required
 def confirm_announcement(aid):
     if not _can_confirm():
-        return jsonify({"ok": False, "error": "仅项目经办人或负责人可确认公告"}), 403
+        return jsonify({"ok": False, "error": "仅项目经办人或负责人可确认发布"}), 403
     ann = db.session.get(Announcement, aid)
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     if ann.status == "已确认":
-        return jsonify({"ok": False, "error": "公告已经确认"}), 400
+        return jsonify({"ok": False, "error": "公告已经发布"}), 400
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ann.status = "已确认"
     ann.confirmed_by = session.get("display_name", "")
     ann.confirmed_at = now
+
+    # ── 自动将响应截止时间（开标时间）同步到项目 ────────────────────
+    if ann.response_deadline:
+        project = db.session.get(Project, ann.project_id)
+        if project and not project.bid_time:
+            # 只在项目尚无开标时间时才自动填入，避免覆盖手动设置
+            project.bid_time = ann.response_deadline
+
     db.session.commit()
-    return jsonify({"ok": True, "message": "公告已确认", "data": _enrich(ann)})
+    return jsonify({"ok": True, "message": "公告已发布，开标时间已同步至项目", "data": _enrich(ann)})
 
 
 # ── 撤回确认 ──────────────────────────────────────────────────────
@@ -266,17 +430,9 @@ def generate_word(aid):
     if not project.agency_code:
         return jsonify({"ok": False, "error": "项目未关联代理机构"}), 400
 
-    # 获取附件名列表
-    attachments = db.session.execute(
-        db.select(AnnouncementAttachment)
-        .where(AnnouncementAttachment.announcement_id == aid)
-        .order_by(AnnouncementAttachment.id)
-    ).scalars().all()
-    attachment_names = [a.original_name for a in attachments]
-
     agency_name = _get_agency_name(project.agency_code)
     try:
-        buf = svc.generate(project, ann, agency_name, attachment_names=attachment_names)
+        buf = svc.generate(project, ann, agency_name)
         filename = svc.get_filename(project, ann)
         return send_file(
             buf,

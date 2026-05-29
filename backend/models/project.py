@@ -1,5 +1,7 @@
 from . import db
 
+_CN_NUMS = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+
 
 class Project(db.Model):
     __tablename__ = "projects"
@@ -7,6 +9,7 @@ class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     number = db.Column(db.String(50), unique=True)
     name = db.Column(db.String(200), nullable=False)
+    round = db.Column(db.Integer, default=1)
     amount = db.Column(db.Float)
     line = db.Column(db.String(2))
     method = db.Column(db.String(30), default="")
@@ -31,10 +34,18 @@ class Project(db.Model):
     deleted_at = db.Column(db.String(30), default="")
 
     def to_dict(self):
+        r = self.round or 1
+        if r <= 1:
+            display_name = self.name
+        else:
+            cn = _CN_NUMS[r] if r < len(_CN_NUMS) else str(r)
+            display_name = f"{self.name}（第{cn}次）"
         return {
             "id": self.id,
             "number": self.number or "",
             "name": self.name,
+            "round": r,
+            "display_name": display_name,
             "amount": self.amount,
             "line": self.line or "",
             "method": self.method or "",

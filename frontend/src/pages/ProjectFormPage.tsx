@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
   Form, Input, InputNumber, Select, Checkbox, Radio, Button, Card,
-  Space, Divider, Typography, App, Descriptions,
+  Space, Divider, Typography, App, Descriptions, Alert,
 } from 'antd'
 import type { CheckboxChangeEvent } from 'antd/es/checkbox'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   getProjectMeta, getProject, createProject, updateProject,
 } from '../services/project'
@@ -38,6 +38,8 @@ function autoMethod(amount: number | null, isUnitPrice: boolean): string {
 
 export default function ProjectFormPage() {
   const { id } = useParams<{ id?: string }>()
+  const [searchParams] = useSearchParams()
+  const fromDemandId = searchParams.get('from_demand')  // 从采购需求立项时传入
   const isEdit = !!id
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -53,6 +55,8 @@ export default function ProjectFormPage() {
   const [lockedNumber, setLockedNumber] = useState('')
   const [lockedLine, setLockedLine] = useState('')
   const [lockedAgencyCode, setLockedAgencyCode] = useState('')
+  const [demandId, setDemandId] = useState<number | null>(null)       // 关联采购需求ID
+  const [demandType, setDemandType] = useState<string>('')             // 'gov' 时正式立项后自动归档
 
   // 监听表单字段
   const methodVal = Form.useWatch('method', form)
@@ -81,11 +85,45 @@ export default function ProjectFormPage() {
 
   useEffect(() => {
     if (!isEdit) {
+      // 默认值
       form.setFieldsValue({
         officer: user?.display_name || '',
         method: M_YIJIA,
         year: `${new Date().getFullYear()}年`,
       })
+      // 从采购需求立项时，读取 sessionStorage 中的预填数据
+      if (fromDemandId) {
+        try {
+          const raw = sessionStorage.getItem('demand_prefill')
+          if (raw) {
+            const pf = JSON.parse(raw)
+            if (String(pf.demand_id) === fromDemandId) {
+              setDemandId(pf.demand_id)
+              setDemandType(pf.demand_type || '')
+              // 采购需求里的方式映射到立项表单的采购方式
+              const methodMap: Record<string, string> = {
+                '院内竞选': M_JINGXUAN,
+                '院内单一来源': M_SOLE,
+                '院内询价': M_XUNJIA,
+                '院内议价': M_YIJIA,
+              }
+              form.setFieldsValue({
+                name: pf.name,
+                category: pf.category,
+                year: pf.year || `${new Date().getFullYear()}年`,
+                amount: pf.amount || null,
+                method: methodMap[pf.method] || M_YIJIA,
+                agency_code: pf.agency_code || undefined,
+                demand_dept: pf.demand_dept,
+                manage_dept: pf.manage_dept,
+                content: pf.content,
+                officer: pf.officer || user?.display_name || '',
+              })
+              sessionStorage.removeItem('demand_prefill')
+            }
+          }
+        } catch { /* ignore */ }
+      }
       return
     }
     const load = async () => {
@@ -103,6 +141,7 @@ export default function ProjectFormPage() {
         }
         form.setFieldsValue({
           name: p.name,
+          round: p.round || 1,
           amount: (p.amount && p.amount > 0) ? p.amount : null,
           is_unit_price: !p.amount || p.amount === 0,
           method: p.method,
@@ -153,7 +192,12 @@ export default function ProjectFormPage() {
       return
     }
     const values = form.getFieldsValue()
-    const payload = { ...values, action }
+    // 从采购需求立项时，附带 demand_id + demand_type 让后端自动标记需求和处理归档
+    const payload = {
+      ...values, action,
+      ...(demandId ? { demand_id: demandId } : {}),
+      ...(demandType ? { demand_type: demandType } : {}),
+    }
 
     setLoading(true)
     try {
@@ -164,7 +208,8 @@ export default function ProjectFormPage() {
         res = await createProject(payload)
       }
       message.success(res.data.message)
-      navigate('/flow')
+      // 若从需求立项成功，回到需求页面查看已立项状态
+      navigate(demandId && action === 'submit' ? '/procurement-demand' : '/flow')
     } catch (err: any) {
       message.error(err.response?.data?.error || '操作失败')
     } finally {
@@ -179,6 +224,13 @@ export default function ProjectFormPage() {
   return (
     <Card>
       <div style={{ fontSize: 18, fontWeight: 600, color: '#2c3e50', marginBottom: 20 }}>{title}</div>
+
+      {demandId && !isEdit && (
+        <Alert
+          type="info" showIcon style={{ marginBottom: 16 }}
+          message={`正在从采购需求（ID: ${demandId}）立项 —— 可修改名称、金额、采购方式后点击「正式立项」。`}
+        />
+      )}
 
       {isLocked && (
         <Descriptions size="small" bordered style={{ marginBottom: 20 }} column={3}>
@@ -195,9 +247,38 @@ export default function ProjectFormPage() {
       )}
 
       <Form form={form} layout="vertical" size="middle">
-        <Form.Item label="项目名称" name="name" rules={[{ required: true, message: '请填写项目名称' }]}>
-          <Input placeholder="如：2026年XX耗材采购项目" />
-        </Form.Item>
+        <div style={{ display: 'flex', gap: 16 }}>
+          <Form.Item
+            label="项目名称"
+            name="name"
+            rules={[{ required: true, message: '请填写项目名称' }]}
+            style={{ flex: 1 }}
+          >
+            <Input placeholder="如：2026年XX耗材采购项目" />
+          </Form.Item>
+          <Form.Item
+            label="第几次采购"
+            name="round"
+            initialValue={1}
+            extra="第一次不显示后缀；第二次起自动加（第X次）"
+            style={{ width: 200 }}
+          >
+            <Select
+              options={[
+                { value: 1, label: '第一次（默认）' },
+                { value: 2, label: '第二次' },
+                { value: 3, label: '第三次' },
+                { value: 4, label: '第四次' },
+                { value: 5, label: '第五次' },
+                { value: 6, label: '第六次' },
+                { value: 7, label: '第七次' },
+                { value: 8, label: '第八次' },
+                { value: 9, label: '第九次' },
+                { value: 10, label: '第十次' },
+              ]}
+            />
+          </Form.Item>
+        </div>
 
         <div style={{ display: 'flex', gap: 16 }}>
           <Form.Item

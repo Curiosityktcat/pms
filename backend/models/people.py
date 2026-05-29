@@ -11,6 +11,7 @@ class People(db.Model):
     role_type = db.Column(db.String(20), default="supervisor")
     active = db.Column(db.Integer, default=1)
     department = db.Column(db.String(100), default="")
+    position = db.Column(db.String(200), default="")
 
     def to_dict(self):
         return {
@@ -21,4 +22,5 @@ class People(db.Model):
             "role_type": self.role_type,
             "active": self.active,
             "department": self.department or "",
+            "position": self.position or "",
         }

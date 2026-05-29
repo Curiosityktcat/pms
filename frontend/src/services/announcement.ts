@@ -60,6 +60,33 @@ export type AnnFormData = Omit<Announcement,
   'id' | 'project_name' | 'project_number' | 'agency_name' | 'project_agency_code' |
   'ann_type_cn' | 'confirmed_by' | 'confirmed_at' | 'created_at' | 'created_by'>
 
+// ── 公开接口（无需登录） ────────────────────────────────────────
+export function getPublicAnnouncements(annType = 'procurement') {
+  return axios.get<{ ok: boolean; data: Announcement[] }>('/api/announcements/public', {
+    params: { type: annType },
+  })
+}
+
+export function getPublicAnnouncement(id: number) {
+  return axios.get<{ ok: boolean; data: Announcement }>(`/api/announcements/public/${id}`)
+}
+
+export function getPublicAnnouncementFiles(annId: number) {
+  return axios.get<{ ok: boolean; data: AnnAttachment[] }>(`/api/announcements/public/${annId}/files`)
+}
+
+export function publicDownloadFileUrl(annId: number, fileId: number) {
+  return `/api/announcements/public/${annId}/files/${fileId}`
+}
+
+export function publicWordUrl(annId: number) {
+  return `/api/announcements/public/${annId}/word`
+}
+
+export function getPublicAnnouncementHtml(annId: number) {
+  return axios.get<{ ok: boolean; html: string }>(`/api/announcements/public/${annId}/html`)
+}
+
 // ── 公告 CRUD ──────────────────────────────────────────────────
 export function getEligibleProjects() {
   return axios.get<{ ok: boolean; data: AnnProject[] }>('/api/announcements/projects')

@@ -6,6 +6,8 @@ export interface UserInfo {
   role_cn: string
   display_name: string
   agency_code: string
+  perms: string[]
+  is_admin: boolean
 }
 
 export const authLogin = (username: string, password: string) =>
