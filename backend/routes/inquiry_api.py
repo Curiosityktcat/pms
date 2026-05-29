@@ -16,7 +16,7 @@ from models.inquiry_attachment import InquiryAttachment
 from models.inquiry_template import InquiryTemplate
 from models.project import Project
 from models.sys_config import SysConfig
-from routes.utils import login_required
+from routes.utils import login_required, admin_required
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -528,7 +528,7 @@ EMAIL_KEYS = [
 
 
 @bp.route("/api/sys-config/email", methods=["GET"])
-@login_required
+@admin_required
 def get_email_config():
     result = {}
     for k in EMAIL_KEYS:
@@ -542,7 +542,7 @@ def get_email_config():
 
 
 @bp.route("/api/sys-config/email", methods=["PUT"])
-@login_required
+@admin_required
 def update_email_config():
     data = request.get_json(force=True) or {}
     now  = _now()
@@ -564,7 +564,7 @@ def update_email_config():
 
 
 @bp.route("/api/sys-config/email/test", methods=["POST"])
-@login_required
+@admin_required
 def test_email():
     from services.email_service import get_email_config, send_email
     cfg = get_email_config()

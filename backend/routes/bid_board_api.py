@@ -13,7 +13,7 @@ from services.bid_board_scraper import (
     CFG_MODEL_API, CFG_MODEL_NAME, CFG_API_KEY,
     DEFAULT_MODEL_API, DEFAULT_MODEL_NAME, DEFAULT_API_KEY,
 )
-from routes.utils import login_required
+from routes.utils import login_required, admin_required
 
 bp = Blueprint("bid_board", __name__, url_prefix="/api/bid-board")
 
@@ -124,7 +124,7 @@ def _mask(val):
 
 
 @bp.route("/model-config", methods=["GET"])
-@login_required
+@admin_required
 def get_model_config_api():
     def _v(key, default):
         row = db.session.get(SysConfig, key)
@@ -139,7 +139,7 @@ def get_model_config_api():
 
 
 @bp.route("/model-config", methods=["PUT"])
-@login_required
+@admin_required
 def update_model_config_api():
     d = request.get_json(silent=True) or {}
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -165,7 +165,7 @@ def update_model_config_api():
 
 
 @bp.route("/model-config/test", methods=["POST"])
-@login_required
+@admin_required
 def test_model_config_api():
     """用当前（或表单提交的）配置向模型发一次极简请求，验证连通性。"""
     import requests

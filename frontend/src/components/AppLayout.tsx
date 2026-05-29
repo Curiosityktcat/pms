@@ -14,7 +14,7 @@ import {
   TeamOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
-  SafetyOutlined,
+  ControlOutlined,
   FileDoneOutlined,
   FormOutlined,
   PlusCircleOutlined,
@@ -22,8 +22,6 @@ import {
   ScheduleOutlined,
   SolutionOutlined,
   BarsOutlined,
-  MailOutlined,
-  ApiOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
@@ -70,7 +68,7 @@ export default function AppLayout() {
     const k = activeKey
     if (['new', 'flow', 'bid', 'bid-board', 'auth-letter'].includes(k)) return ['pm']
     if (['announcement'].includes(k)) return ['publish']
-    if (['people-manage', 'email-settings', 'scraper-settings', 'permission-manage'].includes(k)) return ['base-data']
+    if (['people-manage'].includes(k)) return ['base-data']
     if (k.startsWith('procurement-demand-')) return ['procurement-req']
     if (k === 'internal-bid-demand') return ['internal-procurement']
     return ['pm']
@@ -251,27 +249,6 @@ export default function AppLayout() {
           onClick: () => navigate('/people-manage'),
         },
         { key: 'template-manage', label: <DevLabel label="12.2 模板维护" />, disabled: true },
-        {
-          key: 'email-settings',
-          icon: <MailOutlined />,
-          label: '12.3 邮件设置',
-          onClick: () => navigate('/email-settings'),
-        },
-        {
-          key: 'scraper-settings',
-          icon: <ApiOutlined />,
-          label: '12.4 抓取模型设置',
-          onClick: () => navigate('/scraper-settings'),
-        },
-        ...(user?.is_admin
-          ? [{
-              key: 'permission-manage',
-              icon: <SafetyOutlined />,
-              label: '12.5 权限管理',
-              onClick: () => navigate('/permission-manage'),
-            }]
-          : []
-        ),
       ],
     },
   ]
@@ -283,10 +260,10 @@ export default function AppLayout() {
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
     'inquiry', 'procurement-result', 'contract',
-    'people-manage', 'email-settings', 'scraper-settings',
+    'people-manage',
   ])
   const permSet = new Set(user?.perms || [])
-  // permission-manage 仅 admin 可见，不入受控集合（由 is_admin 控制）
+  // 系统级配置（权限/大模型/邮件）已迁至独立的后台管理系统
   const leafVisible = (key: string) =>
     !CONTROLLED_KEYS.has(key) || permSet.has(key)
 
@@ -402,6 +379,19 @@ export default function AppLayout() {
             </Button>
           </Tooltip>
           <div style={{ flex: 1 }} />
+          {/* 后台管理入口 — 仅系统管理员可见 */}
+          {user?.is_admin && (
+            <Tooltip title="进入后台管理系统（权限 / 大模型 / 邮件配置）">
+              <Button
+                icon={<ControlOutlined />}
+                type="text"
+                onClick={() => navigate('/admin')}
+                style={{ color: '#13c2c2', fontSize: 13, marginRight: 8 }}
+              >
+                后台管理
+              </Button>
+            </Tooltip>
+          )}
           <Dropdown menu={userMenu} placement="bottomRight">
             <Space
               style={{

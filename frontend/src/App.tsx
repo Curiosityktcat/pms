@@ -6,6 +6,7 @@ import { AuthContext } from './hooks/useAuth'
 import type { UserInfo } from './services/auth'
 import { authMe } from './services/auth'
 import AppLayout from './components/AppLayout'
+import AdminLayout from './components/AdminLayout'
 import LoginPage from './pages/LoginPage'
 import ProjectFlowPage from './pages/ProjectFlowPage'
 import ProjectFormPage from './pages/ProjectFormPage'
@@ -93,10 +94,21 @@ export default function App() {
               <Route path="contract" element={<ContractPage />} />
               <Route path="internal-bid-demand" element={<InternalBidDemandPage />} />
               <Route path="inquiry" element={<InquiryPage />} />
-              <Route path="email-settings" element={<EmailSettingsPage />} />
-              <Route path="scraper-settings" element={<ScraperSettingsPage />} />
-              <Route path="permission-manage" element={<PermissionManagePage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
+            </Route>
+            {/* 后台管理系统 — 与业务系统独立的一套界面，仅管理员可进入 */}
+            <Route
+              path="/admin/*"
+              element={
+                <RequireAuth>
+                  <AdminLayout />
+                </RequireAuth>
+              }
+            >
+              <Route index element={<Navigate to="permissions" replace />} />
+              <Route path="permissions" element={<PermissionManagePage />} />
+              <Route path="model" element={<ScraperSettingsPage />} />
+              <Route path="email" element={<EmailSettingsPage />} />
             </Route>
           </Routes>
         </BrowserRouter>
