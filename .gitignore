@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# 无关的数据库副本（活动库是根目录 pms.db）
+backend/pms.db
+
+# 运行时上传文件（合同附件、证件等），不入库
+uploads/
