@@ -121,9 +121,9 @@ export default function AppLayout() {
     // ─── 3. 代理协议 ──────────────────────────────────────────
     {
       key: 'agency-agreement',
-      label: <DevLabel label="3. 代理协议" />,
+      label: '3. 代理协议',
       icon: <SafetyCertificateOutlined />,
-      disabled: true,
+      onClick: () => navigate('/agency-agreement'),
     },
 
     // ─── 4. 采购部项目管理 ──────────────────────────────────────
@@ -258,6 +258,7 @@ export default function AppLayout() {
   const CONTROLLED_KEYS = new Set([
     'procurement-demand-gov', 'internal-bid-demand', 'procurement-demand-sole',
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
+    'agency-agreement',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
     'inquiry', 'procurement-result', 'contract',
     'people-manage',

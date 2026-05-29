@@ -31,6 +31,12 @@ PERMISSION_CATALOG = [
         ],
     },
     {
+        "group": "代理协议",
+        "items": [
+            {"key": "agency-agreement", "label": "3. 代理协议"},
+        ],
+    },
+    {
         "group": "采购部项目管理",
         "items": [
             {"key": "new", "label": "4.1 项目立项"},
@@ -73,6 +79,7 @@ DEFAULT_ROLE_PERMS = {
     "assistant": [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
+        "agency-agreement",
         "flow", "bid", "bid-board", "auth-letter", "announcement",
         "inquiry", "procurement-result", "contract",
         "people-manage", "email-settings", "scraper-settings",
@@ -81,6 +88,7 @@ DEFAULT_ROLE_PERMS = {
     "officer": [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
+        "agency-agreement",
         "new", "flow", "bid", "bid-board", "auth-letter", "announcement",
         "inquiry", "procurement-result", "contract",
     ],

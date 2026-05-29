@@ -22,6 +22,7 @@ import ProcurementResultPage from './pages/ProcurementResultPage'
 import ContractPage from './pages/ContractPage'
 import InternalBidDemandPage from './pages/InternalBidDemandPage'
 import InquiryPage from './pages/InquiryPage'
+import AgencyAgreementPage from './pages/AgencyAgreementPage'
 import EmailSettingsPage from './pages/EmailSettingsPage'
 import ScraperSettingsPage from './pages/ScraperSettingsPage'
 import PermissionManagePage from './pages/PermissionManagePage'
@@ -94,6 +95,7 @@ export default function App() {
               <Route path="contract" element={<ContractPage />} />
               <Route path="internal-bid-demand" element={<InternalBidDemandPage />} />
               <Route path="inquiry" element={<InquiryPage />} />
+              <Route path="agency-agreement" element={<AgencyAgreementPage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
             </Route>
             {/* 后台管理系统 — 与业务系统独立的一套界面，仅管理员可进入 */}
