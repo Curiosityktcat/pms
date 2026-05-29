@@ -70,6 +70,7 @@ PERMISSION_CATALOG = [
         "group": "基础数据维护",
         "items": [
             {"key": "people-manage", "label": "12.1 人员维护"},
+            {"key": "template-manage", "label": "12.2 模板维护"},
             {"key": "email-settings", "label": "12.3 邮件设置"},
             {"key": "scraper-settings", "label": "12.4 抓取模型设置"},
         ],
@@ -88,7 +89,7 @@ DEFAULT_ROLE_PERMS = {
         "agency-agreement", "doc",
         "flow", "bid", "bid-board", "auth-letter", "announcement",
         "inquiry", "procurement-result", "contract",
-        "people-manage", "email-settings", "scraper-settings",
+        "people-manage", "template-manage", "email-settings", "scraper-settings",
     ],
     # 项目经办人：立项及项目执行
     "officer": [

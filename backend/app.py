@@ -37,6 +37,7 @@ def create_app():
     from routes.permission_api import bp as permission_bp
     from routes.agency_agreement_api import bp as agency_agreement_bp
     from routes.procurement_doc_api import bp as procurement_doc_bp
+    from routes.template_api import bp as template_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -55,6 +56,7 @@ def create_app():
     app.register_blueprint(permission_bp)
     app.register_blueprint(agency_agreement_bp)
     app.register_blueprint(procurement_doc_bp)
+    app.register_blueprint(template_bp)
 
     # 确保所有表都已创建（新模型自动建表）
     with app.app_context():

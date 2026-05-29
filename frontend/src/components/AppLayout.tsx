@@ -68,7 +68,7 @@ export default function AppLayout() {
     const k = activeKey
     if (['new', 'flow', 'bid', 'bid-board', 'auth-letter'].includes(k)) return ['pm']
     if (['announcement'].includes(k)) return ['publish']
-    if (['people-manage'].includes(k)) return ['base-data']
+    if (['people-manage', 'template-manage'].includes(k)) return ['base-data']
     if (k.startsWith('procurement-demand-')) return ['procurement-req']
     if (k === 'internal-bid-demand') return ['internal-procurement']
     return ['pm']
@@ -248,7 +248,12 @@ export default function AppLayout() {
           label: '12.1 人员维护',
           onClick: () => navigate('/people-manage'),
         },
-        { key: 'template-manage', label: <DevLabel label="12.2 模板维护" />, disabled: true },
+        {
+          key: 'template-manage',
+          icon: <FileTextOutlined />,
+          label: '12.2 模板维护',
+          onClick: () => navigate('/template-manage'),
+        },
       ],
     },
   ]
@@ -261,7 +266,7 @@ export default function AppLayout() {
     'agency-agreement', 'doc',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
     'inquiry', 'procurement-result', 'contract',
-    'people-manage',
+    'people-manage', 'template-manage',
   ])
   const permSet = new Set(user?.perms || [])
   // 系统级配置（权限/大模型/邮件）已迁至独立的后台管理系统

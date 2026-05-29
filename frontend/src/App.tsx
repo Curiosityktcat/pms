@@ -24,6 +24,7 @@ import InternalBidDemandPage from './pages/InternalBidDemandPage'
 import InquiryPage from './pages/InquiryPage'
 import AgencyAgreementPage from './pages/AgencyAgreementPage'
 import ProcurementDocPage from './pages/ProcurementDocPage'
+import TemplateManagePage from './pages/TemplateManagePage'
 import EmailSettingsPage from './pages/EmailSettingsPage'
 import ScraperSettingsPage from './pages/ScraperSettingsPage'
 import PermissionManagePage from './pages/PermissionManagePage'
@@ -87,6 +88,7 @@ export default function App() {
               <Route path="bid-board" element={<BidBoardPage />} />
               <Route path="auth-letter" element={<AuthLetterPage />} />
               <Route path="people-manage" element={<PeopleManagePage />} />
+              <Route path="template-manage" element={<TemplateManagePage />} />
               <Route path="announcement" element={<AnnouncementPage />} />
               {/* 采购需求编制：无 type 参数时显示总览（供助理分发用） */}
               <Route path="procurement-demand" element={<ProcurementDemandPage />} />
