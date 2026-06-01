@@ -174,6 +174,16 @@ def update_project(pid, data, role, agency_code_session, officer_session):
         new_status = data.get("status") or ""
         if new_status in STATUSES:
             p.status = new_status
+        # 已正式立项后允许更换代理机构：走代理（线 C）项目换代理机构时重新生成编号
+        if "agency_code" in data:
+            new_agency = (data.get("agency_code") or "").strip()
+            use_agency = (p.line == "C")
+            if use_agency:
+                if not new_agency:
+                    raise ValueError("走代理的项目必须选择代理机构")
+                if new_agency != (p.agency_code or ""):
+                    p.agency_code = new_agency
+                    p.number = gen_number(True, new_agency)
     p.updated_at = now
     db.session.commit()
     return p, None

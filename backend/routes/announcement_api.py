@@ -88,6 +88,22 @@ def _apply_fields(ann: Announcement, data: dict):
     ann.agency_contact_phone = (data.get("agency_contact_phone") or "").strip()
 
 
+def _sync_project_round(project):
+    """项目的「第X次」后缀由该项目采购公告的最大开标次数自动带动。
+
+    立项阶段不存在「第几次采购」——它等于第几次开标：第一次挂公告开标废标后
+    才执行第二次。因此项目层面的 round 不再手填，而是跟随采购公告的 round_number。
+    """
+    if not project:
+        return
+    max_round = db.session.execute(
+        db.select(db.func.max(Announcement.round_number))
+        .where(Announcement.project_id == project.id)
+        .where(Announcement.ann_type == "procurement")
+    ).scalar()
+    project.round = max_round or 1
+
+
 # ── 公开列表（无需登录，供登录页展示） ───────────────────────────────
 @bp.route("/public", methods=["GET"])
 def public_announcements():
@@ -145,12 +161,53 @@ def public_download_file(aid, fid):
 
 
 # ── 公开 Word 下载（无需登录，实时生成） ──────────────────────────────
+def _generic_html(ann, project, agency_name):
+    """调研/更正/单一来源公告无独立 Word 模板，按存储字段生成通用 HTML。"""
+    esc = html_module.escape
+    type_cn = ANN_TYPE_CN.get(ann.ann_type, "公告")
+    parts = [
+        f'<p style="text-align:center;font-size:20px;font-weight:bold;margin:8px 0;">'
+        f'{esc(project.name or "")}{esc(type_cn)}</p>'
+    ]
+    # 正文（project_intro 作为公告正文，按换行分段，首行缩进）
+    body = (ann.project_intro or "").strip()
+    if body:
+        for line in body.split("\n"):
+            line = line.strip()
+            if not line:
+                parts.append('<p style="margin:0;line-height:1.8;">&nbsp;</p>')
+            else:
+                parts.append(
+                    f'<p style="margin:4px 0;line-height:1.8;font-size:16px;'
+                    f'text-indent:2em;text-align:justify;">{esc(line)}</p>'
+                )
+    rows = []
+    if ann.response_deadline:
+        rows.append(("响应/反馈截止时间", ann.response_deadline))
+    if ann.reg_note:
+        rows.append(("备注", ann.reg_note))
+    if agency_name:
+        rows.append(("采购代理机构", agency_name))
+    if ann.agency_contact or ann.agency_contact_phone:
+        rows.append(("联系人", f"{ann.agency_contact} {ann.agency_contact_phone}".strip()))
+    if ann.agency_address:
+        rows.append(("地址", ann.agency_address))
+    for label, val in rows:
+        parts.append(
+            f'<p style="margin:4px 0;line-height:1.8;font-size:16px;">'
+            f'<b>{esc(label)}：</b>{esc(str(val))}</p>'
+        )
+    return "\n".join(parts)
+
+
 @bp.route("/public/<int:aid>/word", methods=["GET"])
 def public_generate_word(aid):
     """无需登录：为已发布公告实时生成并下载 Word 文档"""
     ann = db.session.get(Announcement, aid)
     if not ann or ann.status != "已确认":
         return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
+    if ann.ann_type != "procurement":
+        return jsonify({"ok": False, "error": "该类公告暂未提供 Word 模板，请在系统内查看或打印"}), 400
     project = db.session.get(Project, ann.project_id)
     if not project:
         return jsonify({"ok": False, "error": "关联项目不存在"}), 400
@@ -290,6 +347,7 @@ def create_announcement():
     )
     _apply_fields(ann, data)
     db.session.add(ann)
+    _sync_project_round(project)
     db.session.commit()
     return jsonify({"ok": True, "message": "已保存草稿", "data": _enrich(ann)}), 201
 
@@ -325,6 +383,7 @@ def update_announcement(aid):
     _apply_fields(ann, data)
     if ann.status == "待确认" and session.get("role") == "agency":
         ann.status = "草稿"
+    _sync_project_round(project)
     db.session.commit()
     return jsonify({"ok": True, "message": "已保存", "data": _enrich(ann)})
 
@@ -352,6 +411,7 @@ def delete_announcement(aid):
         db.session.delete(att)
 
     db.session.delete(ann)
+    _sync_project_round(project)
     db.session.commit()
     return jsonify({"ok": True, "message": "已删除"})
 

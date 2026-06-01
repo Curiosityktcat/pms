@@ -141,7 +141,6 @@ export default function ProjectFormPage() {
         }
         form.setFieldsValue({
           name: p.name,
-          round: p.round || 1,
           amount: (p.amount && p.amount > 0) ? p.amount : null,
           is_unit_price: !p.amount || p.amount === 0,
           method: p.method,
@@ -256,28 +255,6 @@ export default function ProjectFormPage() {
           >
             <Input placeholder="如：2026年XX耗材采购项目" />
           </Form.Item>
-          <Form.Item
-            label="第几次采购"
-            name="round"
-            initialValue={1}
-            extra="第一次不显示后缀；第二次起自动加（第X次）"
-            style={{ width: 200 }}
-          >
-            <Select
-              options={[
-                { value: 1, label: '第一次（默认）' },
-                { value: 2, label: '第二次' },
-                { value: 3, label: '第三次' },
-                { value: 4, label: '第四次' },
-                { value: 5, label: '第五次' },
-                { value: 6, label: '第六次' },
-                { value: 7, label: '第七次' },
-                { value: 8, label: '第八次' },
-                { value: 9, label: '第九次' },
-                { value: 10, label: '第十次' },
-              ]}
-            />
-          </Form.Item>
         </div>
 
         <div style={{ display: 'flex', gap: 16 }}>
@@ -361,7 +338,7 @@ export default function ProjectFormPage() {
         )}
 
         <div style={{ display: 'flex', gap: 16 }}>
-          {!isLocked && !isJingji && (
+          {!isJingji && (
             <Form.Item
               label="代理机构（走代理时必选）"
               name="agency_code"
