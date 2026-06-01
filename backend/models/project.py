@@ -32,6 +32,13 @@ class Project(db.Model):
     year = db.Column(db.String(10), default="")
     is_deleted = db.Column(db.Integer, default=0)
     deleted_at = db.Column(db.String(30), default="")
+    # 模块5 采购文件编制：两步确认（采购需求确认 / 采购文件确认）
+    demand_confirmed = db.Column(db.Integer, default=0)
+    demand_confirmed_by = db.Column(db.String(100), default="")
+    demand_confirmed_at = db.Column(db.String(30), default="")
+    doc_confirmed = db.Column(db.Integer, default=0)
+    doc_confirmed_by = db.Column(db.String(100), default="")
+    doc_confirmed_at = db.Column(db.String(30), default="")
 
     def to_dict(self):
         r = self.round or 1
@@ -68,4 +75,10 @@ class Project(db.Model):
             "year": self.year or "",
             "is_deleted": bool(self.is_deleted),
             "deleted_at": self.deleted_at or "",
+            "demand_confirmed": bool(self.demand_confirmed),
+            "demand_confirmed_by": self.demand_confirmed_by or "",
+            "demand_confirmed_at": self.demand_confirmed_at or "",
+            "doc_confirmed": bool(self.doc_confirmed),
+            "doc_confirmed_by": self.doc_confirmed_by or "",
+            "doc_confirmed_at": self.doc_confirmed_at or "",
         }

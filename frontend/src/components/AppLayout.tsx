@@ -60,6 +60,9 @@ export default function AppLayout() {
       return 'dispatch'  // 无 type → 总览页，高亮「采购项目分发」
     }
     if (pathParts[0] === 'internal-bid-demand') return 'internal-bid-demand'
+    if (pathParts[0] === 'procurement-doc') {
+      return pathParts[1] === 'demand' ? 'doc-demand' : 'doc-file'
+    }
     return pathParts[0] || 'flow'
   })()
 
@@ -71,6 +74,7 @@ export default function AppLayout() {
     if (['people-manage', 'template-manage'].includes(k)) return ['base-data']
     if (k.startsWith('procurement-demand-')) return ['procurement-req']
     if (k === 'internal-bid-demand') return ['internal-procurement']
+    if (['doc-demand', 'doc-file'].includes(k)) return ['doc']
     return ['pm']
   }
 
@@ -170,7 +174,20 @@ export default function AppLayout() {
       key: 'doc',
       label: '5. 采购文件编制',
       icon: <FileTextOutlined />,
-      onClick: () => navigate('/procurement-doc'),
+      children: [
+        {
+          key: 'doc-demand',
+          icon: <AuditOutlined />,
+          label: '5.1 采购需求确认',
+          onClick: () => navigate('/procurement-doc/demand'),
+        },
+        {
+          key: 'doc-file',
+          icon: <FileTextOutlined />,
+          label: '5.2 采购文件确认',
+          onClick: () => navigate('/procurement-doc/file'),
+        },
+      ],
     },
 
     // ─── 6. 挂网管理 ──────────────────────────────────────────
@@ -280,6 +297,8 @@ export default function AppLayout() {
         // 顶层叶子：受控且无权限则隐藏；占位/非受控保留
         return leafVisible(item.key) ? item : null
       }
+      // 父级本身受控（如 5. 采购文件编制 doc 组）：无该权限则整组隐藏
+      if (CONTROLLED_KEYS.has(item.key) && !permSet.has(item.key)) return null
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const children = item.children.filter((c: any) => leafVisible(c.key))
       // 过滤后若组内已无任何可用（非禁用）项，则隐藏整组

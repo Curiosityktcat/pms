@@ -1,16 +1,26 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   Card, Table, Button, Space, Tag, Input, Modal, Form, InputNumber, App, Typography, Alert,
+  Tooltip, Popconfirm,
 } from 'antd'
-import { FileWordOutlined, FileTextOutlined } from '@ant-design/icons'
+import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
-import { generateBidCover } from '../services/procurementDoc'
+import { generateBidCover, generateContentConfirm, setDocConfirm } from '../services/procurementDoc'
 
 const { Title, Text } = Typography
 
 function todayCN() {
   const d = new Date()
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
+function ConfirmTag({ confirmed, by, at }: { confirmed: boolean; by: string; at: string }) {
+  if (!confirmed) return <Tag>未确认</Tag>
+  return (
+    <Tooltip title={`${by || ''}${at ? ` · ${at.replace('T', ' ')}` : ''}`}>
+      <Tag color="green" icon={<CheckCircleOutlined />}>已确认</Tag>
+    </Tooltip>
+  )
 }
 
 export default function ProcurementDocPage() {
@@ -22,6 +32,7 @@ export default function ProcurementDocPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [current, setCurrent] = useState<Project | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [genId, setGenId] = useState<number | null>(null)
   const [form] = Form.useForm()
 
   const load = useCallback(() => {
@@ -81,6 +92,37 @@ export default function ProcurementDocPage() {
     }
   }
 
+  const handleContentConfirm = async (p: Project) => {
+    setGenId(p.id)
+    try {
+      const res = await generateContentConfirm(p.id, {})
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `内容确认表_${p.number || p.name}.docx`
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success('内容确认表已生成，正在下载')
+    } catch {
+      message.error('生成失败')
+    } finally {
+      setGenId(null)
+    }
+  }
+
+  const toggleConfirm = async (p: Project) => {
+    try {
+      await setDocConfirm(p.id, 'doc', !p.doc_confirmed)
+      message.success(p.doc_confirmed ? '已撤销采购文件确认' : '采购文件已确认')
+      load()
+    } catch {
+      message.error('操作失败')
+    }
+  }
+
   const columns = [
     {
       title: '项目编号',
@@ -92,18 +134,40 @@ export default function ProcurementDocPage() {
     {
       title: '代理机构',
       dataIndex: 'agency_name',
-      width: 220,
+      width: 200,
       render: (v: string, r: Project) =>
         v ? <Tag color="blue">{v}</Tag> : <Tag>{r.agency_code}</Tag>,
     },
-    { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag>{v}</Tag> },
+    {
+      title: '采购文件确认',
+      width: 110,
+      render: (_: unknown, r: Project) => (
+        <ConfirmTag confirmed={r.doc_confirmed} by={r.doc_confirmed_by} at={r.doc_confirmed_at} />
+      ),
+    },
     {
       title: '操作',
-      width: 160,
+      width: 360,
       render: (_: unknown, r: Project) => (
-        <Button type="link" icon={<FileWordOutlined />} onClick={() => openModal(r)}>
-          生成招标文件封面
-        </Button>
+        <Space size={4}>
+          <Button type="link" size="small" icon={<FileWordOutlined />} onClick={() => openModal(r)}>
+            招标文件封面
+          </Button>
+          <Button
+            type="link" size="small" icon={<FileWordOutlined />}
+            loading={genId === r.id}
+            onClick={() => handleContentConfirm(r)}
+          >
+            内容确认表
+          </Button>
+          {r.doc_confirmed ? (
+            <Popconfirm title="撤销采购文件确认？" onConfirm={() => toggleConfirm(r)} okText="撤销" cancelText="取消">
+              <Button type="link" size="small" danger>撤销确认</Button>
+            </Popconfirm>
+          ) : (
+            <Button type="link" size="small" onClick={() => toggleConfirm(r)}>确认</Button>
+          )}
+        </Space>
       ),
     },
   ]
@@ -113,17 +177,17 @@ export default function ProcurementDocPage() {
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>
-            <FileTextOutlined /> 采购文件编制
+            <FileTextOutlined /> 5.2 采购文件确认
           </Title>
           <Text type="secondary">
-            选择走代理机构的项目，按模板生成招标文件封面。完整招标文件正文编制将后续支持。
+            生成招标文件封面，确认采购文件后由采购人/经办人签字。
           </Text>
         </div>
 
         <Alert
           type="info"
           showIcon
-          message="当前支持「招标文件封面」自动生成；《内容确认表》原模板为旧版 .doc 格式，需转换为 .docx 后方可接入。"
+          message="可自动生成《招标文件封面》和《院内竞选文件内容确认表》；联系人、哈希值、审核日期等需在 Word 中人工补充。"
         />
 
         <Input.Search

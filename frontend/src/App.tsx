@@ -24,6 +24,7 @@ import InternalBidDemandPage from './pages/InternalBidDemandPage'
 import InquiryPage from './pages/InquiryPage'
 import AgencyAgreementPage from './pages/AgencyAgreementPage'
 import ProcurementDocPage from './pages/ProcurementDocPage'
+import ProcurementDemandConfirmPage from './pages/ProcurementDemandConfirmPage'
 import TemplateManagePage from './pages/TemplateManagePage'
 import ArchivePage from './pages/ArchivePage'
 import EmailSettingsPage from './pages/EmailSettingsPage'
@@ -101,6 +102,8 @@ export default function App() {
               <Route path="inquiry" element={<InquiryPage />} />
               <Route path="agency-agreement" element={<AgencyAgreementPage />} />
               <Route path="procurement-doc" element={<ProcurementDocPage />} />
+              <Route path="procurement-doc/demand" element={<ProcurementDemandConfirmPage />} />
+              <Route path="procurement-doc/file" element={<ProcurementDocPage />} />
               <Route path="archive" element={<ArchivePage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
             </Route>

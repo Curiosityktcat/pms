@@ -78,6 +78,7 @@ def create_app():
         from models.inquiry_template import InquiryTemplate       # noqa: F401
         from models.bid_board_project import BidBoardProject      # noqa: F401
         from models.role_permission import RolePermission         # noqa: F401
+        from models.procurement_doc_attachment import ProcurementDocAttachment  # noqa: F401
         db.create_all()
 
         # 首次写入各角色默认权限（表为空时）
@@ -107,6 +108,18 @@ def create_app():
             )}
             if "round" not in _existing2:
                 _conn2.execute(_text2("ALTER TABLE projects ADD COLUMN round INTEGER DEFAULT 1"))
+            for _col, _typedef in [
+                ("demand_confirmed",    "INTEGER DEFAULT 0"),
+                ("demand_confirmed_by", "TEXT DEFAULT ''"),
+                ("demand_confirmed_at", "TEXT DEFAULT ''"),
+                ("doc_confirmed",       "INTEGER DEFAULT 0"),
+                ("doc_confirmed_by",    "TEXT DEFAULT ''"),
+                ("doc_confirmed_at",    "TEXT DEFAULT ''"),
+            ]:
+                if _col not in _existing2:
+                    _conn2.execute(_text2(
+                        f"ALTER TABLE projects ADD COLUMN {_col} {_typedef}"
+                    ))
             _conn2.commit()
 
         # 为 procurement_demands 表追加新列（SQLite 不支持自动迁移）

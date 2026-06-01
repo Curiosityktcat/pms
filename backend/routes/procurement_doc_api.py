@@ -1,10 +1,25 @@
+import datetime
+import os
+import uuid
 from flask import Blueprint, request, session, jsonify, send_file
 from models import db
 from models.project import Project
 from models.agency import Agency
+from models.procurement_doc_attachment import ProcurementDocAttachment
 from routes.utils import login_required
 
 bp = Blueprint("procurement_doc", __name__, url_prefix="/api/projects")
+
+# 采购文件编制阶段上传附件的存储根目录
+UPLOAD_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "procurement_doc")
+)
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
+
+ALLOWED_EXTS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".png", ".jpg", ".jpeg", ".zip", ".rar",
+}
 
 
 def _check_project_access(project):
@@ -59,3 +74,161 @@ def generate_bid_cover(pid):
         as_attachment=True,
         download_name=filename,
     )
+
+
+# ── 两步确认：采购需求确认(demand) / 采购文件确认(doc) ──────────────────
+_CONFIRM_FIELDS = {
+    "demand": ("demand_confirmed", "demand_confirmed_by", "demand_confirmed_at"),
+    "doc":    ("doc_confirmed",    "doc_confirmed_by",    "doc_confirmed_at"),
+}
+
+
+@bp.route("/<int:pid>/doc-confirm", methods=["POST"])
+@login_required
+def set_doc_confirm(pid):
+    """标记/撤销 采购需求确认 或 采购文件确认（记录确认人与时间）。"""
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind", "")
+    if kind not in _CONFIRM_FIELDS:
+        return jsonify({"ok": False, "error": "确认类型无效"}), 400
+    confirmed = bool(data.get("confirmed", True))
+
+    f_flag, f_by, f_at = _CONFIRM_FIELDS[kind]
+    if confirmed:
+        setattr(project, f_flag, 1)
+        setattr(project, f_by, session.get("display_name", ""))
+        setattr(project, f_at, datetime.datetime.now().isoformat(timespec="seconds"))
+    else:
+        setattr(project, f_flag, 0)
+        setattr(project, f_by, "")
+        setattr(project, f_at, "")
+    db.session.commit()
+    return jsonify({"ok": True, "data": project.to_dict()})
+
+
+@bp.route("/<int:pid>/content-confirm-word", methods=["POST"])
+@login_required
+def generate_content_confirm_word(pid):
+    """生成《院内竞选文件内容确认表》Word。"""
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+
+    data = request.get_json(silent=True) or {}
+    from services.content_confirm_word import generate
+    try:
+        buf, filename = generate(project, _agency_name(project, data.get("agency_name", "")))
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"生成失败：{str(e)}"}), 500
+
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+# ── 上传附件（采购需求确认 等）─────────────────────────────────────────
+def _attach_dir(pid: int) -> str:
+    d = os.path.join(UPLOAD_ROOT, str(pid))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _norm_kind(raw):
+    return raw if raw in ("demand", "doc") else "demand"
+
+
+@bp.route("/<int:pid>/doc-attachments", methods=["GET"])
+@login_required
+def list_doc_attachments(pid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    kind = _norm_kind(request.args.get("kind", "demand"))
+    rows = db.session.execute(
+        db.select(ProcurementDocAttachment)
+        .where(ProcurementDocAttachment.project_id == pid)
+        .where(ProcurementDocAttachment.kind == kind)
+        .order_by(ProcurementDocAttachment.id)
+    ).scalars().all()
+    return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
+
+
+@bp.route("/<int:pid>/doc-attachments", methods=["POST"])
+@login_required
+def upload_doc_attachment(pid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    kind = _norm_kind(request.args.get("kind", "demand"))
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "未收到文件"}), 400
+    _, ext = os.path.splitext(f.filename.lower())
+    if ext not in ALLOWED_EXTS:
+        return jsonify({"ok": False, "error": f"不支持的文件格式：{ext}，支持 PDF/Word/Excel/图片/压缩包"}), 400
+
+    saved_name = f"{uuid.uuid4().hex}{ext}"
+    f.save(os.path.join(_attach_dir(pid), saved_name))
+    file_size = os.path.getsize(os.path.join(_attach_dir(pid), saved_name))
+
+    att = ProcurementDocAttachment(
+        project_id=pid,
+        kind=kind,
+        original_name=f.filename,
+        saved_name=saved_name,
+        file_size=file_size,
+        uploaded_by=session.get("display_name", ""),
+        uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"),
+    )
+    db.session.add(att)
+    db.session.commit()
+    return jsonify({"ok": True, "message": "上传成功", "data": att.to_dict()}), 201
+
+
+@bp.route("/<int:pid>/doc-attachments/<int:aid>", methods=["GET"])
+@login_required
+def download_doc_attachment(pid, aid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    att = db.session.get(ProcurementDocAttachment, aid)
+    if not att or att.project_id != pid:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    path = os.path.join(_attach_dir(pid), att.saved_name)
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
+    return send_file(path, as_attachment=True, download_name=att.original_name)
+
+
+@bp.route("/<int:pid>/doc-attachments/<int:aid>", methods=["DELETE"])
+@login_required
+def delete_doc_attachment(pid, aid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    att = db.session.get(ProcurementDocAttachment, aid)
+    if not att or att.project_id != pid:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    try:
+        path = os.path.join(_attach_dir(pid), att.saved_name)
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+    db.session.delete(att)
+    db.session.commit()
+    return jsonify({"ok": True, "message": "已删除"})

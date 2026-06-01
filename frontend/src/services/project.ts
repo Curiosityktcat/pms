@@ -28,6 +28,12 @@ export interface Project {
   year: string
   is_deleted: boolean
   deleted_at: string
+  demand_confirmed: boolean
+  demand_confirmed_by: string
+  demand_confirmed_at: string
+  doc_confirmed: boolean
+  doc_confirmed_by: string
+  doc_confirmed_at: string
 }
 
 export interface Agency {
