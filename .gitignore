@@ -11,5 +11,10 @@ uploads/
 backend/server.log
 *.db.bak.*
 
+# 测试实例产物（run_test.sh）
+pms.test.db
+backend/server.test.log
+frontend/dist-test/
+
 # Office 临时锁文件
 ~$*

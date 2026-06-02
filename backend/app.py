@@ -8,8 +8,13 @@ def create_app():
     app = Flask(__name__)
 
     here = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.abspath(os.path.join(here, "..", "pms.db"))
-    dist_path = os.path.abspath(os.path.join(here, "..", "frontend", "dist"))
+    # 数据库与前端目录可由环境变量覆盖（测试实例用），默认即正式环境路径
+    db_path = os.environ.get("PMS_DB_PATH") or os.path.abspath(
+        os.path.join(here, "..", "pms.db")
+    )
+    dist_path = os.environ.get("PMS_DIST") or os.path.abspath(
+        os.path.join(here, "..", "frontend", "dist")
+    )
 
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_path}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -195,5 +200,6 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    print("[*] 采购管理系统启动: http://0.0.0.0:1573")
-    app.run(host="0.0.0.0", port=1573, debug=False)
+    port = int(os.environ.get("PMS_PORT", "1573"))
+    print(f"[*] 采购管理系统启动: http://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
