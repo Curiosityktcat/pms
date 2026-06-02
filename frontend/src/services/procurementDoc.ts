@@ -23,6 +23,7 @@ export interface DocAttachment {
   kind: string
   original_name: string
   file_size: number
+  sha256: string
   uploaded_by: string
   uploaded_at: string
 }

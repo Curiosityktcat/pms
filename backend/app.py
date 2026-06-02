@@ -168,6 +168,17 @@ def create_app():
                     ))
             conn.commit()
 
+        # 为 procurement_doc_attachments 表追加新列
+        with db.engine.connect() as conn3:
+            existing3 = {row[1] for row in conn3.execute(
+                text("PRAGMA table_info(procurement_doc_attachments)")
+            )}
+            if "sha256" not in existing3:
+                conn3.execute(text(
+                    "ALTER TABLE procurement_doc_attachments ADD COLUMN sha256 TEXT DEFAULT ''"
+                ))
+            conn3.commit()
+
     # 提供前端静态资源（生产模式）
     @app.route("/assets/<path:filename>")
     def assets(filename):

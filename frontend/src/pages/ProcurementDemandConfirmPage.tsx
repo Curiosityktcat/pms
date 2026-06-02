@@ -1,23 +1,14 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import axios from 'axios'
 import {
   Card, Table, Button, Space, Tag, Input, App, Typography, Tooltip, Popconfirm,
-  Modal, Upload, List,
 } from 'antd'
-import {
-  AuditOutlined, CheckCircleOutlined, UploadOutlined, PaperClipOutlined,
-  DownloadOutlined, DeleteOutlined,
-} from '@ant-design/icons'
+import { AuditOutlined, CheckCircleOutlined, PaperClipOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
-import {
-  setDocConfirm, listDocAttachments, deleteDocAttachment, downloadDocAttachment,
-  uploadDocAttachmentUrl, type DocAttachment,
-} from '../services/procurementDoc'
+import { setDocConfirm } from '../services/procurementDoc'
+import DocAttachmentsModal from '../components/DocAttachmentsModal'
+import { useAuth } from '../hooks/useAuth'
 
 const { Title, Text } = Typography
-// antd 自定义上传选项类型较繁琐，这里用 any 简化
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type UploadRequestOption = any
 
 function ConfirmTag({ confirmed, by, at }: { confirmed: boolean; by: string; at: string }) {
   if (!confirmed) return <Tag>未确认</Tag>
@@ -28,128 +19,11 @@ function ConfirmTag({ confirmed, by, at }: { confirmed: boolean; by: string; at:
   )
 }
 
-function fmtSize(n: number) {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
-
-/** 采购需求文件上传/管理弹窗 */
-function AttachmentsModal({
-  project, open, onClose,
-}: { project: Project | null; open: boolean; onClose: () => void }) {
-  const { message } = App.useApp()
-  const [files, setFiles] = useState<DocAttachment[]>([])
-  const [uploading, setUploading] = useState(false)
-
-  const load = useCallback(async () => {
-    if (!project) return
-    try {
-      const res = await listDocAttachments(project.id, 'demand')
-      setFiles(res.data.data || [])
-    } catch { /* ignore */ }
-  }, [project])
-
-  useEffect(() => { if (open) load() }, [open, load])
-
-  const customUpload = async (options: UploadRequestOption) => {
-    if (!project) return
-    const { file, onSuccess, onError } = options
-    setUploading(true)
-    const formData = new FormData()
-    formData.append('file', file as Blob)
-    try {
-      const res = await axios.post(uploadDocAttachmentUrl(project.id, 'demand'), formData, {
-        withCredentials: true,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-      onSuccess?.(res.data)
-      message.success('上传成功')
-      load()
-    } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } }
-      onError?.(err as Error)
-      message.error(e.response?.data?.error || '上传失败')
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const handleDownload = async (f: DocAttachment) => {
-    if (!project) return
-    try {
-      const res = await downloadDocAttachment(project.id, f.id)
-      const url = URL.createObjectURL(new Blob([res.data]))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = f.original_name
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      message.error('下载失败')
-    }
-  }
-
-  const handleDelete = async (f: DocAttachment) => {
-    if (!project) return
-    try {
-      await deleteDocAttachment(project.id, f.id)
-      message.success('已删除')
-      load()
-    } catch {
-      message.error('删除失败')
-    }
-  }
-
-  return (
-    <Modal
-      title={`采购需求文件 — ${project?.name || ''}`}
-      open={open}
-      onCancel={onClose}
-      footer={<Button onClick={onClose}>关闭</Button>}
-      width={600}
-      destroyOnHidden
-    >
-      <Upload
-        customRequest={customUpload}
-        showUploadList={false}
-        multiple
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.zip,.rar"
-        disabled={uploading}
-      >
-        <Button icon={<UploadOutlined />} loading={uploading}>
-          上传需求文件 / 附件（PDF / Word / Excel / 图片 / 压缩包）
-        </Button>
-      </Upload>
-
-      <List
-        size="small"
-        style={{ marginTop: 12 }}
-        locale={{ emptyText: '暂无上传文件' }}
-        dataSource={files}
-        renderItem={(f) => (
-          <List.Item
-            actions={[
-              <Button key="dl" type="link" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(f)}>下载</Button>,
-              <Popconfirm key="del" title="删除该文件？" onConfirm={() => handleDelete(f)} okText="删除" cancelText="取消">
-                <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
-              </Popconfirm>,
-            ]}
-          >
-            <List.Item.Meta
-              avatar={<PaperClipOutlined />}
-              title={f.original_name}
-              description={`${fmtSize(f.file_size)} · ${f.uploaded_by || ''} ${f.uploaded_at ? f.uploaded_at.replace('T', ' ') : ''}`}
-            />
-          </List.Item>
-        )}
-      />
-    </Modal>
-  )
-}
-
 export default function ProcurementDemandConfirmPage() {
   const { message } = App.useApp()
+  const { user } = useAuth()
+  // 确认由采购人方审核，代理机构只能上传，不显示确认按钮
+  const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<Project[]>([])
   const [keyword, setKeyword] = useState('')
@@ -218,13 +92,13 @@ export default function ProcurementDemandConfirmPage() {
           <Button type="link" size="small" icon={<PaperClipOutlined />} onClick={() => setAttachProject(r)}>
             需求文件
           </Button>
-          {r.demand_confirmed ? (
+          {canConfirm && (r.demand_confirmed ? (
             <Popconfirm title="撤销采购需求确认？" onConfirm={() => toggleConfirm(r)} okText="撤销" cancelText="取消">
               <Button type="link" size="small" danger>撤销确认</Button>
             </Popconfirm>
           ) : (
             <Button type="link" size="small" onClick={() => toggleConfirm(r)}>确认</Button>
-          )}
+          ))}
         </Space>
       ),
     },
@@ -259,8 +133,11 @@ export default function ProcurementDemandConfirmPage() {
         />
       </Space>
 
-      <AttachmentsModal
+      <DocAttachmentsModal
         project={attachProject}
+        kind="demand"
+        title="采购需求文件"
+        locked={!!attachProject?.demand_confirmed}
         open={!!attachProject}
         onClose={() => setAttachProject(null)}
       />

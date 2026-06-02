@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import os
 import uuid
 from flask import Blueprint, request, session, jsonify, send_file
@@ -96,6 +97,9 @@ def set_doc_confirm(pid):
     kind = data.get("kind", "")
     if kind not in _CONFIRM_FIELDS:
         return jsonify({"ok": False, "error": "确认类型无效"}), 400
+    # 确认由采购人方（经办人/助理/负责人）审核，代理机构只能上传不能确认
+    if session.get("role", "") == "agency":
+        return jsonify({"ok": False, "error": "代理机构只能上传文件，确认由经办人审核"}), 403
     confirmed = bool(data.get("confirmed", True))
 
     f_flag, f_by, f_at = _CONFIRM_FIELDS[kind]
@@ -121,9 +125,22 @@ def generate_content_confirm_word(pid):
         return jsonify(err), status
 
     data = request.get_json(silent=True) or {}
+    # 收集该项目采购文件(doc)附件的 SHA256，填入内容确认表
+    docs = db.session.execute(
+        db.select(ProcurementDocAttachment)
+        .where(ProcurementDocAttachment.project_id == pid)
+        .where(ProcurementDocAttachment.kind == "doc")
+        .order_by(ProcurementDocAttachment.id)
+    ).scalars().all()
+    file_hashes = [(d.original_name, d.sha256) for d in docs if d.sha256]
+
     from services.content_confirm_word import generate
     try:
-        buf, filename = generate(project, _agency_name(project, data.get("agency_name", "")))
+        buf, filename = generate(
+            project,
+            _agency_name(project, data.get("agency_name", "")),
+            file_hashes=file_hashes,
+        )
     except Exception as e:
         return jsonify({"ok": False, "error": f"生成失败：{str(e)}"}), 500
 
@@ -144,6 +161,20 @@ def _attach_dir(pid: int) -> str:
 
 def _norm_kind(raw):
     return raw if raw in ("demand", "doc") else "demand"
+
+
+def _kind_confirmed(project, kind):
+    """该确认环节是否已确认（已确认则锁定，不允许增删文件）。"""
+    flag = "doc_confirmed" if kind == "doc" else "demand_confirmed"
+    return bool(getattr(project, flag, 0))
+
+
+def _sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for chunk in iter(lambda: fp.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 @bp.route("/<int:pid>/doc-attachments", methods=["GET"])
@@ -171,6 +202,8 @@ def upload_doc_attachment(pid):
     if not ok:
         return jsonify(err), status
     kind = _norm_kind(request.args.get("kind", "demand"))
+    if _kind_confirmed(project, kind):
+        return jsonify({"ok": False, "error": "已确认，如需修改请先撤销确认"}), 400
 
     f = request.files.get("file")
     if not f or not f.filename:
@@ -180,8 +213,10 @@ def upload_doc_attachment(pid):
         return jsonify({"ok": False, "error": f"不支持的文件格式：{ext}，支持 PDF/Word/Excel/图片/压缩包"}), 400
 
     saved_name = f"{uuid.uuid4().hex}{ext}"
-    f.save(os.path.join(_attach_dir(pid), saved_name))
-    file_size = os.path.getsize(os.path.join(_attach_dir(pid), saved_name))
+    save_path = os.path.join(_attach_dir(pid), saved_name)
+    f.save(save_path)
+    file_size = os.path.getsize(save_path)
+    sha256 = _sha256_of(save_path)
 
     att = ProcurementDocAttachment(
         project_id=pid,
@@ -189,6 +224,7 @@ def upload_doc_attachment(pid):
         original_name=f.filename,
         saved_name=saved_name,
         file_size=file_size,
+        sha256=sha256,
         uploaded_by=session.get("display_name", ""),
         uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"),
     )
@@ -223,6 +259,8 @@ def delete_doc_attachment(pid, aid):
     att = db.session.get(ProcurementDocAttachment, aid)
     if not att or att.project_id != pid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
+    if _kind_confirmed(project, att.kind):
+        return jsonify({"ok": False, "error": "已确认，如需修改请先撤销确认"}), 400
     try:
         path = os.path.join(_attach_dir(pid), att.saved_name)
         if os.path.exists(path):

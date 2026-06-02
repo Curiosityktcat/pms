@@ -3,9 +3,11 @@ import {
   Card, Table, Button, Space, Tag, Input, Modal, Form, InputNumber, App, Typography, Alert,
   Tooltip, Popconfirm,
 } from 'antd'
-import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined, PaperClipOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
 import { generateBidCover, generateContentConfirm, setDocConfirm } from '../services/procurementDoc'
+import DocAttachmentsModal from '../components/DocAttachmentsModal'
+import { useAuth } from '../hooks/useAuth'
 
 const { Title, Text } = Typography
 
@@ -25,6 +27,9 @@ function ConfirmTag({ confirmed, by, at }: { confirmed: boolean; by: string; at:
 
 export default function ProcurementDocPage() {
   const { message } = App.useApp()
+  const { user } = useAuth()
+  // 采购文件确认由采购人方审核，代理机构只能上传，不显示确认按钮
+  const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<Project[]>([])
   const [keyword, setKeyword] = useState('')
@@ -33,6 +38,7 @@ export default function ProcurementDocPage() {
   const [current, setCurrent] = useState<Project | null>(null)
   const [generating, setGenerating] = useState(false)
   const [genId, setGenId] = useState<number | null>(null)
+  const [attachProject, setAttachProject] = useState<Project | null>(null)
   const [form] = Form.useForm()
 
   const load = useCallback(() => {
@@ -147,9 +153,12 @@ export default function ProcurementDocPage() {
     },
     {
       title: '操作',
-      width: 360,
+      width: 440,
       render: (_: unknown, r: Project) => (
         <Space size={4}>
+          <Button type="link" size="small" icon={<PaperClipOutlined />} onClick={() => setAttachProject(r)}>
+            采购文件
+          </Button>
           <Button type="link" size="small" icon={<FileWordOutlined />} onClick={() => openModal(r)}>
             招标文件封面
           </Button>
@@ -160,13 +169,13 @@ export default function ProcurementDocPage() {
           >
             内容确认表
           </Button>
-          {r.doc_confirmed ? (
+          {canConfirm && (r.doc_confirmed ? (
             <Popconfirm title="撤销采购文件确认？" onConfirm={() => toggleConfirm(r)} okText="撤销" cancelText="取消">
               <Button type="link" size="small" danger>撤销确认</Button>
             </Popconfirm>
           ) : (
             <Button type="link" size="small" onClick={() => toggleConfirm(r)}>确认</Button>
-          )}
+          ))}
         </Space>
       ),
     },
@@ -180,7 +189,7 @@ export default function ProcurementDocPage() {
             <FileTextOutlined /> 5.2 采购文件确认
           </Title>
           <Text type="secondary">
-            生成招标文件封面，确认采购文件后由采购人/经办人签字。
+            代理机构上传采购文件及附件，经办人审核确认后方可编制采购公告并挂网；确认后系统对每份文件留存 SHA256。
           </Text>
         </div>
 
@@ -233,6 +242,16 @@ export default function ProcurementDocPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <DocAttachmentsModal
+        project={attachProject}
+        kind="doc"
+        title="采购文件"
+        showHash
+        locked={!!attachProject?.doc_confirmed}
+        open={!!attachProject}
+        onClose={() => setAttachProject(null)}
+      />
     </Card>
   )
 }

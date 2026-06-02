@@ -14,6 +14,7 @@ class ProcurementDocAttachment(db.Model):
     original_name = db.Column(db.String(200))   # 用户上传时的原始文件名
     saved_name = db.Column(db.String(200))       # 服务器存储文件名（UUID 防冲突）
     file_size = db.Column(db.Integer, default=0)
+    sha256 = db.Column(db.String(64), default="")   # 文件内容 SHA256（采购文件确认用）
     uploaded_by = db.Column(db.String(50), default="")
     uploaded_at = db.Column(db.String(30), default="")
 
@@ -24,6 +25,7 @@ class ProcurementDocAttachment(db.Model):
             "kind": self.kind or "",
             "original_name": self.original_name or "",
             "file_size": self.file_size or 0,
+            "sha256": self.sha256 or "",
             "uploaded_by": self.uploaded_by or "",
             "uploaded_at": self.uploaded_at or "",
         }

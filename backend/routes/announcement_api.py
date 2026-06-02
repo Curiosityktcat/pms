@@ -336,6 +336,9 @@ def create_announcement():
         return jsonify({"ok": False, "error": "该项目未走代理机构，无法生成采购公告"}), 400
     if not _can_edit(project.agency_code):
         return jsonify({"ok": False, "error": "权限不足，只能编制本机构负责的项目公告"}), 403
+    # 采购公告须在采购文件经办人确认后方可编制
+    if data.get("ann_type", "procurement") == "procurement" and not project.doc_confirmed:
+        return jsonify({"ok": False, "error": "采购文件尚未经办人确认，无法编制采购公告"}), 400
 
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ann = Announcement(
@@ -445,6 +448,9 @@ def confirm_announcement(aid):
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     if ann.status == "已确认":
         return jsonify({"ok": False, "error": "公告已经发布"}), 400
+    project = db.session.get(Project, ann.project_id)
+    if ann.ann_type == "procurement" and project and not project.doc_confirmed:
+        return jsonify({"ok": False, "error": "采购文件尚未确认，无法挂网发布"}), 400
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ann.status = "已确认"
     ann.confirmed_by = session.get("display_name", "")
