@@ -55,3 +55,21 @@ export const updateModelConfig = (data: Partial<ScraperModelConfig>) =>
 
 export const testModelConfig = (data: Partial<ScraperModelConfig>) =>
   api.post<{ ok: boolean; message?: string; error?: string }>('/bid-board/model-config/test', data)
+
+// ── 嵌入模型设置（投标审查语义检索用）────────────────────────────
+export interface EmbedModelConfig {
+  embed_api: string
+  embed_name: string
+  embed_key: string
+  suggest_api?: string
+  suggest_name?: string
+}
+
+export const getEmbedConfig = () =>
+  api.get<{ ok: boolean; data: EmbedModelConfig }>('/bid-board/embed-config')
+
+export const updateEmbedConfig = (data: Partial<EmbedModelConfig>) =>
+  api.put<{ ok: boolean; message: string }>('/bid-board/embed-config', data)
+
+export const testEmbedConfig = (data: Partial<EmbedModelConfig>) =>
+  api.post<{ ok: boolean; message?: string; error?: string }>('/bid-board/embed-config/test', data)

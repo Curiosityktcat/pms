@@ -164,6 +164,71 @@ def update_model_config_api():
     return jsonify({"ok": True, "message": "模型配置已保存"})
 
 
+@bp.route("/embed-config", methods=["GET"])
+@admin_required
+def get_embed_config_api():
+    """嵌入模型配置（用于投标审查的语义检索）。未配置时各项为空。"""
+    from services.llm_client import CFG_EMBED_API, CFG_EMBED_NAME, CFG_EMBED_KEY
+    def _v(key):
+        row = db.session.get(SysConfig, key)
+        return row.value if (row and row.value) else ""
+    return jsonify({"ok": True, "data": {
+        "embed_api":  _v(CFG_EMBED_API),
+        "embed_name": _v(CFG_EMBED_NAME),
+        "embed_key":  _mask(_v(CFG_EMBED_KEY)),
+        "suggest_api": "http://127.0.0.1:8890/v1/embeddings",
+        "suggest_name": "bge-m3",
+    }})
+
+
+@bp.route("/embed-config", methods=["PUT"])
+@admin_required
+def update_embed_config_api():
+    from services.llm_client import CFG_EMBED_API, CFG_EMBED_NAME, CFG_EMBED_KEY
+    d = request.get_json(silent=True) or {}
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    mapping = {
+        CFG_EMBED_API:  d.get("embed_api"),
+        CFG_EMBED_NAME: d.get("embed_name"),
+        CFG_EMBED_KEY:  d.get("embed_key"),
+    }
+    for key, val in mapping.items():
+        if val is None:
+            continue
+        if key == CFG_EMBED_KEY and isinstance(val, str) and val.startswith("****"):
+            continue
+        row = db.session.get(SysConfig, key)
+        if row:
+            row.value = val
+            row.updated_at = now
+        else:
+            db.session.add(SysConfig(key=key, value=val, updated_at=now))
+    db.session.commit()
+    return jsonify({"ok": True, "message": "嵌入模型配置已保存"})
+
+
+@bp.route("/embed-config/test", methods=["POST"])
+@admin_required
+def test_embed_config_api():
+    """用当前（或表单提交的）嵌入配置求一次向量，验证连通性与维度。"""
+    from services.llm_client import embed, get_embed_config
+    d = request.get_json(silent=True) or {}
+    cfg = get_embed_config() or {"api": "", "name": "bge-m3", "key": "local"}
+    if d.get("embed_api"):
+        cfg["api"] = d["embed_api"]
+    if d.get("embed_name"):
+        cfg["name"] = d["embed_name"]
+    if d.get("embed_key") and not str(d["embed_key"]).startswith("****"):
+        cfg["key"] = d["embed_key"]
+    if not cfg.get("api"):
+        return jsonify({"ok": False, "error": "请先填写嵌入接口地址"}), 200
+    vecs = embed(["连接测试"], cfg=cfg, timeout=20)
+    if vecs and vecs[0]:
+        return jsonify({"ok": True,
+                        "message": f"连接成功：{cfg['name']} @ {cfg['api']}（向量维度 {len(vecs[0])}）"})
+    return jsonify({"ok": False, "error": "连接失败：未取得有效向量，请检查地址/模型名/服务是否启动"}), 200
+
+
 @bp.route("/model-config/test", methods=["POST"])
 @admin_required
 def test_model_config_api():
