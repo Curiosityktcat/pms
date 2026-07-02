@@ -12,8 +12,16 @@ BACKEND="$ROOT/backend"
 PORT=1574
 TEST_DB="$ROOT/pms.test.db"
 TEST_DIST="$FRONTEND/dist-test"
-PYTHON="/home/huangxb/test/venv/bin/python"   # 与 rebuild.sh 一致
 LOG="$BACKEND/server.test.log"
+
+# Python 解释器：与 rebuild.sh 一致（PMS_PYTHON > 仓库 venv > 旧机默认）
+if [ -n "${PMS_PYTHON:-}" ]; then
+  PYTHON="$PMS_PYTHON"
+elif [ -x "$ROOT/venv/bin/python" ]; then
+  PYTHON="$ROOT/venv/bin/python"
+else
+  PYTHON="/home/huangxb/test/venv/bin/python"
+fi
 
 RESET=0
 [ "${1:-}" = "--reset" ] && RESET=1
@@ -28,7 +36,7 @@ fi
 
 echo "==> [2/3] 构建测试前端 (输出到 frontend/dist-test，不动正式 dist)"
 cd "$FRONTEND"
-npm run build -- --outDir dist-test --emptyOutDir
+VITE_PMS_ENV=test npm run build -- --outDir dist-test --emptyOutDir
 
 echo "==> [3/3] 停止旧测试后端 (端口 $PORT) 并启动新实例"
 OLD_PID="$(ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -n1 || true)"
