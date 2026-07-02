@@ -40,3 +40,13 @@ export const ocrRecognize = (file: File, engine: OcrEngine = 'paddle') => {
 /** 探测识别服务是否在线。 */
 export const ocrHealth = () =>
   api.get<{ ok: boolean; data: { online: boolean; server: string; engines?: Record<string, boolean> } }>('/ocr/health')
+
+/** 导出识别结果为 Word / Excel / PDF（返回文件流）。 */
+export type OcrExportFormat = 'docx' | 'xlsx' | 'pdf'
+
+export const ocrExport = (markdown: string, format: OcrExportFormat, filename: string) =>
+  axios.post('/api/ocr/export', { markdown, format, filename }, {
+    withCredentials: true,
+    responseType: 'blob',
+    timeout: 180000,
+  })

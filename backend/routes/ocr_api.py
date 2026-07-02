@@ -137,3 +137,34 @@ def recognize():
             out["balance"] = round(get_balance(agency_code) or 0, 2)
 
     return jsonify({"ok": True, "data": out})
+
+
+@bp.route("/export", methods=["POST"])
+@login_required
+def export():
+    """识别结果导出为 Word / Excel / PDF（转发 OCR 服务，不计费）。"""
+    body = request.get_json(silent=True) or {}
+    fmt = (body.get("format") or "").lower().strip()
+    if fmt not in ("docx", "xlsx", "pdf"):
+        return jsonify({"ok": False, "error": f"不支持的导出格式：{fmt}"}), 400
+    try:
+        resp = requests.post(f"{OCR_BASE}/export", json={
+            "markdown": body.get("markdown") or "",
+            "format": fmt,
+            "filename": body.get("filename") or "ocr",
+        }, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"导出服务调用失败：{e}"}), 502
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:  # noqa: BLE001
+            detail = (resp.text or "")[:300]
+        return jsonify({"ok": False, "error": f"导出失败：{detail}"}), 502
+    from flask import Response
+    return Response(
+        resp.content,
+        mimetype=resp.headers.get("Content-Type", "application/octet-stream"),
+        headers={"Content-Disposition":
+                 resp.headers.get("Content-Disposition", "attachment")},
+    )

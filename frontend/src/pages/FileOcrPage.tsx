@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Card, Upload, Button, Space, Tag, Typography, Input, App, Spin, Empty,
-  Radio, Alert,
+  Radio, Alert, Dropdown,
 } from 'antd'
 import {
   InboxOutlined, FileSearchOutlined, CopyOutlined, DownloadOutlined,
   ReloadOutlined, ClearOutlined,
 } from '@ant-design/icons'
 import type { UploadFile } from 'antd/es/upload/interface'
-import { ocrRecognize, ocrHealth, type OcrResult, type OcrEngine } from '../services/ocr'
+import {
+  ocrRecognize, ocrHealth, ocrExport,
+  type OcrResult, type OcrEngine, type OcrExportFormat,
+} from '../services/ocr'
 
 const { Title, Text, Paragraph } = Typography
 const { Dragger } = Upload
@@ -81,16 +84,36 @@ export default function FileOcrPage() {
     }
   }
 
-  const downloadMarkdown = () => {
-    if (!result) return
-    const base = (result.filename || 'ocr').replace(/\.[^.]+$/, '')
-    const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' })
+  const [exporting, setExporting] = useState(false)
+
+  const saveBlob = (blob: Blob, name: string) => {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${base}.md`
+    a.download = name
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  const downloadMarkdown = () => {
+    if (!result) return
+    const base = (result.filename || 'ocr').replace(/\.[^.]+$/, '')
+    saveBlob(new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' }), `${base}.md`)
+  }
+
+  const downloadAs = async (fmt: OcrExportFormat) => {
+    if (!result?.markdown) return
+    const base = (result.filename || 'ocr').replace(/\.[^.]+$/, '')
+    setExporting(true)
+    try {
+      const res = await ocrExport(result.markdown, fmt, base)
+      saveBlob(res.data as Blob, `${base}.${fmt}`)
+      message.success(`已导出 ${fmt.toUpperCase()}`)
+    } catch {
+      message.error('导出失败，请稍后重试')
+    } finally {
+      setExporting(false)
+    }
   }
 
   return (
@@ -197,9 +220,24 @@ export default function FileOcrPage() {
               <Button size="small" icon={<CopyOutlined />} onClick={copyMarkdown}>
                 复制
               </Button>
-              <Button size="small" icon={<DownloadOutlined />} onClick={downloadMarkdown}>
-                下载 .md
-              </Button>
+              <Dropdown
+                menu={{
+                  items: [
+                    { key: 'docx', label: '导出 Word (.docx)' },
+                    { key: 'xlsx', label: '导出 Excel (.xlsx)' },
+                    { key: 'pdf', label: '导出 PDF (.pdf)' },
+                    { type: 'divider' },
+                    { key: 'md', label: '下载 Markdown (.md)' },
+                  ],
+                  onClick: ({ key }) =>
+                    key === 'md' ? downloadMarkdown() : downloadAs(key as OcrExportFormat),
+                }}
+              >
+                <Button size="small" type="primary" ghost
+                  icon={<DownloadOutlined />} loading={exporting}>
+                  下载 / 导出
+                </Button>
+              </Dropdown>
             </Space>
           )
         }
