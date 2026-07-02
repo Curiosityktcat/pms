@@ -4,7 +4,8 @@ from . import db
 class ProcurementDocAttachment(db.Model):
     """采购文件编制阶段的上传附件。
 
-    kind: 'demand' 采购需求确认上传 / 'doc' 采购文件确认上传（预留）。
+    kind: 'demand' 采购需求确认上传 / 'doc' 采购文件确认上传 /
+          'result' 招单价项目单价附件 / 'award_notice' 中标通知书（采购结果确认后由代理上传）。
     """
     __tablename__ = "procurement_doc_attachments"
 
@@ -15,6 +16,7 @@ class ProcurementDocAttachment(db.Model):
     saved_name = db.Column(db.String(200))       # 服务器存储文件名（UUID 防冲突）
     file_size = db.Column(db.Integer, default=0)
     sha256 = db.Column(db.String(64), default="")   # 文件内容 SHA256（采购文件确认用）
+    round_number = db.Column(db.Integer, default=1)  # 归属轮次（按轮隔离文件）
     uploaded_by = db.Column(db.String(50), default="")
     uploaded_at = db.Column(db.String(30), default="")
 
@@ -23,6 +25,7 @@ class ProcurementDocAttachment(db.Model):
             "id": self.id,
             "project_id": self.project_id,
             "kind": self.kind or "",
+            "round_number": self.round_number or 1,
             "original_name": self.original_name or "",
             "file_size": self.file_size or 0,
             "sha256": self.sha256 or "",

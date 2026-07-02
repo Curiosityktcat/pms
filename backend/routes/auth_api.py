@@ -14,6 +14,8 @@ def login():
     user = check_login(username, password)
     if not user:
         return jsonify({"ok": False, "error": "用户名或密码错误"}), 401
+    # 启用带有效期的会话：配合 PERMANENT_SESSION_LIFETIME 实现 30 分钟空闲过期
+    session.permanent = True
     session["user"] = user.username
     session["role"] = user.role
     session["display_name"] = user.display_name

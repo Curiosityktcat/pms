@@ -136,6 +136,8 @@ def generate(demand, project):
     _set_cell_text(t, 40, 0, f"院长意见\n{demand.president_opinion or ''}")
 
     buf = io.BytesIO()
+    from services.docx_utils import strip_highlight
+    strip_highlight(doc)                 # 清除模板黄色高亮占位印记
     doc.save(buf)
     buf.seek(0)
     filename = f"采购需求表_{project.number if project else 'unknown'}_{demand.status}.docx"

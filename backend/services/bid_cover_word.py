@@ -57,6 +57,8 @@ def generate(project, agency_name, *, compile_date="", round_number=1):
                 _set_para_text(p, compile_date)
 
     buf = io.BytesIO()
+    from services.docx_utils import strip_highlight
+    strip_highlight(doc)                 # 清除模板黄色高亮占位印记
     doc.save(buf)
     buf.seek(0)
     filename = f"招标文件封面_{pnumber or pname or '封面'}.docx"

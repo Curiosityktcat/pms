@@ -6,7 +6,9 @@ class InternalBidDemand(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=True)
 
-    # 表头
+    # 表头（院内竞选需求是「项目的起点」，项目名称/预算在此手填，不再关联已立项的项目）
+    project_name = db.Column(db.String(200), default="")      # 项目名称（手填）
+    budget_amount = db.Column(db.Float, nullable=True)        # 1.6 预算金额（手填，元）
     demand_dept = db.Column(db.String(100), default="")       # 需求科室
     manage_dept = db.Column(db.String(100), default="")       # 归口管理科室
 

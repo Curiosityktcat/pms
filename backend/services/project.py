@@ -15,6 +15,19 @@ def get_agency_name(code):
     return a.name if a else code
 
 
+def get_agency_detail(code):
+    """返回代理机构详细信息字典（name/legal_rep/phone/address），供前端预填。"""
+    if not code:
+        return {"agency_name": "", "agency_legal_rep": "", "agency_phone": "", "agency_address": ""}
+    a = db.session.execute(db.select(Agency).filter_by(code=code)).scalar_one_or_none()
+    return {
+        "agency_name":      a.name      if a else code,
+        "agency_legal_rep": a.legal_rep if a else "",
+        "agency_phone":     a.phone     if a else "",
+        "agency_address":   a.address   if a else "",
+    }
+
+
 def list_projects(role, agency_code=None, officer=None, show_deleted=False):
     """按角色过滤并返回项目列表（含 agency_name）。
     show_deleted=True 时只返回已软删除的项目。
@@ -49,7 +62,7 @@ def list_projects(role, agency_code=None, officer=None, show_deleted=False):
     result = []
     for p in rows:
         d = p.to_dict()
-        d["agency_name"] = get_agency_name(p.agency_code)
+        d.update(get_agency_detail(p.agency_code))
         result.append(d)
     return result
 
@@ -125,6 +138,16 @@ def create_project(data, created_by, display_name):
     )
     db.session.add(p)
     db.session.commit()
+    # 走代理项目立项即进入采购流程：建第一轮，使其能出现在「5.1 采购需求确认」等
+    # 按 current_stage 筛选的列表里（阶段引擎需至少一条轮次记录才能定位到 demand_confirm）。
+    if use_agency:
+        from models.procurement_round import ProcurementRound
+        import datetime as _dt
+        db.session.add(ProcurementRound(
+            project_id=p.id, round_number=1, demand_confirmed=0, doc_confirmed=0,
+            status="进行中", created_at=_dt.datetime.now().isoformat(timespec="seconds")))
+        p.round = 1
+        db.session.commit()
     return p, number
 
 
@@ -134,6 +157,22 @@ def get_project(pid, role, agency_code_session, officer_session):
         raise ValueError("项目不存在")
     _check_read_perm(p, role, agency_code_session, officer_session)
     return p
+
+
+def _entered_process(p):
+    """项目是否已进入采购流程（进入后立项内容应锁定）：
+    院内竞选/单一来源——已建采购轮次（到「采购需求确认」这一步）即锁；
+    院内询价/议价/紧急采购——已发出询/议价函即锁。
+    """
+    from models.procurement_round import ProcurementRound
+    from models.inquiry_letter import InquiryLetter
+    if (p.method or "") in ("院内竞选", "院内单一来源采购"):
+        return db.session.execute(
+            db.select(ProcurementRound.id).filter_by(project_id=p.id).limit(1)
+        ).first() is not None
+    return db.session.execute(
+        db.select(InquiryLetter.id).filter_by(project_id=p.id).limit(1)
+    ).first() is not None
 
 
 def update_project(pid, data, role, agency_code_session, officer_session):
@@ -157,6 +196,18 @@ def update_project(pid, data, role, agency_code_session, officer_session):
     name = (data.get("name") or "").strip()
     if not name:
         raise ValueError("项目名称不能为空")
+
+    # 已进入采购流程的项目：冻结立项核心内容（名称/采购方式/采购内容），
+    # 避免流程过半再改需求。金额本就只在草稿提交时确定、立项后不可改。
+    if not is_draft and _entered_process(p):
+        changed = (
+            ("name" in data and name != (p.name or ""))
+            or ("method" in data and (data.get("method") or "").strip() != (p.method or ""))
+            or ("content" in data and (data.get("content") or "").strip() != (p.content or ""))
+        )
+        if changed:
+            raise ValueError("项目已进入采购流程，立项内容（名称/采购方式/采购内容）不可修改")
+
     p.name = name
     p.method = (data.get("method") or p.method).strip()
     p.demand_dept = (data.get("demand_dept") or "").strip()

@@ -39,6 +39,9 @@ class Project(db.Model):
     doc_confirmed = db.Column(db.Integer, default=0)
     doc_confirmed_by = db.Column(db.String(100), default="")
     doc_confirmed_at = db.Column(db.String(30), default="")
+    # 5.2 内容确认表所需：代理机构在系统填写的联系人及联系方式
+    doc_agency_contact = db.Column(db.String(50), default="")
+    doc_agency_phone = db.Column(db.String(50), default="")
 
     def to_dict(self):
         r = self.round or 1
@@ -81,4 +84,6 @@ class Project(db.Model):
             "doc_confirmed": bool(self.doc_confirmed),
             "doc_confirmed_by": self.doc_confirmed_by or "",
             "doc_confirmed_at": self.doc_confirmed_at or "",
+            "doc_agency_contact": self.doc_agency_contact or "",
+            "doc_agency_phone": self.doc_agency_phone or "",
         }

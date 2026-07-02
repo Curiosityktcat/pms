@@ -14,16 +14,14 @@ def _now():
 
 
 def _enrich(d: InternalBidDemand):
-    data = d.to_dict()
-    if d.project_id:
-        p = db.session.get(Project, d.project_id)
+    data = d.to_dict()  # 已含手填的 project_name / budget_amount
+    p = db.session.get(Project, d.project_id) if d.project_id else None
+    # 手填优先；为空再回落到（历史遗留的）关联项目
+    if not data.get("project_name"):
         data["project_name"] = p.name if p else ""
-        data["project_number"] = p.number if p else ""
-        data["budget_amount"] = p.amount if p else 0
-    else:
-        data["project_name"] = ""
-        data["project_number"] = ""
-        data["budget_amount"] = 0
+    if not data.get("budget_amount"):
+        data["budget_amount"] = (p.amount if p else 0) or 0
+    data["project_number"] = p.number if p else ""
     return data
 
 

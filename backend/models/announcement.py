@@ -37,6 +37,13 @@ class Announcement(db.Model):
     agency_contact = db.Column(db.String(60), default="")
     agency_contact_phone = db.Column(db.String(60), default="")
 
+    # ── 更正公告（ann_type='correction'）专用字段 ─────────────────
+    corr_scope = db.Column(db.String(30), default="")        # 更正事项：采购公告 / 采购文件 / 采购公告、采购文件
+    corr_reason = db.Column(db.Text, default="")             # 更正原因（简述）
+    corr_items_json = db.Column(db.Text, default="[]")       # [{"item":..,"before":..,"after":..}]
+    corr_in_attachment = db.Column(db.Integer, default=0)    # 1=更正内容较多，详见附件
+    corr_seq = db.Column(db.Integer, default=1)              # 本项目本轮第几次更正（标题用）
+
     # 状态：草稿 → 待确认 → 已确认
     status = db.Column(db.String(20), default="草稿")
     confirmed_by = db.Column(db.String(50), default="")
@@ -64,6 +71,11 @@ class Announcement(db.Model):
             "agency_reg_phone": self.agency_reg_phone or "",
             "agency_contact": self.agency_contact or "",
             "agency_contact_phone": self.agency_contact_phone or "",
+            "corr_scope": self.corr_scope or "",
+            "corr_reason": self.corr_reason or "",
+            "corr_items_json": self.corr_items_json or "[]",
+            "corr_in_attachment": int(self.corr_in_attachment or 0),
+            "corr_seq": int(self.corr_seq or 1),
             "status": self.status or "草稿",
             "confirmed_by": self.confirmed_by or "",
             "confirmed_at": self.confirmed_at or "",

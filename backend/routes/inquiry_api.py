@@ -16,7 +16,7 @@ from models.inquiry_attachment import InquiryAttachment
 from models.inquiry_template import InquiryTemplate
 from models.project import Project
 from models.sys_config import SysConfig
-from routes.utils import login_required, admin_required
+from routes.utils import login_required, admin_required, can_view_project
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -26,9 +26,38 @@ ATTACH_ALLOWED = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.p
 
 bp = Blueprint("inquiry", __name__)
 
+# 仅以下采购方式可立询/议价函（紧急采购按院内议价办理）
+INQUIRY_METHODS = ("院内询价", "院内议价", "医用耗材紧急采购")
+
 # ─────────────────────────────────────────────────────────────────
 # helpers
 # ─────────────────────────────────────────────────────────────────
+
+
+def _inquiry_ineligible_reason(project_id):
+    """校验项目是否可立询/议价函：方式须为询/议价/紧急采购，且未处于进行中的采购轮次。
+
+    与下拉过滤口径一致——已进入轮次且本轮未废标的项目不可立项；
+    无轮次（尚未开始）或本轮已废标（待开下一轮）的方可。
+    """
+    proj = db.session.get(Project, project_id)
+    if not proj:
+        return "项目不存在"
+    if (proj.method or "") not in INQUIRY_METHODS:
+        return "仅院内询价/院内议价/医用耗材紧急采购项目可立询/议价函"
+    from services.project_progress import stage_map
+    st = stage_map([project_id]).get(project_id, {})
+    if st.get("current_round", 0) and st.get("current_stage", "") != "round_failed":
+        return "该项目已进入采购轮次（本轮未废标），不可重复立项"
+    return None
+
+def _block_if_deleted(letter):
+    """项目已软删除则禁止对其询/议价函进一步操作。返回错误响应或 None。"""
+    proj = db.session.get(Project, letter.project_id) if letter else None
+    if proj is not None and proj.is_deleted:
+        return jsonify({"ok": False, "error": "所属项目已删除，不可继续操作"}), 400
+    return None
+
 
 def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
@@ -58,10 +87,16 @@ def _enrich_letter(letter: InquiryLetter) -> dict:
 @login_required
 def list_inquiries():
     project_id = request.args.get("project_id", type=int)
-    q = db.select(InquiryLetter).order_by(InquiryLetter.id.desc())
+    # 排除已被软删除项目的函——项目删除后其询/议价函不再展示、不可操作
+    q = (db.select(InquiryLetter)
+         .join(Project, Project.id == InquiryLetter.project_id)
+         .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
+         .order_by(InquiryLetter.id.desc()))
     if project_id:
         q = q.filter(InquiryLetter.project_id == project_id)
     rows = db.session.execute(q).scalars().all()
+    # 数据级隔离：经办人只看本人项目的函、代理只看本机构（与项目列表口径一致）
+    rows = [r for r in rows if can_view_project(db.session.get(Project, r.project_id))]
     return jsonify({"ok": True, "data": [_enrich_letter(r) for r in rows]})
 
 
@@ -75,6 +110,8 @@ def create_inquiry():
         type       = data.get("type", "询价"),
         title      = data.get("title", ""),
         content    = data.get("content", ""),
+        detail     = data.get("detail", ""),
+        requirements = data.get("requirements", ""),
         deadline   = data.get("deadline", ""),
         status     = "草稿",
         notes      = data.get("notes", ""),
@@ -84,6 +121,9 @@ def create_inquiry():
     )
     if not letter.project_id:
         return jsonify({"ok": False, "error": "请选择所属项目"}), 400
+    reason = _inquiry_ineligible_reason(letter.project_id)
+    if reason:
+        return jsonify({"ok": False, "error": reason}), 400
     db.session.add(letter)
     db.session.commit()
     return jsonify({"ok": True, "data": _enrich_letter(letter)}), 201
@@ -95,13 +135,20 @@ def update_inquiry(lid):
     letter = db.session.get(InquiryLetter, lid)
     if not letter:
         return jsonify({"ok": False, "error": "不存在"}), 404
-    if letter.status != "草稿":
-        return jsonify({"ok": False, "error": "仅草稿状态可编辑"}), 400
+    blocked = _block_if_deleted(letter)
+    if blocked:
+        return blocked
+    # 草稿与进行中均可改（如发现预算/限价填错，可修正后重新发送）；已完成（评审已出结果）锁定
+    if letter.status == "已完成":
+        return jsonify({"ok": False, "error": "已完成的函件不可编辑"}), 400
     data = request.get_json(force=True) or {}
-    for field in ("type", "title", "content", "deadline", "notes"):
+    for field in ("type", "title", "content", "detail", "requirements", "deadline", "notes"):
         if field in data:
             setattr(letter, field, data[field])
-    if "project_id" in data:
+    if "project_id" in data and data["project_id"] != letter.project_id:
+        reason = _inquiry_ineligible_reason(data["project_id"])
+        if reason:
+            return jsonify({"ok": False, "error": reason}), 400
         letter.project_id = data["project_id"]
     letter.updated_at = _now()
     db.session.commit()
@@ -131,6 +178,9 @@ def complete_inquiry(lid):
     letter = db.session.get(InquiryLetter, lid)
     if not letter:
         return jsonify({"ok": False, "error": "不存在"}), 404
+    blocked = _block_if_deleted(letter)
+    if blocked:
+        return blocked
     letter.status     = "已完成"
     letter.updated_at = _now()
     db.session.commit()
@@ -144,11 +194,12 @@ def download_word(lid):
     if not letter:
         return jsonify({"ok": False, "error": "不存在"}), 404
     proj = db.session.get(Project, letter.project_id)
-    project_name   = proj.name   if proj else ""
-    project_number = proj.number if proj else ""
+    project_name   = proj.name    if proj else ""
+    project_number = proj.number  if proj else ""
+    officer        = proj.officer if proj else ""
 
     from services.inquiry_word import generate_inquiry_word
-    buf = generate_inquiry_word(letter, project_name, project_number)
+    buf = generate_inquiry_word(letter, project_name, project_number, officer)
 
     safe_title = (letter.title or f"{letter.type}邀请函").replace("/", "-")
     filename   = f"{safe_title}.docx"
@@ -157,6 +208,30 @@ def download_word(lid):
         buf,
         as_attachment=True,
         download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@bp.route("/api/inquiries/<int:lid>/word/preview", methods=["GET"])
+@login_required
+def preview_word(lid):
+    """在线预览生成的询/议价邀请函（内联，前端 docx-preview 渲染）"""
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return jsonify({"ok": False, "error": "不存在"}), 404
+    proj = db.session.get(Project, letter.project_id)
+    project_name   = proj.name    if proj else ""
+    project_number = proj.number  if proj else ""
+    officer        = proj.officer if proj else ""
+
+    from services.inquiry_word import generate_inquiry_word
+    buf = generate_inquiry_word(letter, project_name, project_number, officer)
+
+    safe_title = (letter.title or f"{letter.type}邀请函").replace("/", "-")
+    return send_file(
+        buf,
+        as_attachment=False,
+        download_name=f"{safe_title}.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
@@ -180,6 +255,9 @@ def add_supplier(lid):
     letter = db.session.get(InquiryLetter, lid)
     if not letter:
         return jsonify({"ok": False, "error": "函件不存在"}), 404
+    blocked = _block_if_deleted(letter)
+    if blocked:
+        return blocked
     data = request.get_json(force=True) or {}
     sup = InquirySupplier(
         inquiry_id    = lid,
@@ -191,6 +269,79 @@ def add_supplier(lid):
     db.session.add(sup)
     db.session.commit()
     return jsonify({"ok": True, "data": sup.to_dict()}), 201
+
+
+def _norm(s):
+    import re
+    return re.sub(r"[\s_\-（）()【】\[\].,，。、:：;；'\"]", "", (s or "")).lower()
+
+
+@bp.route("/api/inquiries/<int:lid>/replies", methods=["GET"])
+@login_required
+def inquiry_replies(lid):
+    """从收件箱抓取本询价（项目名称+轮次）的供应商回复，标注谁回了。
+
+    匹配按固定格式『项目名称_第N次_供应商全称』：主题含供应商名→该家已回复，
+    含项目名→确信是本项目。格式不规范的旧回复尽力匹配，匹配不上的列为待人工归类。
+    """
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return jsonify({"ok": False, "error": "询价单不存在"}), 404
+    _, proj_name, rnd = _reply_subject_format(letter)
+    sups = db.session.execute(
+        db.select(InquirySupplier).filter_by(inquiry_id=lid)).scalars().all()
+
+    try:
+        from services.email_service import fetch_inbox
+        mails = fetch_inbox(limit=300)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"收信失败：{e}"}), 502
+
+    np = _norm(proj_name)
+    for m in mails:
+        m["_ns"] = _norm(m["subject"])
+        m["_proj"] = bool(np) and np in m["_ns"]   # 主题含项目名=确信本项目
+
+    rows, matched_idx = [], set()
+    for s in sups:
+        nsup = _norm(s.supplier_name)
+        nemail = (s.email or "").strip().lower()
+        best = None
+        for i, m in enumerate(mails):
+            name_hit = bool(nsup) and nsup in m["_ns"]
+            mail_hit = bool(nemail) and nemail == (m["from_addr"] or "").lower()
+            if name_hit or mail_hit:
+                cand = {"i": i, "confident": m["_proj"], "subject": m["subject"],
+                        "from": m["from_addr"], "date": m["date"]}
+                if best is None or (cand["confident"] and not best["confident"]):
+                    best = cand
+                if cand["confident"]:
+                    break
+        d = s.to_dict()
+        if best:
+            matched_idx.add(best["i"])
+            d["replied"] = True
+            d["reply_subject"] = best["subject"]
+            d["reply_from"] = best["from"]
+            d["reply_date"] = best["date"]
+            d["reply_confident"] = best["confident"]
+        else:
+            d["replied"] = False
+        rows.append(d)
+
+    # 主题含项目名但没匹配到任何供应商 → 待人工归类
+    unmatched = [{"subject": m["subject"], "from": m["from_addr"], "date": m["date"]}
+                 for i, m in enumerate(mails)
+                 if m["_proj"] and i not in matched_idx]
+
+    replied_n = sum(1 for d in rows if d["replied"])
+    sent_n = sum(1 for s in sups if (s.email or "").strip())
+    return jsonify({"ok": True, "data": {
+        "project_name": proj_name, "round": rnd,
+        "reply_format": f"{proj_name}_第{rnd}次_供应商全称",
+        "replied": replied_n, "sent": sent_n,
+        "suppliers": rows, "unmatched": unmatched,
+    }})
 
 
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>", methods=["PUT"])
@@ -223,46 +374,39 @@ def delete_supplier(lid, sid):
     return jsonify({"ok": True, "message": "已删除"})
 
 
-@bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>/send", methods=["POST"])
-@login_required
-def send_to_supplier(lid, sid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
-    sup = db.session.get(InquirySupplier, sid)
-    if not sup or sup.inquiry_id != lid:
-        return jsonify({"ok": False, "error": "供应商不存在"}), 404
-    if not sup.email:
-        return jsonify({"ok": False, "error": "该供应商未填写邮箱地址"}), 400
+# ─── 邮件发送辅助（单发 / 群发共用）──────────────────────────────
 
-    # 询价函：强制要求至少 3 家填写邮箱
-    if letter.type == "询价":
-        all_sups = db.session.execute(
-            db.select(InquirySupplier).filter_by(inquiry_id=lid)
-        ).scalars().all()
-        email_count = sum(1 for s in all_sups if s.email and s.email.strip())
-        if email_count < 3:
-            return jsonify({
-                "ok": False,
-                "error": f"询价函要求至少 3 家供应商填写邮箱地址，当前仅 {email_count} 家，请先补充"
-            }), 400
-
-    # 生成 Word 附件
+def _reply_subject_format(letter, supplier_name=None):
+    """供应商回复邮件应使用的固定主题：项目名称_第N次_供应商全称。
+    用项目名称（非编号，供应商更易识别）+ 采购轮次，便于系统按格式抓取归类。
+    返回 (示例主题, 项目名称, 轮次)。"""
     proj = db.session.get(Project, letter.project_id)
-    project_name   = proj.name   if proj else ""
-    project_number = proj.number if proj else ""
+    name = (proj.name if proj else "") or ""
+    rnd = (proj.round if proj else 1) or 1
+    return f"{name}_第{rnd}次_{supplier_name or '贵公司全称'}", name, rnd
 
-    from services.inquiry_word import generate_inquiry_word
-    buf = generate_inquiry_word(letter, project_name, project_number)
 
-    safe_title     = (letter.title or f"{letter.type}邀请函").replace("/", "-")
-    attachment_filename = f"{safe_title}.docx"
-
-    # 构建邮件正文（HTML）
-    deadline_text = f"<br/><strong style='color:#c00'>请于 {letter.deadline} 前回复报价。</strong>" if letter.deadline else ""
-    content_html  = letter.content.replace("\n", "<br/>") if letter.content else ""
-
-    body_html = f"""
+def _build_supplier_email_body(letter, sup, project_name, project_number, receive_email):
+    """构建发给某供应商的邮件正文（HTML）—— 与 Word 公告体例保持一致"""
+    def _h(s):
+        return (s or "").replace("\n", "<br/>")
+    fmt_example, _, _ = _reply_subject_format(letter, sup.supplier_name or "贵公司全称")
+    reply_notice = (
+        "<div style='margin:16px 0; padding:12px 16px; background:#fff7e6; border:1px solid #ffd591;'>"
+        "<p style='color:#c00; font-weight:bold; margin:0 0 6px;'>⚠ 回复须知（务必遵守，否则可能导致报价漏收）</p>"
+        "请将回复邮件的<strong>主题</strong>严格按以下格式填写（用下划线 _ 分隔三段）：<br/>"
+        "<span style='display:inline-block; margin:6px 0; padding:6px 10px; background:#fff; "
+        "border:1px dashed #faad14; font-weight:bold;'>项目名称_第N次_贵公司全称</span><br/>"
+        "本项目请直接填写为：<br/>"
+        f"<span style='display:inline-block; margin:6px 0; padding:6px 10px; background:#fff; "
+        f"border:1px dashed #fa8c16; color:#c00; font-weight:bold;'>{fmt_example}</span>"
+        "</div>"
+    )
+    deadline_text = (
+        f"<br/><strong style='color:#c00'>资料请于 {letter.deadline} 前发送至 {receive_email}。</strong>"
+        if letter.deadline else ""
+    )
+    return f"""
 <html><body style="font-family: 微软雅黑,sans-serif; font-size:14px; color:#333; line-height:1.8;">
 <h2 style="color:#1f3464; text-align:center;">{letter.title or (letter.type + '邀请函')}</h2>
 <p>尊敬的 <strong>{sup.supplier_name or '供应商'}</strong>，</p>
@@ -272,8 +416,10 @@ def send_to_supplier(lid, sid):
   <p><strong>函件类型：</strong>{letter.type}</p>
 </div>
 <div style="margin:16px 0;">
-{content_html}
+  <p><strong>项目细则和限价：</strong>{_h(letter.detail)}</p>
+  <p><strong>相关要求：</strong>{_h(letter.requirements)}</p>
 </div>
+{reply_notice}
 {deadline_text}
 <br/>
 <hr style="border:none;border-top:1px solid #eee;margin:20px 0;"/>
@@ -287,9 +433,25 @@ def send_to_supplier(lid, sid):
 </body></html>
 """
 
-    # 加载函件的额外附件
+
+def _prepare_letter_package(letter, proj):
+    """生成本函件的 Word 正文与附件（同一函件群发时只生成一次）。
+    返回 (project_name, project_number, subject, word_bytes, attachment_filename, extra_attachments)
+    """
+    project_name   = proj.name    if proj else ""
+    project_number = proj.number  if proj else ""
+    officer        = proj.officer if proj else ""
+
+    from services.inquiry_word import generate_inquiry_word
+    buf = generate_inquiry_word(letter, project_name, project_number, officer)
+    word_bytes = buf.getvalue()   # 取 bytes，供多次发送复用（BytesIO 读一次即空）
+
+    safe_title          = (letter.title or f"{letter.type}邀请函").replace("/", "-")
+    attachment_filename = f"{safe_title}.docx"
+    subject             = f"{letter.title or letter.type + '邀请函'} — {project_name}"
+
     ink_attachments = db.session.execute(
-        db.select(InquiryAttachment).filter_by(inquiry_id=lid).order_by(InquiryAttachment.id)
+        db.select(InquiryAttachment).filter_by(inquiry_id=letter.id).order_by(InquiryAttachment.id)
     ).scalars().all()
     extra_attachments = []
     for att in ink_attachments:
@@ -298,29 +460,31 @@ def send_to_supplier(lid, sid):
             with open(full_path, 'rb') as fh:
                 extra_attachments.append((fh.read(), att.filename))
 
-    try:
-        from services.email_service import send_email
-        send_email(
-            to_addr             = sup.email,
-            subject             = f"{letter.title or letter.type + '邀请函'} — {project_name}",
-            body_html           = body_html,
-            attachment_bytes    = buf,
-            attachment_filename = attachment_filename,
-            extra_attachments   = extra_attachments,
-        )
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"邮件发送失败：{str(e)}"}), 500
+    return project_name, project_number, subject, word_bytes, attachment_filename, extra_attachments
 
-    # 记录发送信息
+
+def _send_letter_to(sup, letter, project_name, project_number, subject,
+                    word_bytes, attachment_filename, extra_attachments):
+    """向单个供应商发送邮件并记录发送信息（调用方负责 commit）。"""
+    from services.email_service import send_email
+    from services.inquiry_word import RECEIVE_EMAIL
+    body_html = _build_supplier_email_body(letter, sup, project_name, project_number, RECEIVE_EMAIL)
+    send_email(
+        to_addr             = sup.email,
+        subject             = subject,
+        body_html           = body_html,
+        attachment_bytes    = word_bytes,
+        attachment_filename = attachment_filename,
+        extra_attachments   = extra_attachments,
+    )
     sup.sent_at = _now()
     sup.sent_by = session.get("display_name", "")
-    db.session.commit()
 
-    # 如果所有供应商都已发送，将函件状态更新为「进行中」
+
+def _advance_status_if_all_sent(letter):
+    """所有供应商均已发送时，把草稿函件推进为「进行中」。"""
     all_suppliers = db.session.execute(
-        db.select(InquirySupplier).filter_by(inquiry_id=lid)
+        db.select(InquirySupplier).filter_by(inquiry_id=letter.id)
     ).scalars().all()
     if all_suppliers and all(s.sent_at for s in all_suppliers):
         if letter.status == "草稿":
@@ -328,10 +492,113 @@ def send_to_supplier(lid, sid):
             letter.updated_at = _now()
             db.session.commit()
 
+
+def _xunjia_email_ok(letter):
+    """询价函要求至少 3 家填写邮箱；返回 (是否满足, 已填邮箱家数)"""
+    if letter.type != "询价":
+        return True, None
+    all_sups = db.session.execute(
+        db.select(InquirySupplier).filter_by(inquiry_id=letter.id)
+    ).scalars().all()
+    email_count = sum(1 for s in all_sups if s.email and s.email.strip())
+    return email_count >= 3, email_count
+
+
+@bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>/send", methods=["POST"])
+@login_required
+def send_to_supplier(lid, sid):
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    blocked = _block_if_deleted(letter)
+    if blocked:
+        return blocked
+    sup = db.session.get(InquirySupplier, sid)
+    if not sup or sup.inquiry_id != lid:
+        return jsonify({"ok": False, "error": "供应商不存在"}), 404
+    if not sup.email:
+        return jsonify({"ok": False, "error": "该供应商未填写邮箱地址"}), 400
+
+    ok, email_count = _xunjia_email_ok(letter)
+    if not ok:
+        return jsonify({"ok": False, "error": f"询价函要求至少 3 家供应商填写邮箱地址，当前仅 {email_count} 家，请先补充"}), 400
+
+    proj = db.session.get(Project, letter.project_id)
+    project_name, project_number, subject, word_bytes, fname, extra = _prepare_letter_package(letter, proj)
+    try:
+        _send_letter_to(sup, letter, project_name, project_number, subject, word_bytes, fname, extra)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"邮件发送失败：{str(e)}"}), 500
+    db.session.commit()
+    _advance_status_if_all_sent(letter)
+
     return jsonify({
         "ok": True,
         "message": f"邮件已成功发送至 {sup.email}",
         "data": sup.to_dict(),
+    })
+
+
+@bp.route("/api/inquiries/<int:lid>/send-all", methods=["POST"])
+@login_required
+def send_all_suppliers(lid):
+    """一键群发：把函件正文+附件发送给所有「已填邮箱且未发送」的供应商。"""
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    blocked = _block_if_deleted(letter)
+    if blocked:
+        return blocked
+    if letter.status == "已完成":
+        return jsonify({"ok": False, "error": "已完成的函件不可再发送"}), 400
+
+    suppliers = db.session.execute(
+        db.select(InquirySupplier).filter_by(inquiry_id=lid).order_by(InquirySupplier.id)
+    ).scalars().all()
+    if not suppliers:
+        return jsonify({"ok": False, "error": "请先在「编辑」中添加供应商"}), 400
+
+    ok, email_count = _xunjia_email_ok(letter)
+    if not ok:
+        return jsonify({"ok": False, "error": f"询价函要求至少 3 家供应商填写邮箱地址，当前仅 {email_count} 家，请先补充"}), 400
+
+    targets = [s for s in suppliers if s.email and s.email.strip() and not s.sent_at]
+    if not targets:
+        has_email = any(s.email and s.email.strip() for s in suppliers)
+        if not has_email:
+            return jsonify({"ok": False, "error": "供应商均未填写邮箱地址，请先补充"}), 400
+        return jsonify({"ok": False, "error": "所有已填邮箱的供应商均已发送"}), 400
+
+    proj = db.session.get(Project, letter.project_id)
+    project_name, project_number, subject, word_bytes, fname, extra = _prepare_letter_package(letter, proj)
+
+    sent, failed = [], []
+    for sup in targets:
+        try:
+            _send_letter_to(sup, letter, project_name, project_number, subject, word_bytes, fname, extra)
+            db.session.commit()              # 逐家提交，部分成功也能落库
+            sent.append(sup.email)
+        except ValueError as e:
+            # 配置类错误对所有供应商都一样，直接中止
+            db.session.rollback()
+            return jsonify({"ok": False, "error": str(e), "sent": sent, "failed": failed}), 400
+        except Exception as e:
+            db.session.rollback()
+            failed.append({"email": sup.email, "error": str(e)})
+
+    _advance_status_if_all_sent(letter)
+
+    msg = f"成功发送 {len(sent)} 家"
+    if failed:
+        msg += f"，失败 {len(failed)} 家"
+    return jsonify({
+        "ok": True,
+        "message": msg,
+        "sent": sent,
+        "failed": failed,
+        "data": _enrich_letter(letter),
     })
 
 
@@ -398,6 +665,40 @@ def delete_inquiry_attachment(lid, aid):
     db.session.delete(att)
     db.session.commit()
     return jsonify({"ok": True, "message": "已删除"})
+
+
+def _inquiry_attachment_path(lid, aid):
+    """返回 (att, 绝对路径) 或 (None, None)"""
+    att = db.session.get(InquiryAttachment, aid)
+    if not att or att.inquiry_id != lid:
+        return None, None
+    full_path = os.path.join(PMS_ROOT, att.filepath)
+    if not os.path.exists(full_path):
+        return att, None
+    return att, full_path
+
+
+@bp.route("/api/inquiries/<int:lid>/attachments/<int:aid>/download", methods=["GET"])
+@login_required
+def download_inquiry_attachment(lid, aid):
+    att, path = _inquiry_attachment_path(lid, aid)
+    if not att:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    if not path:
+        return jsonify({"ok": False, "error": "文件已丢失"}), 404
+    return send_file(path, as_attachment=True, download_name=att.filename)
+
+
+@bp.route("/api/inquiries/<int:lid>/attachments/<int:aid>/preview", methods=["GET"])
+@login_required
+def preview_inquiry_attachment(lid, aid):
+    """内联预览（PDF/图片浏览器渲染，docx/xlsx 前端渲染）"""
+    att, path = _inquiry_attachment_path(lid, aid)
+    if not att:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    if not path:
+        return jsonify({"ok": False, "error": "文件已丢失"}), 404
+    return send_file(path, as_attachment=False, download_name=att.filename)
 
 
 # ─────────────────────────────────────────────────────────────────

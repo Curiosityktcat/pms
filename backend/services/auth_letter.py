@@ -139,5 +139,7 @@ def generate(project, supervisor, representatives, agency_name: str,
         prefix=f'授权函_{project.number or "draft"}_'
     )
     tmp.close()
+    from services.docx_utils import strip_highlight
+    strip_highlight(doc)                 # 清除模板黄色高亮占位印记
     doc.save(tmp.name)
     return tmp.name

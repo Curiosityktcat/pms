@@ -52,6 +52,8 @@ def generate(project, agency_name, *, agency_address="", officer_name="",
                 for p in cell.paragraphs:
                     _replace_runs(p, replacements)
 
+    from services.docx_utils import strip_highlight
+    strip_highlight(doc)                 # 清除模板黄色高亮占位印记
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)

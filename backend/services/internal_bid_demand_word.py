@@ -27,14 +27,18 @@ def generate(demand, project):
     doc = Document(TEMPLATE)
     t = doc.tables[0]
 
-    pname = ""
+    # 项目名称/预算优先取需求自身手填字段（院内竞选需求是项目起点，不再关联项目）
+    pname = getattr(demand, "project_name", "") or ""
     year = demand.year or ""
-    budget = ""
+    _bud = getattr(demand, "budget_amount", None)
+    budget = f"{_bud:.2f}" if _bud else ""
     if project:
-        pname = project.name or ""
+        if not pname:
+            pname = project.name or ""
         if not year:
             year = str(project.year) if project.year else ""
-        budget = f"{project.amount:.2f}" if project.amount else ""
+        if not budget:
+            budget = f"{project.amount:.2f}" if project.amount else ""
 
     # ── 表头 ─────────────────────────────────────────────────────
     # Row 0: 需求科室 (col 0) | 归口管理科室 (col 10)
@@ -202,9 +206,11 @@ def generate(demand, project):
     _set_cell_text(t, 37, 0, part10)
 
     buf = io.BytesIO()
+    from services.docx_utils import strip_highlight
+    strip_highlight(doc)                 # 清除模板黄色高亮占位印记
     doc.save(buf)
     buf.seek(0)
 
-    proj_num = project.number if project else "unknown"
-    filename = f"院内竞选需求表_{proj_num}_{demand.status}.docx"
+    label = (project.number if project else "") or pname or "院内竞选"
+    filename = f"院内竞选需求表_{label}_{demand.status}.docx"
     return buf, filename

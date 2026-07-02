@@ -27,6 +27,9 @@ ANN_TYPE_CN = {
     "single_source": "单一来源公示",
 }
 
+# 仅以下采购方式的项目需要挂采购公告（院内竞选 / 院内单一来源采购）
+ANNOUNCEMENT_METHODS = ("院内竞选", "院内单一来源采购")
+
 ALLOWED_EXTS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx",
     ".png", ".jpg", ".jpeg", ".zip", ".rar",
@@ -86,6 +89,13 @@ def _apply_fields(ann: Announcement, data: dict):
     ann.agency_reg_phone = (data.get("agency_reg_phone") or "").strip()
     ann.agency_contact = (data.get("agency_contact") or "").strip()
     ann.agency_contact_phone = (data.get("agency_contact_phone") or "").strip()
+    # 更正公告专用字段（其他类型公告传了也无害）
+    ann.corr_scope = (data.get("corr_scope") or ann.corr_scope or "").strip()
+    ann.corr_reason = (data.get("corr_reason") or "").strip()
+    if "corr_items_json" in data:
+        ann.corr_items_json = data.get("corr_items_json") or "[]"
+    if "corr_in_attachment" in data:
+        ann.corr_in_attachment = 1 if data.get("corr_in_attachment") else 0
 
 
 def _sync_project_round(project):
@@ -200,13 +210,21 @@ def _generic_html(ann, project, agency_name):
     return "\n".join(parts)
 
 
+def _generate_word_buf(project, ann, agency_name):
+    """按公告类型分发 Word 生成器，返回 (BytesIO, filename)。"""
+    if ann.ann_type == "correction":
+        from services import correction_word as corr_svc
+        return corr_svc.generate(project, ann, agency_name), corr_svc.get_filename(project, ann)
+    return svc.generate(project, ann, agency_name), svc.get_filename(project, ann)
+
+
 @bp.route("/public/<int:aid>/word", methods=["GET"])
 def public_generate_word(aid):
     """无需登录：为已发布公告实时生成并下载 Word 文档"""
     ann = db.session.get(Announcement, aid)
     if not ann or ann.status != "已确认":
         return jsonify({"ok": False, "error": "公告不存在或尚未发布"}), 404
-    if ann.ann_type != "procurement":
+    if ann.ann_type not in ("procurement", "correction"):
         return jsonify({"ok": False, "error": "该类公告暂未提供 Word 模板，请在系统内查看或打印"}), 400
     project = db.session.get(Project, ann.project_id)
     if not project:
@@ -214,8 +232,7 @@ def public_generate_word(aid):
 
     agency_name = _get_agency_name(project.agency_code) if project.agency_code else ""
     try:
-        buf = svc.generate(project, ann, agency_name)
-        filename = svc.get_filename(project, ann)
+        buf, filename = _generate_word_buf(project, ann, agency_name)
         return send_file(
             buf,
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -242,7 +259,7 @@ def public_announcement_html(aid):
 
     agency_name = _get_agency_name(project.agency_code) if project.agency_code else ""
     try:
-        buf = svc.generate(project, ann, agency_name)
+        buf, _ = _generate_word_buf(project, ann, agency_name)
     except Exception as e:
         return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
 
@@ -336,9 +353,61 @@ def create_announcement():
         return jsonify({"ok": False, "error": "该项目未走代理机构，无法生成采购公告"}), 400
     if not _can_edit(project.agency_code):
         return jsonify({"ok": False, "error": "权限不足，只能编制本机构负责的项目公告"}), 403
-    # 采购公告须在采购文件经办人确认后方可编制
-    if data.get("ann_type", "procurement") == "procurement" and not project.doc_confirmed:
-        return jsonify({"ok": False, "error": "采购文件尚未经办人确认，无法编制采购公告"}), 400
+    # 采购公告仅限院内竞选/单一来源项目，且须在采购文件经办人确认后方可编制
+    if data.get("ann_type", "procurement") == "procurement":
+        if project.method not in ANNOUNCEMENT_METHODS:
+            return jsonify({"ok": False, "error": "仅院内竞选/单一来源采购项目需要编制采购公告"}), 400
+        if not project.doc_confirmed:
+            return jsonify({"ok": False, "error": "采购文件尚未经办人确认，无法编制采购公告"}), 400
+        # 每轮只能发一次：本轮已存在采购公告则拒绝重复创建
+        target_round = int(data.get("round_number") or project.round or 1)
+        dup = db.session.execute(
+            db.select(Announcement.id).where(
+                Announcement.project_id == project.id,
+                Announcement.ann_type == "procurement",
+                Announcement.round_number == target_round,
+            )
+        ).first()
+        if dup:
+            return jsonify({"ok": False, "error": f"该项目第 {target_round} 次采购公告已存在，每轮只能发布一次"}), 400
+
+    corr_seq = 1
+    # 更正公告：须在「本轮采购公告已发布、开标结果未判定」窗口内（公告后、开标前）
+    if data.get("ann_type") == "correction":
+        target_round = int(data.get("round_number") or project.round or 1)
+        src = db.session.execute(
+            db.select(Announcement).where(
+                Announcement.project_id == project.id,
+                Announcement.ann_type == "procurement",
+                Announcement.round_number == target_round,
+                Announcement.status == "已确认",
+            )
+        ).scalars().first()
+        if not src:
+            return jsonify({"ok": False, "error": f"该项目第 {target_round} 次采购公告尚未发布，无法发布更正公告"}), 400
+        from models.procurement_round import ProcurementRound
+        rnd = db.session.execute(
+            db.select(ProcurementRound).filter_by(
+                project_id=project.id, round_number=target_round)
+        ).scalar_one_or_none()
+        # 仅「开标前」可更正：与开标管理 active 口径一致——「可开标」确认可发生在开标时间之前，
+        # 此时仍是开标前、可更正；只有「流标已确认」或「开标时间已过」才算开标后、不可更正。
+        if rnd and rnd.can_open_status == "已确认":
+            from services.bid import _parse_cn_deadline
+            from datetime import datetime as _dtc
+            if rnd.can_open != "可开标":
+                return jsonify({"ok": False, "error": "本轮已流标，更正公告须在开标前发布"}), 400
+            _ddl = _parse_cn_deadline(src.response_deadline or project.bid_time or "")
+            if _ddl is None or _dtc.now().date() > _ddl.date():
+                return jsonify({"ok": False, "error": "本轮已开标（开标时间已过），更正公告须在开标前发布"}), 400
+        # 第几次更正 = 本项目本轮已有更正公告数 + 1
+        corr_seq = (db.session.execute(
+            db.select(db.func.count()).select_from(Announcement).where(
+                Announcement.project_id == project.id,
+                Announcement.ann_type == "correction",
+                Announcement.round_number == target_round,
+            )
+        ).scalar_one() or 0) + 1
 
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ann = Announcement(
@@ -349,6 +418,23 @@ def create_announcement():
         created_by=session.get("display_name", ""),
     )
     _apply_fields(ann, data)
+    if ann.ann_type == "correction":
+        ann.corr_seq = corr_seq
+        # 联系信息默认承接原采购公告（可再编辑）
+        if data.get("ann_type") == "correction" and not ann.agency_contact:
+            src_ann = db.session.execute(
+                db.select(Announcement).where(
+                    Announcement.project_id == project.id,
+                    Announcement.ann_type == "procurement",
+                    Announcement.round_number == ann.round_number,
+                    Announcement.status == "已确认",
+                )
+            ).scalars().first()
+            if src_ann:
+                ann.agency_address = src_ann.agency_address
+                ann.agency_email = src_ann.agency_email
+                ann.agency_contact = src_ann.agency_contact
+                ann.agency_contact_phone = src_ann.agency_contact_phone
     db.session.add(ann)
     _sync_project_round(project)
     db.session.commit()
@@ -456,15 +542,34 @@ def confirm_announcement(aid):
     ann.confirmed_by = session.get("display_name", "")
     ann.confirmed_at = now
 
-    # ── 自动将响应截止时间（开标时间）同步到项目 ────────────────────
-    if ann.response_deadline:
+    synced_msg = ""
+    if ann.ann_type == "correction" and ann.response_deadline:
+        # ── 更正公告调整了截止时间：强制同步项目开标时间 + 原采购公告截止时间 ──
+        # （开标管理列表读的是原采购公告的 response_deadline，必须一并更新）
+        project = db.session.get(Project, ann.project_id)
+        if project:
+            project.bid_time = ann.response_deadline
+        src = db.session.execute(
+            db.select(Announcement).where(
+                Announcement.project_id == ann.project_id,
+                Announcement.ann_type == "procurement",
+                Announcement.round_number == (ann.round_number or 1),
+                Announcement.status == "已确认",
+            )
+        ).scalars().first()
+        if src:
+            src.response_deadline = ann.response_deadline
+        synced_msg = f"，截止时间已同步更正为 {ann.response_deadline}"
+    elif ann.response_deadline:
+        # ── 采购公告：自动将响应截止时间（开标时间）同步到项目 ────────
         project = db.session.get(Project, ann.project_id)
         if project and not project.bid_time:
             # 只在项目尚无开标时间时才自动填入，避免覆盖手动设置
             project.bid_time = ann.response_deadline
 
     db.session.commit()
-    return jsonify({"ok": True, "message": "公告已发布，开标时间已同步至项目", "data": _enrich(ann)})
+    return jsonify({"ok": True, "message": f"公告已发布{synced_msg or '，开标时间已同步至项目'}",
+                    "data": _enrich(ann)})
 
 
 # ── 撤回确认 ──────────────────────────────────────────────────────
@@ -498,12 +603,37 @@ def generate_word(aid):
 
     agency_name = _get_agency_name(project.agency_code)
     try:
-        buf = svc.generate(project, ann, agency_name)
-        filename = svc.get_filename(project, ann)
+        buf, filename = _generate_word_buf(project, ann, agency_name)
         return send_file(
             buf,
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
+
+
+@bp.route("/<int:aid>/word", methods=["GET"])
+@login_required
+def preview_word(aid):
+    """在线预览生成的公告 Word（任意状态，点项目名调用）。"""
+    ann = db.session.get(Announcement, aid)
+    if not ann:
+        return jsonify({"ok": False, "error": "公告不存在"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not project:
+        return jsonify({"ok": False, "error": "关联项目不存在"}), 400
+    if not project.agency_code:
+        return jsonify({"ok": False, "error": "项目未关联代理机构"}), 400
+
+    agency_name = _get_agency_name(project.agency_code)
+    try:
+        buf, filename = _generate_word_buf(project, ann, agency_name)
+        return send_file(
+            buf,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            as_attachment=False,
             download_name=filename,
         )
     except Exception as e:
@@ -599,6 +729,19 @@ def download_file(aid, fid):
     return send_file(path, as_attachment=True, download_name=att.original_name)
 
 
+# 内联预览附件（PDF/图片浏览器渲染，docx/xlsx 前端渲染）
+@bp.route("/<int:aid>/files/<int:fid>/preview", methods=["GET"])
+@login_required
+def preview_file(aid, fid):
+    att = db.session.get(AnnouncementAttachment, fid)
+    if not att or att.announcement_id != aid:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    path = os.path.join(_file_dir(aid), att.saved_name)
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
+    return send_file(path, as_attachment=False, download_name=att.original_name)
+
+
 # 删除附件
 @bp.route("/<int:aid>/files/<int:fid>", methods=["DELETE"])
 @login_required
@@ -621,18 +764,79 @@ def delete_file(aid, fid):
 @bp.route("/projects", methods=["GET"])
 @login_required
 def eligible_projects():
+    """可编制采购公告的项目：仅院内竞选/单一来源，当前轮采购文件已确认，且本轮尚未发过公告。
+
+    - 项目层面的 doc_confirmed 跟随当前轮次——进入下一轮时被清零（见采购结果确认
+      驱动的开轮逻辑），因此 doc_confirmed==1 即「已确认第 X 次采购文件」。
+    - 每轮只能发一次：当前轮（Project.round）已存在采购公告（草稿/待确认/已确认任一）
+      的项目即排除，发布后即从下拉消失；废标进入下一轮、重新确认文件后才会再出现。
+    """
     role = session.get("role", "")
     my_agency = session.get("agency_code", "")
-    rows = db.session.execute(
-        db.select(Project)
-        .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
-        .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
-        .where(Project.agency_code != "")
-        .order_by(Project.id.desc())
-    ).scalars().all()
+    ann_type = request.args.get("type", "procurement")
+
+    if ann_type == "correction":
+        # 可发更正公告的项目：本轮采购公告已发布（已确认）且「仍处开标前」（与开标管理 active 口径一致）。
+        # 注意：「可开标」确认可发生在开标时间之前，此时项目仍是开标前、可更正——不能仅凭
+        # can_open_status=='已确认' 就排除（旧逻辑的 bug，导致下拉为空）。
+        from models.procurement_round import ProcurementRound
+        from services.bid import _parse_cn_deadline
+        from datetime import datetime as _dtnow
+        pairs = db.session.execute(
+            db.select(Project, Announcement)
+            .join(Announcement, db.and_(
+                Announcement.project_id == Project.id,
+                Announcement.ann_type == "procurement",
+                Announcement.round_number == db.func.coalesce(Project.round, 1),
+                Announcement.status == "已确认",
+            ))
+            .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
+            .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
+            .where(Project.agency_code != "")
+            .order_by(Project.id.desc())
+        ).all()
+        pids = list({p.id for p, _ in pairs})
+        rmap = {}
+        for r in db.session.execute(
+            db.select(ProcurementRound).where(ProcurementRound.project_id.in_(pids or [0]))
+        ).scalars().all():
+            rmap[(r.project_id, r.round_number or 1)] = r
+        rows, _seen = [], set()
+        for p, a in pairs:
+            if p.id in _seen:
+                continue
+            rnd = rmap.get((p.id, p.round or 1))
+            # 只保留开标前(active)：流标已确认、或可开标且开标时间已过 → 已开标，排除
+            if rnd and rnd.can_open_status == "已确认":
+                if rnd.can_open != "可开标":
+                    continue
+                ddl = _parse_cn_deadline(a.response_deadline or p.bid_time or "")
+                if ddl is None or _dtnow.now().date() > ddl.date():
+                    continue
+            rows.append(p)
+            _seen.add(p.id)
+    else:
+        rows = db.session.execute(
+            db.select(Project)
+            .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
+            .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
+            .where(Project.agency_code != "")
+            .where(Project.method.in_(ANNOUNCEMENT_METHODS))
+            .where(Project.doc_confirmed == 1)
+            .where(~db.exists().where(db.and_(
+                Announcement.project_id == Project.id,
+                Announcement.ann_type == "procurement",
+                Announcement.round_number == db.func.coalesce(Project.round, 1),
+            )))
+            .order_by(Project.id.desc())
+        ).scalars().all()
+    my_officer = session.get("display_name", "")
     result = []
     for p in rows:
         if role == "agency" and p.agency_code != my_agency:
+            continue
+        # 经办人隔离：officer 只看自己名下的项目；助理/负责人/管理员看全部
+        if role == "officer" and (p.officer or "") != my_officer:
             continue
         result.append({
             "id": p.id,
@@ -641,5 +845,6 @@ def eligible_projects():
             "agency_code": p.agency_code,
             "agency_name": _get_agency_name(p.agency_code),
             "status": p.status,
+            "round": p.round or 1,
         })
     return jsonify({"ok": True, "data": result})

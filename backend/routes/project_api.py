@@ -4,6 +4,7 @@ from models.project import Project
 from models.agency import Agency
 from services import project as svc
 from services.numbering import M_YIJIA, M_XUNJIA, M_JINGXUAN, M_SOLE, M_JINGJI
+from services.project_progress import build_progress
 from routes.utils import login_required
 
 bp = Blueprint("project", __name__, url_prefix="/api/projects")
@@ -34,7 +35,67 @@ def list_projects():
         officer=session.get("display_name", ""),
         show_deleted=show_deleted,
     )
+    _attach_round_info(rows)
     return jsonify({"ok": True, "data": rows, "total": len(rows)})
+
+
+@bp.route("/bid-open", methods=["GET"])
+@login_required
+def bid_open_projects():
+    """授权函专用：处于「开标期」的代理项目。
+
+    开标期 = 已发公告 ~ 采购结果确认前，跨两个阶段：
+      · bid_open：公告已确认、可开标尚未确认（即将开标）
+      · result  ：可开标已确认、采购结果未确认（已判定可开标、待结果）
+    业务流程是「先确认可开标 → 再生成授权函 + 传开标记录」，所以 result 段也必须可见
+    （流标 round_failed 已自动开下一轮，不在此列）。
+
+    授权函是采购部部门事务，不按经办人隔离——采购部各角色(officer/assistant/leader/admin)
+    都能看并据此生成授权函；代理机构仅本机构。
+    """
+    role = session.get("role", "")
+    if role == "agency":
+        rows = svc.list_projects(role="agency", agency_code=session.get("agency_code", ""))
+    else:
+        rows = svc.list_projects(role="__all__")  # 采购部：全部可见
+    _attach_round_info(rows)
+    out = [r for r in rows
+           if r.get("current_stage") in ("bid_open", "result")
+           and r.get("agency_code") and not r.get("is_draft")]
+    return jsonify({"ok": True, "data": out, "total": len(out)})
+
+
+@bp.route("/<int:pid>/progress", methods=["GET"])
+@login_required
+def project_progress(pid):
+    """项目进展图：逐轮逐节点的状态/时间/操作人（见 services.project_progress）。"""
+    project = db.session.get(Project, pid)
+    if not project:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if session.get("role") == "agency" and project.agency_code != session.get("agency_code", ""):
+        return jsonify({"ok": False, "error": "无权查看"}), 403
+    return jsonify({"ok": True, "data": build_progress(project)})
+
+
+def _attach_round_info(rows):
+    """给项目行补充 package_count、current_round、current_stage、pending_contract。"""
+    if not rows:
+        return
+    from models.package import Package
+    from services.project_progress import stage_map
+    ids = [r["id"] for r in rows]
+    pkg_counts = dict(db.session.execute(
+        db.select(Package.project_id, db.func.count())
+        .where(Package.project_id.in_(ids))
+        .group_by(Package.project_id)
+    ).all())
+    stages = stage_map(ids)
+    for r in rows:
+        st = stages.get(r["id"], {})
+        r["package_count"] = pkg_counts.get(r["id"], 0)
+        r["current_round"] = st.get("current_round", 0)
+        r["current_stage"] = st.get("current_stage", "")
+        r["pending_contract"] = st.get("pending_contract", 0)
 
 
 @bp.route("", methods=["POST"])
@@ -45,6 +106,7 @@ def create_project():
     data = request.get_json(force=True) or {}
     demand_id   = data.pop("demand_id",   None)  # 从采购需求立项时传入
     demand_type = data.pop("demand_type", None)  # 'gov' / 'competition' / 'sole_source' 等
+    distribution_id = data.pop("distribution_id", None)  # 从「项目分发」立项时传入
     try:
         p, number = svc.create_project(data, session["user"], session["display_name"])
         if p.is_draft:
@@ -70,6 +132,19 @@ def create_project():
                         db.session.commit()
                 except Exception:
                     pass  # 非致命错误，不影响立项本身
+            # 从「项目分发」立项：回填关联项目并标记已立项
+            if distribution_id:
+                try:
+                    from models.project_distribution import ProjectDistribution
+                    dist = db.session.get(ProjectDistribution, int(distribution_id))
+                    if dist:
+                        dist.project_id = p.id
+                        dist.status = "已立项"
+                        import datetime as _dt2
+                        dist.updated_at = _dt2.datetime.now().isoformat(timespec="seconds")
+                        db.session.commit()
+                except Exception:
+                    pass
         return jsonify({"ok": True, "message": msg, "data": p.to_dict()}), 201
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400

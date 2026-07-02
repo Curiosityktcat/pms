@@ -62,6 +62,8 @@ PERMISSION_CATALOG = [
         "group": "其他业务",
         "items": [
             {"key": "inquiry", "label": "7. 询/议价函"},
+            {"key": "inquiry-review", "label": "8.1 询议价评审"},
+            {"key": "project-review", "label": "8.5 项目评审资料上传"},
             {"key": "procurement-result", "label": "9. 采购结果确认"},
             {"key": "contract", "label": "10. 合同管理"},
         ],
@@ -73,12 +75,24 @@ PERMISSION_CATALOG = [
         ],
     },
     {
+        "group": "文件识别",
+        "items": [
+            {"key": "file-ocr", "label": "12. 文件识别"},
+        ],
+    },
+    {
+        "group": "投标文件审查",
+        "items": [
+            {"key": "bid-review", "label": "投标文件审查（AI 辅助）"},
+        ],
+    },
+    {
         "group": "基础数据维护",
         "items": [
-            {"key": "people-manage", "label": "12.1 人员维护"},
-            {"key": "template-manage", "label": "12.2 模板维护"},
-            {"key": "email-settings", "label": "12.3 邮件设置"},
-            {"key": "scraper-settings", "label": "12.4 抓取模型设置"},
+            {"key": "people-manage", "label": "13.1 人员维护"},
+            {"key": "template-manage", "label": "13.2 模板维护"},
+            {"key": "email-settings", "label": "13.3 邮件设置"},
+            {"key": "scraper-settings", "label": "13.4 抓取模型设置"},
         ],
     },
 ]
@@ -94,23 +108,28 @@ DEFAULT_ROLE_PERMS = {
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
         "agency-agreement", "doc",
         "flow", "bid", "bid-board", "auth-letter", "announcement",
-        "inquiry", "procurement-result", "contract", "archive",
+        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract", "archive",
+        "file-ocr", "bid-review",
         "people-manage", "template-manage", "email-settings", "scraper-settings",
     ],
+    # 采购部助理（受限/分发岗，如陈梦霞）：仅 项目分发 / 归档 / 项目流程(查看进度)，后续按需加
+    "pd_assistant": ["dispatch", "archive", "flow"],
     # 项目经办人：立项及项目执行
     "officer": [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
         "agency-agreement", "doc",
         "new", "flow", "bid", "bid-board", "auth-letter", "announcement",
-        "inquiry", "procurement-result", "contract",
+        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
+        "file-ocr", "bid-review",
     ],
     # 采购部负责人：全部业务权限
     "leader": list(ALL_PERM_KEYS),
-    # 代理机构：协办相关
+    # 代理机构：协办相关。可见 4(项目流程/开标管理/开标看板/授权函)、5采购文件编制、
+    # 6采购公告、9采购结果、10合同；发布/确认类动作由经办人完成（见各 API 角色校验）。
     "agency": [
-        "flow", "announcement", "auth-letter", "inquiry",
-        "procurement-result", "contract",
+        "flow", "bid", "bid-board", "auth-letter",
+        "doc", "announcement", "project-review", "procurement-result", "contract",
     ],
     # 监督：开标相关
     "supervisor": ["flow", "bid", "bid-board"],

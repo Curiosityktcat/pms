@@ -1,11 +1,111 @@
+import imaplib
 import smtplib
 import ssl
+import email as _email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-from email.header import Header
+from email.header import Header, decode_header
 from models import db
 from models.sys_config import SysConfig
+
+# 163 的 IMAP 防垃圾要求登录后发 ID 命令，否则报 Unsafe Login；先注册该命令
+imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))
+
+
+def _decode_hdr(s):
+    if not s:
+        return ""
+    return "".join(
+        t.decode(enc or "utf-8", "ignore") if isinstance(t, bytes) else t
+        for t, enc in decode_header(s))
+
+
+def _imap_host(cfg):
+    """由 smtp 主机推断 imap 主机（smtp.163.com → imap.163.com）。"""
+    host = cfg.get("email_smtp_host") or "smtp.163.com"
+    return host.replace("smtp.", "imap.", 1)
+
+
+def _imap_connect(cfg):
+    """登录 IMAP 并选中收件箱（163 反垃圾要求登录后报客户端 ID）。"""
+    addr = cfg.get("email_address")
+    code = cfg.get("email_auth_code")
+    if not addr or not code:
+        raise RuntimeError("邮箱未配置，无法收信")
+    M = imaplib.IMAP4_SSL(_imap_host(cfg), 993)
+    M.login(addr, code)
+    try:
+        M._simple_command("ID", '("name" "pms" "version" "1.0")')
+        M._untagged_response("OK", [], "ID")
+    except Exception:
+        pass
+    M.select("INBOX")
+    return M
+
+
+def fetch_inbox(limit=200):
+    """连邮箱拉取收件箱最近若干封邮件，返回
+    [{uid, subject, from_name, from_addr, date}]。uid 为 IMAP UID（稳定，
+    可供 fetch_attachments_by_uid 二次下载附件）。须在 app 上下文内调用。"""
+    M = _imap_connect(get_email_config())
+    try:
+        typ, data = M.uid("search", None, "ALL")
+        ids = data[0].split()
+        out = []
+        for i in reversed(ids[-limit:]):
+            typ, d = M.uid("fetch", i, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])")
+            if not d or not d[0]:
+                continue
+            msg = _email.message_from_bytes(d[0][1])
+            frm = _decode_hdr(msg.get("From"))
+            addr_m = ""
+            if "<" in frm and ">" in frm:
+                addr_m = frm[frm.find("<") + 1:frm.find(">")]
+            out.append({
+                "uid": i.decode() if isinstance(i, bytes) else str(i),
+                "subject": _decode_hdr(msg.get("Subject")),
+                "from_name": frm.split("<")[0].strip().strip('"'),
+                "from_addr": addr_m or frm,
+                "date": msg.get("Date", ""),
+            })
+        return out
+    finally:
+        try:
+            M.logout()
+        except Exception:
+            pass
+
+
+def fetch_attachments_by_uid(uids):
+    """按 UID 下载整封邮件并抽取附件，返回 {uid: [(文件名, bytes), ...]}。
+    只取带文件名的附件部分（跳过正文/内嵌图标等无名部分）。"""
+    if not uids:
+        return {}
+    M = _imap_connect(get_email_config())
+    out = {}
+    try:
+        for uid in uids:
+            typ, d = M.uid("fetch", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not d or not d[0]:
+                out[uid] = []
+                continue
+            msg = _email.message_from_bytes(d[0][1])
+            files = []
+            for part in msg.walk():
+                fname = part.get_filename()
+                if not fname:
+                    continue
+                payload = part.get_payload(decode=True)
+                if payload:
+                    files.append((_decode_hdr(fname), payload))
+            out[uid] = files
+        return out
+    finally:
+        try:
+            M.logout()
+        except Exception:
+            pass
 
 
 def get_email_config():
