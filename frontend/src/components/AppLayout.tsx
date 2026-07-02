@@ -542,9 +542,12 @@ export default function AppLayout() {
     </div>
   )
 
+  // 分流页全屏展示，不带侧边栏；选择功能点进去后，侧栏按工作区自动出现
+  const isPortal = activeKey === 'portal'
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      {!isMobile && (
+      {!isMobile && !isPortal && (
         <Sider
           width={230}
           theme="light"
@@ -560,7 +563,7 @@ export default function AppLayout() {
           {navInner}
         </Sider>
       )}
-      {isMobile && (
+      {isMobile && !isPortal && (
         <Drawer
           placement="left"
           open={drawerOpen}
@@ -586,8 +589,8 @@ export default function AppLayout() {
           top: 0,
           zIndex: 100,
         }}>
-          {/* 移动端：汉堡按钮打开抽屉菜单 */}
-          {isMobile && (
+          {/* 移动端：汉堡按钮打开抽屉菜单（分流页无侧栏，不显示） */}
+          {isMobile && !isPortal && (
             <Button
               icon={<MenuOutlined />}
               type="text"
