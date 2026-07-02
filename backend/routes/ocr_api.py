@@ -116,6 +116,7 @@ def recognize():
         "pages": data.get("pages"),
         "markdown": data.get("markdown") or "",
         "engine": engine,
+        "result_id": data.get("result_id") or "",   # 导出时嵌回版面图片
     }
 
     # 大模型引擎：记录用量并按 PMS 定价扣费
@@ -152,6 +153,7 @@ def export():
             "markdown": body.get("markdown") or "",
             "format": fmt,
             "filename": body.get("filename") or "ocr",
+            "result_id": body.get("result_id") or "",
         }, timeout=180)
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"导出服务调用失败：{e}"}), 502

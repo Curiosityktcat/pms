@@ -19,6 +19,7 @@ export interface OcrResult {
   usage?: OcrUsage
   cost?: number
   balance?: number
+  result_id?: string   // 导出 Word/PDF 时嵌回版面图片
 }
 
 /** 上传 PDF/图片，返回识别出的 Markdown。识别耗时较长，单独放宽超时。 */
@@ -44,8 +45,10 @@ export const ocrHealth = () =>
 /** 导出识别结果为 Word / Excel / PDF（返回文件流）。 */
 export type OcrExportFormat = 'docx' | 'xlsx' | 'pdf'
 
-export const ocrExport = (markdown: string, format: OcrExportFormat, filename: string) =>
-  axios.post('/api/ocr/export', { markdown, format, filename }, {
+export const ocrExport = (
+  markdown: string, format: OcrExportFormat, filename: string, resultId?: string,
+) =>
+  axios.post('/api/ocr/export', { markdown, format, filename, result_id: resultId || '' }, {
     withCredentials: true,
     responseType: 'blob',
     timeout: 180000,

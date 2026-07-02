@@ -106,7 +106,7 @@ export default function FileOcrPage() {
     const base = (result.filename || 'ocr').replace(/\.[^.]+$/, '')
     setExporting(true)
     try {
-      const res = await ocrExport(result.markdown, fmt, base)
+      const res = await ocrExport(result.markdown, fmt, base, result.result_id)
       saveBlob(res.data as Blob, `${base}.${fmt}`)
       message.success(`已导出 ${fmt.toUpperCase()}`)
     } catch {
@@ -220,10 +220,13 @@ export default function FileOcrPage() {
               <Button size="small" icon={<CopyOutlined />} onClick={copyMarkdown}>
                 复制
               </Button>
-              <Dropdown
+              <Dropdown.Button
+                size="small"
+                type="primary"
+                loading={exporting}
+                onClick={() => downloadAs('docx')}
                 menu={{
                   items: [
-                    { key: 'docx', label: '导出 Word (.docx)' },
                     { key: 'xlsx', label: '导出 Excel (.xlsx)' },
                     { key: 'pdf', label: '导出 PDF (.pdf)' },
                     { type: 'divider' },
@@ -233,11 +236,8 @@ export default function FileOcrPage() {
                     key === 'md' ? downloadMarkdown() : downloadAs(key as OcrExportFormat),
                 }}
               >
-                <Button size="small" type="primary" ghost
-                  icon={<DownloadOutlined />} loading={exporting}>
-                  下载 / 导出
-                </Button>
-              </Dropdown>
+                <DownloadOutlined /> 导出 Word
+              </Dropdown.Button>
             </Space>
           )
         }
