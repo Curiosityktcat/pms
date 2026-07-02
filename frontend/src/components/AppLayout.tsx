@@ -420,6 +420,34 @@ export default function AppLayout() {
     })
     .filter(Boolean)
 
+  // ── 工作区拆分：采购流程（1~11）与 工具集合 两套侧栏 ────────────
+  // 顶层工具项 key；其余顶层项都属于采购流程
+  const TOOL_TOP_KEYS = new Set([
+    'bid-review', 'file-ocr', 'filebox', 'base-data', 'law-library', 'supervision',
+  ])
+  // 判断当前页面属于哪个工作区（含工具分组的子项）
+  const TOOL_ACTIVE_KEYS = new Set([
+    ...TOOL_TOP_KEYS, 'people-manage', 'template-manage', 'agency-manage',
+  ])
+  const workspace: 'flow' | 'tools' | 'all' =
+    activeKey === 'portal' || activeKey === 'chpwd'
+      ? 'all'
+      : TOOL_ACTIVE_KEYS.has(activeKey) ? 'tools' : 'flow'
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const flowItems = (filteredMenuItems as any[]).filter(i => !TOOL_TOP_KEYS.has(i.key))
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const toolItems = (filteredMenuItems as any[]).filter(i => TOOL_TOP_KEYS.has(i.key))
+  const workspaceItems =
+    workspace === 'flow'
+      ? [{ type: 'group' as const, key: 'g-flow', label: '采购流程', children: flowItems }]
+      : workspace === 'tools'
+        ? [{ type: 'group' as const, key: 'g-tools', label: '工具集合', children: toolItems }]
+        : [
+            { type: 'group' as const, key: 'g-flow', label: '采购流程', children: flowItems },
+            { type: 'group' as const, key: 'g-tools', label: '工具集合', children: toolItems },
+          ]
+
   const userMenu = {
     items: [
       {
@@ -493,7 +521,7 @@ export default function AppLayout() {
           openKeys={openKeys}
           onOpenChange={onOpenChange}
           onClick={() => { if (isMobile) setDrawerOpen(false) }}
-          items={filteredMenuItems}
+          items={workspaceItems}
           style={{ borderRight: 0, background: 'transparent' }}
         />
       </div>
