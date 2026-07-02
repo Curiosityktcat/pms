@@ -11,10 +11,47 @@ uploads/
 backend/server.log
 *.db.bak.*
 
+# 活动数据库（生产库，不入库；含 SQLite WAL/SHM 临时文件）
+pms.db
+pms.db-wal
+pms.db-shm
+
 # 测试实例产物（run_test.sh）
 pms.test.db
+pms.test.db-wal
+pms.test.db-shm
 backend/server.test.log
 frontend/dist-test/
 
 # Office 临时锁文件
 ~$*
+
+# 会话密钥（rebuild.sh 自动生成，机器本地，绝不入库）
+.pms_secret_key
+
+# 仓库内 Python venv（迁移新机时由 setup.sh 创建）
+venv/
+
+# 运行日志（cloudflared / 隧道 / 定时任务等）
+*.log
+
+# rdweb 会话文件（含登录 cookie，敏感，绝不入库）
+.rdweb_session*.json
+
+# 代码备份文件
+*.bak
+*.bak.*
+*.lawbak
+*.supbak
+
+# OCR 结果缓存
+ocr_cache/
+
+# 一次性法规导入数据（29MB，import_laws.py 用）
+laws_export.json
+
+# 运行期业务附件与敏感证件，不入库
+身份证/
+聊天附件/
+询价附件/
+耗子知识/
