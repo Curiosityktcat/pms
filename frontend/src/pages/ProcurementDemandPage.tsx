@@ -12,6 +12,7 @@ import {
   UploadOutlined, DownloadOutlined, ImportOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import dayjs from 'dayjs'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
@@ -335,59 +336,50 @@ export default function ProcurementDemandPage() {
   const byTab = (tab: TabKey) => demands.filter(d => d.status === tab)
 
   // ── 操作列 ───────────────────────────────────────────────────────
-  const actionCol = (status: DemandStatus): ColumnsType<ProcurementDemand>[number] => ({
-    title: '操作', key: 'action', width: 280,
-    render: (_, record) => (
-      <Space size={4} wrap>
-        {(status === '草稿' || status === '已分发') && (
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-        )}
-        {status === '草稿' && (
-          <Popconfirm title="提交后等待采购部分发，确认？" onConfirm={() => handleSubmit(record.id)}>
-            <Button size="small" type="primary" icon={<SendOutlined />}>提交</Button>
-          </Popconfirm>
-        )}
-        {status === '待分发' && (
-          <Popconfirm title="撤回为草稿？" onConfirm={() => handleRecall(record.id)}>
-            <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
-          </Popconfirm>
-        )}
-        {status === '待分发' && isAssistant && (
-          <Button size="small" type="primary" icon={<UserSwitchOutlined />}
-            onClick={() => openDispatch(record)}>分发</Button>
-        )}
-        {status === '已分发' && isAssistant && (
-          <Popconfirm title="退回该需求？经办人将无法立项。"
-            onConfirm={() => handleReturn(record.id)}>
-            <Button size="small" danger icon={<RollbackOutlined />}>退回</Button>
-          </Popconfirm>
-        )}
-        {status === '已分发' && isOfficer && record.assigned_officer === user?.display_name && (
-          <Button size="small" type="primary"
-            style={{ background: '#52c41a', borderColor: '#52c41a' }}
-            icon={<ArrowRightOutlined />}
-            onClick={() => handleCreateProject(record)}>前往立项</Button>
-        )}
-        {record.attachment_path && (
-          <Tooltip title="下载附件">
-            <Button size="small" icon={<PaperClipOutlined />}
-              onClick={() => window.open(demandAttachmentUrl(record.id), '_blank')}>附件</Button>
-          </Tooltip>
-        )}
-        {record.project_id && (
-          <Tooltip title="下载采购需求表 Word">
-            <Button size="small" icon={<FileWordOutlined />}
-              onClick={() => window.open(demandWordUrl(record.id), '_blank')}>Word</Button>
-          </Tooltip>
-        )}
-        {status === '草稿' && (
-          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        )}
-      </Space>
-    ),
-  })
+  const demandActions = (record: ProcurementDemand, status: DemandStatus) => (
+    <>
+      {(status === '草稿' || status === '已分发') && (
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+      )}
+      {status === '草稿' && (
+        <Popconfirm title="提交后等待采购部分发，确认？" onConfirm={() => handleSubmit(record.id)}>
+          <Button size="small" type="primary" icon={<SendOutlined />}>提交</Button>
+        </Popconfirm>
+      )}
+      {status === '待分发' && (
+        <Popconfirm title="撤回为草稿？" onConfirm={() => handleRecall(record.id)}>
+          <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
+        </Popconfirm>
+      )}
+      {status === '待分发' && isAssistant && (
+        <Button size="small" type="primary" icon={<UserSwitchOutlined />} onClick={() => openDispatch(record)}>分发</Button>
+      )}
+      {status === '已分发' && isAssistant && (
+        <Popconfirm title="退回该需求？经办人将无法立项。" onConfirm={() => handleReturn(record.id)}>
+          <Button size="small" danger icon={<RollbackOutlined />}>退回</Button>
+        </Popconfirm>
+      )}
+      {status === '已分发' && isOfficer && record.assigned_officer === user?.display_name && (
+        <Button size="small" type="primary" style={{ background: '#52c41a', borderColor: '#52c41a' }}
+          icon={<ArrowRightOutlined />} onClick={() => handleCreateProject(record)}>前往立项</Button>
+      )}
+      {record.attachment_path && (
+        <Tooltip title="下载附件">
+          <Button size="small" icon={<PaperClipOutlined />} onClick={() => window.open(demandAttachmentUrl(record.id), '_blank')}>附件</Button>
+        </Tooltip>
+      )}
+      {record.project_id && (
+        <Tooltip title="下载采购需求表 Word">
+          <Button size="small" icon={<FileWordOutlined />} onClick={() => window.open(demandWordUrl(record.id), '_blank')}>Word</Button>
+        </Tooltip>
+      )}
+      {status === '草稿' && (
+        <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
+          <Button size="small" danger icon={<DeleteOutlined />} />
+        </Popconfirm>
+      )}
+    </>
+  )
 
   const typeTag = (r: ProcurementDemand) => {
     const m: Record<string, string> = {
@@ -396,36 +388,36 @@ export default function ProcurementDemandPage() {
     return m[r.demand_type] || r.demand_type
   }
 
-  const baseColumns: ColumnsType<ProcurementDemand> = [
-    { title: '申请/需求名称', dataIndex: 'project_name', ellipsis: true, width: 220 },
-    ...(!isTyped ? [{ title: '类型', key: 'type_tag', width: 70,
-      render: (_: unknown, r: ProcurementDemand) => <Text type="secondary">{typeTag(r)}</Text>
-    }] : []),
-    { title: '科室', dataIndex: 'demand_dept', width: 100 },
-    ...(!isEmergency ? [
-      { title: '预算金额（元）', dataIndex: 'budget_amount', width: 120,
-        render: (v: number) => v ? v.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—' },
-      { title: '采购方式', dataIndex: 'procurement_method', width: 110 },
-    ] : [
-      { title: '耗材通用名', dataIndex: 'consumable_name', width: 140, ellipsis: true },
-      { title: '用途', dataIndex: 'purpose_type', width: 70 },
-    ]),
-    { title: '编制人', dataIndex: 'created_by', width: 80 },
-  ]
-
-  const dispatchedCols: ColumnsType<ProcurementDemand> = [
-    ...baseColumns,
-    { title: '指派经办人', dataIndex: 'assigned_officer', width: 90 },
-    { title: '代理机构', dataIndex: 'agency_name', width: 120, ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">无</Text> },
-    { title: '分发时间', dataIndex: 'dispatched_at', width: 130,
-      render: (v: string) => v ? v.slice(0, 16) : '—' },
-  ]
-  const approvedCols: ColumnsType<ProcurementDemand> = [
-    ...baseColumns,
-    { title: '立项编号', dataIndex: 'project_number', width: 160,
-      render: (v: string) => v ? <Text code>{v}</Text> : <Text type="secondary">—</Text> },
-  ]
+  const demandToCard = (record: ProcurementDemand, status: DemandStatus): RecordCardData => {
+    const fields: { label: string; value: React.ReactNode }[] = []
+    if (!isEmergency) {
+      fields.push({ label: '预算', value: record.budget_amount ? record.budget_amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '' })
+      fields.push({ label: '方式', value: record.procurement_method })
+    } else {
+      fields.push({ label: '耗材', value: record.consumable_name })
+      fields.push({ label: '用途', value: record.purpose_type })
+    }
+    fields.push({ label: '编制人', value: record.created_by })
+    if (status === '已分发') {
+      fields.push({ label: '经办人', value: record.assigned_officer })
+      fields.push({ label: '代理', value: record.agency_name })
+      fields.push({ label: '分发', value: record.dispatched_at ? record.dispatched_at.slice(0, 16) : '' })
+    }
+    if (status === '已立项') {
+      fields.push({ label: '立项编号', value: record.project_number })
+    }
+    return {
+      key: record.id,
+      accent: STATUS_COLOR[status] === 'default' ? '#9aa0a6' : status === '已立项' ? '#34a853' : status === '已分发' ? '#1a73e8' : '#f9ab00',
+      title: record.project_name,
+      subtitle: record.demand_dept ? `科室 ${record.demand_dept}` : undefined,
+      statusText: status,
+      statusColor: STATUS_COLOR[status],
+      tags: !isTyped ? <Tag bordered={false} style={{ marginInlineEnd: 0 }}>{typeTag(record)}</Tag> : undefined,
+      fields,
+      actions: demandActions(record, status),
+    }
+  }
 
   const itemColumns: ColumnsType<DemandItem & { _idx: number }> = [
     { title: '序号',    dataIndex: '_idx',         width: 50,  render: (_,__,i)   => i+1 },
@@ -440,11 +432,8 @@ export default function ProcurementDemandPage() {
     { title: '', key: 'del', width: 50, render: (_,__,i) => <Button size="small" danger type="text" onClick={()=>removeItem(i)}>✕</Button> },
   ]
 
-  const tabItems = [
-    { key: '草稿'  as TabKey, cols: [...baseColumns,     actionCol('草稿')] },
-    { key: '待分发' as TabKey, cols: [...baseColumns,     actionCol('待分发')] },
-    { key: '已分发' as TabKey, cols: [...dispatchedCols, actionCol('已分发')] },
-    { key: '已立项' as TabKey, cols: [...approvedCols,   actionCol('已立项')] },
+  const tabItems: { key: TabKey }[] = [
+    { key: '草稿' }, { key: '待分发' }, { key: '已分发' }, { key: '已立项' },
   ]
 
   const pageTitle = meta ? `${meta.label}需求编制` : '采购需求总览（分发）'
@@ -486,8 +475,12 @@ export default function ProcurementDemandPage() {
               </Space>
             ),
             children: (
-              <Table rowKey="id" columns={t.cols} dataSource={byTab(t.key)}
-                loading={loading} size="small" pagination={{ pageSize: 15 }} scroll={{ x: 900 }} />
+              <RecordCards
+                dataSource={byTab(t.key)}
+                loading={loading}
+                emptyText={`暂无${t.key}需求`}
+                toCard={(r) => demandToCard(r, t.key)}
+              />
             ),
           }))}
         />

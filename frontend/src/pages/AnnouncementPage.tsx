@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  Card, Table, Button, Form, Input, Select, Drawer, Space, Popconfirm,
+  Card, Button, Form, Input, Select, Drawer, Space, Popconfirm,
   App, Tag, Typography, Divider, Descriptions, Alert, Modal,
-  Tooltip, Upload, List, Tabs, Badge,
+  Tooltip, Upload, List, Tabs, Badge, DatePicker,
 } from 'antd'
+import dayjs from 'dayjs'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UploadRequestOption = any
-import type { ColumnsType } from 'antd/es/table'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import {
   PlusOutlined, DownloadOutlined, EditOutlined, DeleteOutlined,
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
@@ -16,17 +17,19 @@ import {
 import axios from 'axios'
 import {
   getEligibleProjects, getAnnouncements, createAnnouncement, updateAnnouncement,
-  deleteAnnouncement, generateAnnouncementWord,
+  deleteAnnouncement, generateAnnouncementWord, announcementWordUrl,
   submitAnnouncement, confirmAnnouncement, revokeAnnouncement,
-  listFiles, deleteFile, downloadFileUrl,
+  listFiles, deleteFile, downloadFileUrl, previewFileUrl,
   QUALIFICATIONS_DEFAULT,
 } from '../services/announcement'
 import type { Announcement, AnnProject, AnnAttachment } from '../services/announcement'
+import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import {
   getTemplates, createTemplate, updateTemplate, deleteTemplate,
 } from '../services/agencyTemplate'
 import type { AgencyTemplate } from '../services/agencyTemplate'
 import { useAuth } from '../hooks/useAuth'
+import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -93,6 +96,23 @@ function buildDefaultRegNote(start: string, end: string): string {
   return `${start}-${end}报名时间（上午08时30分至12时00分，下午14时30分至17时00分）。`
 }
 
+// ── 中文日期串 ↔ dayjs ──────────────────────────────────────────────
+// DatePicker 用 dayjs；存库仍用中文串（"2026年6月1日" / "2026年6月20日15:00"），
+// 以兼容 Word 生成与各处「开标时间」抓取正则（要求 年月日时之间无空格）。
+function parseCnDate(s?: string): dayjs.Dayjs | null {
+  if (!s) return null
+  const m = s.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:(\d{1,2})\s*[：:]\s*(\d{2}))?/)
+  if (!m) return null
+  const d = dayjs(new Date(+m[1], +m[2] - 1, +m[3], m[4] ? +m[4] : 0, m[5] ? +m[5] : 0))
+  return d.isValid() ? d : null
+}
+function fmtCnDay(d?: dayjs.Dayjs | null): string {
+  return d ? d.format('YYYY年M月D日') : ''
+}
+function fmtCnDateTime(d?: dayjs.Dayjs | null): string {
+  return d ? d.format('YYYY年M月D日HH:mm') : ''
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -106,6 +126,7 @@ function AttachmentSection({ annId }: { annId: number }) {
   const { message } = App.useApp()
   const [files, setFiles] = useState<AnnAttachment[]>([])
   const [uploading, setUploading] = useState(false)
+  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
 
   const load = useCallback(async () => {
     try {
@@ -167,6 +188,11 @@ function AttachmentSection({ annId }: { annId: number }) {
           renderItem={(f) => (
             <List.Item
               actions={[
+                ...(isPreviewable(f.original_name) ? [
+                  <a key="pv" onClick={() => setPreview({ open: true, url: previewFileUrl(annId, f.id), name: f.original_name })}>
+                    预览
+                  </a>,
+                ] : []),
                 <a key="dl" href={downloadFileUrl(annId, f.id)} download={f.original_name}>
                   下载
                 </a>,
@@ -193,6 +219,12 @@ function AttachmentSection({ annId }: { annId: number }) {
           暂无附件。生成Word时附件名将自动列于文档末尾。
         </div>
       )}
+      <FilePreviewModal
+        open={preview.open}
+        url={preview.url}
+        filename={preview.name}
+        onClose={() => setPreview(p => ({ ...p, open: false }))}
+      />
     </div>
   )
 }
@@ -358,6 +390,8 @@ export default function AnnouncementPage() {
   const [tab, setTab] = useState<AnnTab>('pending')
   const [search, setSearch] = useState('')
   const [filterAgency, setFilterAgency] = useState<string | undefined>()
+  // 点项目名在线预览生成的公告 Word
+  const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
 
   const isAgency = user?.role === 'agency'
   const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
@@ -381,12 +415,12 @@ export default function AnnouncementPage() {
   useEffect(() => { load() }, [])
 
   // 报名时间变化时自动生成备注（仅当备注为空）
-  const regStart: string = Form.useWatch('reg_start', form) ?? ''
-  const regEnd: string = Form.useWatch('reg_end', form) ?? ''
+  const regStart = Form.useWatch('reg_start', form) as dayjs.Dayjs | undefined
+  const regEnd = Form.useWatch('reg_end', form) as dayjs.Dayjs | undefined
   const regNote: string = Form.useWatch('reg_note', form) ?? ''
   useEffect(() => {
     if (!regNote && regStart && regEnd) {
-      form.setFieldValue('reg_note', buildDefaultRegNote(regStart, regEnd))
+      form.setFieldValue('reg_note', buildDefaultRegNote(fmtCnDay(regStart), fmtCnDay(regEnd)))
     }
   }, [regStart, regEnd])
 
@@ -432,6 +466,18 @@ export default function AnnouncementPage() {
     setDrawerOpen(true)
   }
 
+  // 待办「去处理」跳转：已发该项目公告→高亮其行；否则打开新建并预选该项目
+  useFocusTarget(!loading && projects.length > 0, (id) => {
+    const ann = list.find(a => a.project_id === id && a.ann_type === 'procurement')
+    if (ann) {
+      flashRow(ann.id)
+    } else {
+      openNew()
+      form.setFieldsValue({ project_id: id })
+      setSelectedProject(projects.find(x => x.id === id) || null)
+    }
+  })
+
   const openEdit = (ann: Announcement) => {
     setEditId(ann.id)
     const proj = projects.find(p => p.id === ann.project_id) || null
@@ -443,10 +489,10 @@ export default function AnnouncementPage() {
       project_intro: ann.project_intro,
       qualifications: ann.qualifications || QUALIFICATIONS_DEFAULT,
       special_req: ann.special_req,
-      reg_start: ann.reg_start,
-      reg_end: ann.reg_end,
+      reg_start: parseCnDate(ann.reg_start),
+      reg_end: parseCnDate(ann.reg_end),
       reg_note: ann.reg_note,
-      response_deadline: ann.response_deadline,
+      response_deadline: parseCnDate(ann.response_deadline),
       agency_address: ann.agency_address,
       delivery_address: ann.delivery_address,
       agency_email: ann.agency_email,
@@ -472,13 +518,20 @@ export default function AnnouncementPage() {
   const handleSave = async () => {
     try { await form.validateFields() } catch { return }
     const values = form.getFieldsValue()
+    // 日历控件返回 dayjs，统一转回中文串存库（无空格，确保各处开标时间可正确抓取）
+    const payload = {
+      ...values,
+      reg_start: fmtCnDay(values.reg_start),
+      reg_end: fmtCnDay(values.reg_end),
+      response_deadline: fmtCnDateTime(values.response_deadline),
+    }
     setLoading(true)
     try {
       if (editId) {
-        await updateAnnouncement(editId, values)
+        await updateAnnouncement(editId, payload)
         message.success('已保存')
       } else {
-        await createAnnouncement(values)
+        await createAnnouncement(payload)
         message.success('已创建草稿')
       }
       setDrawerOpen(false)
@@ -555,140 +608,76 @@ export default function AnnouncementPage() {
   }
 
   // ── 列定义（待挂网） ──────────────────────────────────────────
-  const pendingColumns: ColumnsType<Announcement> = [
-    { title: '项目编号', dataIndex: 'project_number', width: 200, render: (v) => <Text code>{v}</Text> },
-    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
-    { title: '代理机构', dataIndex: 'agency_name', width: 150, ellipsis: true },
-    {
-      title: '开标次数', dataIndex: 'round_number', width: 90,
-      render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
-    },
-    { title: '响应截止（开标时间）', dataIndex: 'response_deadline', width: 180 },
-    {
-      title: '状态', dataIndex: 'status', width: 90,
-      render: (v) => <Tag color={STATUS_COLOR[v] || 'default'}>{v}</Tag>,
-    },
-    { title: '编制人', dataIndex: 'created_by', width: 90, render: (v) => v || '—' },
-    {
-      title: '操作', width: 260,
-      render: (_, record) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
-            Word
-          </Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-          {/* 代理机构：草稿 → 提交给采购人 */}
-          {isAgency && record.status === '草稿' && (
-            <Popconfirm title="提交后由采购人确认发布，确认提交？" onConfirm={() => handleSubmit(record.id)}>
-              <Button size="small" icon={<SendOutlined />} type="primary" ghost>提交</Button>
-            </Popconfirm>
-          )}
-          {/* 经办人：草稿状态可直接发布 */}
-          {canConfirm && record.status === '草稿' && (
-            <Popconfirm
-              title="直接发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认发布？"
-              onConfirm={() => handleConfirm(record.id)}
-            >
-              <Button size="small" icon={<CheckCircleOutlined />} type="primary">直接发布</Button>
-            </Popconfirm>
-          )}
-          {/* 经办人：待确认 → 确认发布 */}
-          {canConfirm && record.status === '待确认' && (
-            <Popconfirm
-              title="确认发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认？"
-              onConfirm={() => handleConfirm(record.id)}
-            >
-              <Button size="small" icon={<CheckCircleOutlined />} type="primary">确认发布</Button>
-            </Popconfirm>
-          )}
-          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+  const roundTag = (v: number) => v > 1
+    ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[v - 1]}次</Tag>
+    : <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>
 
-  // ── 列定义（挂网进行中） ──────────────────────────────────────
-  const publishedColumns: ColumnsType<Announcement> = [
-    { title: '项目编号', dataIndex: 'project_number', width: 180, render: (v) => <Text code>{v}</Text> },
-    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
-    { title: '代理机构', dataIndex: 'agency_name', width: 140, ellipsis: true },
-    {
-      title: '开标次数', dataIndex: 'round_number', width: 90,
-      render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
-    },
-    {
-      title: '开标时间（响应截止）', dataIndex: 'response_deadline', width: 190,
-      render: (v) => v || <Text type="secondary">未填写</Text>,
-    },
-    {
-      title: '距开标倒计时', width: 180,
-      render: (_, record) => {
-        const { text, color } = getCountdown(record.response_deadline)
-        return (
-          <span style={{ color, fontWeight: 500 }}>
-            <ClockCircleOutlined style={{ marginRight: 4 }} />{text}
-          </span>
-        )
-      },
-    },
-    { title: '确认人', dataIndex: 'confirmed_by', width: 90, render: (v) => v || '—' },
-    {
-      title: '操作', width: 200,
-      render: (_, record) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
-            Word
-          </Button>
-          {canConfirm && (
-            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-          )}
-          {canConfirm && (
-            <Tooltip title="撤回发布，恢复为草稿">
-              <Popconfirm title="撤回后公告将从挂网页面撤下，确认撤回？" onConfirm={() => handleRevoke(record.id)}>
-                <Button size="small" icon={<RollbackOutlined />} danger>撤回</Button>
+  const annToCard = (record: Announcement): RecordCardData => {
+    const isOpened = tab === 'opened'
+    const isPublished = tab === 'published'
+    const fields: { label: string; value: React.ReactNode }[] = [
+      { label: '代理', value: record.agency_name },
+      { label: '开标', value: record.response_deadline },
+    ]
+    if (isPublished) {
+      const { text, color } = getCountdown(record.response_deadline)
+      fields.push({ label: '倒计时', value: <span style={{ color, fontWeight: 500 }}><ClockCircleOutlined style={{ marginRight: 4 }} />{text}</span> })
+      fields.push({ label: '确认人', value: record.confirmed_by })
+    } else if (isOpened) {
+      fields.push({ label: '确认人', value: record.confirmed_by })
+    } else {
+      fields.push({ label: '编制人', value: record.created_by })
+    }
+    return {
+      key: record.id,
+      accent: isOpened ? '#9aa0a6' : record.status === '已确认' ? '#34a853' : record.status === '待确认' ? '#f9ab00' : '#1a73e8',
+      title: record.project_name,
+      onTitleClick: () => setDocPreview({ open: true, url: announcementWordUrl(record.id), name: `${record.project_name}-公告.docx` }),
+      subtitle: record.project_number,
+      statusText: isOpened ? '已开标' : record.status,
+      statusColor: isOpened ? 'default' : STATUS_COLOR[record.status] || 'default',
+      tags: roundTag(record.round_number),
+      fields,
+      actions: (
+        <>
+          <Button size="small" type="primary" ghost icon={<DownloadOutlined />} onClick={() => handleGenerate(record)}>Word</Button>
+          {tab === 'pending' && (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+              {isAgency && record.status === '草稿' && (
+                <Popconfirm title="提交后由采购人确认发布，确认提交？" onConfirm={() => handleSubmit(record.id)}>
+                  <Button size="small" icon={<SendOutlined />} type="primary" ghost>提交</Button>
+                </Popconfirm>
+              )}
+              {canConfirm && record.status === '草稿' && (
+                <Popconfirm title="直接发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认发布？" onConfirm={() => handleConfirm(record.id)}>
+                  <Button size="small" icon={<CheckCircleOutlined />} type="primary">直接发布</Button>
+                </Popconfirm>
+              )}
+              {canConfirm && record.status === '待确认' && (
+                <Popconfirm title="确认发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认？" onConfirm={() => handleConfirm(record.id)}>
+                  <Button size="small" icon={<CheckCircleOutlined />} type="primary">确认发布</Button>
+                </Popconfirm>
+              )}
+              <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
+                <Button size="small" danger icon={<DeleteOutlined />} />
               </Popconfirm>
-            </Tooltip>
+            </>
           )}
-        </Space>
+          {tab === 'published' && canConfirm && (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+              <Tooltip title="撤回发布，恢复为草稿">
+                <Popconfirm title="撤回后公告将从挂网页面撤下，确认撤回？" onConfirm={() => handleRevoke(record.id)}>
+                  <Button size="small" icon={<RollbackOutlined />} danger>撤回</Button>
+                </Popconfirm>
+              </Tooltip>
+            </>
+          )}
+        </>
       ),
-    },
-  ]
-
-  // ── 列定义（已开标） ──────────────────────────────────────────
-  const openedColumns: ColumnsType<Announcement> = [
-    { title: '项目编号', dataIndex: 'project_number', width: 180, render: (v) => <Text code>{v}</Text> },
-    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
-    { title: '代理机构', dataIndex: 'agency_name', width: 140, ellipsis: true },
-    {
-      title: '开标次数', dataIndex: 'round_number', width: 90,
-      render: (v) => v > 1 ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag> : <Tag color="blue">第一次</Tag>,
-    },
-    {
-      title: '开标时间（响应截止）', dataIndex: 'response_deadline', width: 190,
-      render: (v) => v || '—',
-    },
-    { title: '确认人', dataIndex: 'confirmed_by', width: 90, render: (v) => v || '—' },
-    {
-      title: '状态', width: 80,
-      render: () => <Tag color="default" icon={<CheckSquareOutlined />}>已开标</Tag>,
-    },
-    {
-      title: '操作', width: 120,
-      render: (_, record) => (
-        <Space size={4}>
-          <Button size="small" icon={<DownloadOutlined />} type="primary" onClick={() => handleGenerate(record)}>
-            Word
-          </Button>
-        </Space>
-      ),
-    },
-  ]
-
-  const currentColumns = tab === 'pending' ? pendingColumns
-    : tab === 'published' ? publishedColumns
-    : openedColumns
+    }
+  }
 
   const currentAgencyCode = isAgency
     ? user?.agency_code || ''
@@ -810,15 +799,7 @@ export default function AnnouncementPage() {
         />
       )}
 
-      <Table
-        rowKey="id"
-        columns={currentColumns}
-        dataSource={currentData}
-        loading={tableLoading}
-        size="small"
-        pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 条` }}
-        locale={{ emptyText: '暂无数据' }}
-      />
+      <RecordCards dataSource={currentData} loading={tableLoading} emptyText="暂无数据" toCard={annToCard} />
 
       {/* ── 新建/编辑 Drawer ──────────────────────────────────────── */}
       <Drawer
@@ -882,23 +863,23 @@ export default function AnnouncementPage() {
           </Form.Item>
 
           <Form.Item
-            label="特殊要求（第七项，选填）"
+            label="特殊资格要求（选填）"
             name="special_req"
-            extra="如有特殊资质要求，填写在此处（对应公告1.5节第七条）"
+            extra="对应公告 1.5 节「二、特殊资格要求」；每行一条，自动编号（一）（二）…，留空则填「无。」"
           >
-            <TextArea rows={2} placeholder="如需要则填写，否则留空" />
+            <TextArea rows={2} placeholder="如有特殊资质要求每行一条填写，否则留空" />
           </Form.Item>
 
           <Divider plain>时间安排</Divider>
 
           <div style={{ display: 'flex', gap: 16 }}>
             <Form.Item label="报名开始日期" name="reg_start"
-              rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="如：2026年6月1日" />
+              rules={[{ required: true, message: '请选择报名开始日期' }]} style={{ flex: 1 }}>
+              <DatePicker style={{ width: '100%' }} format="YYYY年M月D日" placeholder="选择报名开始日期" />
             </Form.Item>
             <Form.Item label="报名截止日期" name="reg_end"
-              rules={[{ required: true, message: '请填写' }]} style={{ flex: 1 }}>
-              <Input placeholder="如：2026年6月10日" />
+              rules={[{ required: true, message: '请选择报名截止日期' }]} style={{ flex: 1 }}>
+              <DatePicker style={{ width: '100%' }} format="YYYY年M月D日" placeholder="选择报名截止日期" />
             </Form.Item>
           </div>
 
@@ -909,9 +890,14 @@ export default function AnnouncementPage() {
           </Form.Item>
 
           <Form.Item label="响应文件截止时间（开标时间）" name="response_deadline"
-            rules={[{ required: true, message: '请填写' }]}
-            extra="精确到小时分钟，如：2026年6月20日15:00；此时间用于判断挂网进行中/已开标">
-            <Input placeholder="如：2026年6月20日15:00" style={{ maxWidth: 280 }} />
+            rules={[{ required: true, message: '请选择开标日期时间' }]}
+            extra="日历选择，精确到分钟，如：2026年6月20日15:00；此时间用于判断挂网进行中/已开标及开标倒计时">
+            <DatePicker
+              showTime={{ format: 'HH:mm' }}
+              format="YYYY年M月D日HH:mm"
+              style={{ width: 280 }}
+              placeholder="选择开标日期时间"
+            />
           </Form.Item>
 
           <Divider plain>
@@ -978,6 +964,14 @@ export default function AnnouncementPage() {
         agencyCode={currentAgencyCode}
         onClose={() => setTplDrawerOpen(false)}
         onApply={applyTemplate}
+      />
+
+      {/* 点项目名：在线预览生成的公告 Word */}
+      <FilePreviewModal
+        open={docPreview.open}
+        url={docPreview.url}
+        filename={docPreview.name}
+        onClose={() => setDocPreview((p) => ({ ...p, open: false }))}
       />
     </Card>
   )

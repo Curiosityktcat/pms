@@ -7,6 +7,7 @@ export interface AnnProject {
   agency_code: string
   agency_name: string
   status: string
+  round?: number
 }
 
 export interface Announcement {
@@ -32,6 +33,12 @@ export interface Announcement {
   agency_reg_phone: string
   agency_contact: string
   agency_contact_phone: string
+  // 更正公告（ann_type='correction'）专用
+  corr_scope: string          // 更正事项：采购公告 / 采购文件 / 采购公告、采购文件
+  corr_reason: string
+  corr_items_json: string     // [{item,before,after}]
+  corr_in_attachment: number  // 1=内容较多详见附件
+  corr_seq: number            // 第几次更正
   status: string
   confirmed_by: string
   confirmed_at: string
@@ -58,7 +65,7 @@ export const QUALIFICATIONS_DEFAULT =
 
 export type AnnFormData = Omit<Announcement,
   'id' | 'project_name' | 'project_number' | 'agency_name' | 'project_agency_code' |
-  'ann_type_cn' | 'confirmed_by' | 'confirmed_at' | 'created_at' | 'created_by'>
+  'ann_type_cn' | 'confirmed_by' | 'confirmed_at' | 'created_at' | 'created_by' | 'corr_seq'>
 
 // ── 公开接口（无需登录） ────────────────────────────────────────
 export function getPublicAnnouncements(annType = 'procurement') {
@@ -88,8 +95,10 @@ export function getPublicAnnouncementHtml(annId: number) {
 }
 
 // ── 公告 CRUD ──────────────────────────────────────────────────
-export function getEligibleProjects() {
-  return axios.get<{ ok: boolean; data: AnnProject[] }>('/api/announcements/projects')
+export function getEligibleProjects(annType = 'procurement') {
+  return axios.get<{ ok: boolean; data: AnnProject[] }>('/api/announcements/projects', {
+    params: { type: annType },
+  })
 }
 export function getAnnouncements(annType = 'procurement') {
   return axios.get<{ ok: boolean; data: Announcement[] }>('/api/announcements', {
@@ -120,6 +129,10 @@ export function revokeAnnouncement(id: number) {
 export function generateAnnouncementWord(id: number) {
   return axios.post(`/api/announcements/${id}/generate`, {}, { responseType: 'blob' })
 }
+// 点项目名在线预览生成的公告 Word（GET，内联）
+export function announcementWordUrl(id: number) {
+  return `/api/announcements/${id}/word`
+}
 
 // ── 附件 ──────────────────────────────────────────────────────
 export function listFiles(annId: number) {
@@ -130,4 +143,7 @@ export function deleteFile(annId: number, fileId: number) {
 }
 export function downloadFileUrl(annId: number, fileId: number) {
   return `/api/announcements/${annId}/files/${fileId}`
+}
+export function previewFileUrl(annId: number, fileId: number) {
+  return `/api/announcements/${annId}/files/${fileId}/preview`
 }

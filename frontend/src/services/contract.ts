@@ -6,7 +6,7 @@ export interface Contract {
   contract_number: string
   contract_name: string
   package_no: string
-  status: '合同草案' | '合同上传'
+  status: '合同草案' | '审核完成' | '合同上传'
   supplier_name: string
   supplier_address: string
   supplier_contact: string
@@ -51,6 +51,7 @@ export const revokeContract = (id: number) =>
   api.post<{ ok: boolean; message: string }>(`/contracts/${id}/revoke`)
 
 export const contractFileUrl = (id: number) => `/api/contracts/${id}/file`
+export const contractFilePreviewUrl = (id: number) => `/api/contracts/${id}/file/preview`
 
 export const uploadContractFile = (id: number, file: File) => {
   const form = new FormData()
@@ -101,3 +102,18 @@ export function isPreviewable(mimeType: string): boolean {
 export function isImage(mimeType: string): boolean {
   return mimeType.startsWith('image/')
 }
+
+// ── rd-web 合同审签单直连 ─────────────────────────────────────────
+export interface RdwebStatus {
+  running: boolean
+  ok: boolean | null
+  serial_no: string
+  msg: string
+}
+
+export const submitContractToRdweb = (cid: number, overrides?: Record<string, string>) =>
+  api.post<{ ok: boolean; msg: string }>(`/contracts/${cid}/submit-to-rdweb`,
+    overrides ? { data: overrides } : {})
+
+export const getRdwebContractStatus = (cid: number) =>
+  api.get<{ ok: boolean; data: RdwebStatus }>(`/contracts/${cid}/rdweb-status`)

@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
-  Table, Button, Drawer, Form, Input, Select, Radio, InputNumber,
+  Button, Drawer, Form, Input, Select, Radio, InputNumber,
   Card, Space, Tag, Tabs, App, Typography, Row, Col, Upload, Tooltip,
-  Modal, Image, Divider,
+  Divider, Modal, Descriptions,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined,
@@ -10,15 +10,19 @@ import {
   EyeOutlined, FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
   FileImageOutlined, FileOutlined, PaperClipOutlined,
 } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
+import RecordCards from '../components/RecordCards'
+import HermesPanel, { type HermesField } from '../components/HermesPanel'
 import {
   listContracts, createContract, updateContract, deleteContract,
-  submitContract, revokeContract, contractFileUrl, uploadContractFile,
+  submitContract, revokeContract, contractFileUrl, contractFilePreviewUrl, uploadContractFile,
   listAttachments, uploadAttachment, deleteAttachment,
-  attachmentDownloadUrl, attachmentPreviewUrl, isPreviewable, isImage,
+  attachmentDownloadUrl, attachmentPreviewUrl,
   type Contract, type ContractAttachment,
 } from '../services/contract'
 import { getProjects, type Project } from '../services/project'
+import { useAuth } from '../hooks/useAuth'
+import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
+import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -57,10 +61,7 @@ function AttachmentPanel({ contractId, stage, onCountChange }: AttachmentsProps)
   const { message, modal } = App.useApp()
   const [atts, setAtts] = useState<ContractAttachment[]>([])
   const [uploading, setUploading] = useState(false)
-  const [previewVisible, setPreviewVisible] = useState(false)
-  const [previewUrl, setPreviewUrl] = useState('')
-  const [previewTitle, setPreviewTitle] = useState('')
-  const [previewIsImage, setPreviewIsImage] = useState(false)
+  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -107,11 +108,7 @@ function AttachmentPanel({ contractId, stage, onCountChange }: AttachmentsProps)
   }
 
   const handlePreview = (att: ContractAttachment) => {
-    const url = attachmentPreviewUrl(contractId!, att.id)
-    setPreviewUrl(url)
-    setPreviewTitle(att.original_name)
-    setPreviewIsImage(isImage(att.mime_type))
-    setPreviewVisible(true)
+    setPreview({ open: true, url: attachmentPreviewUrl(contractId!, att.id), name: att.original_name })
   }
 
   const stageAtts = atts // 已在 load 中过滤
@@ -143,7 +140,7 @@ function AttachmentPanel({ contractId, stage, onCountChange }: AttachmentsProps)
                 </Text>
               </Space>
               <Space size={4}>
-                {isPreviewable(att.mime_type) && (
+                {isPreviewable(att.original_name) && (
                   <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => handlePreview(att)} style={{ padding: '0 4px' }}>
                     预览
                   </Button>
@@ -173,38 +170,16 @@ function AttachmentPanel({ contractId, stage, onCountChange }: AttachmentsProps)
         </Button>
       </Upload>
       <div style={{ color: '#aaa', fontSize: 11, marginTop: 4 }}>
-        支持 PDF、Word、Excel、图片；PDF 和图片支持在线预览
+        支持 PDF、Word、Excel、图片；均可在线预览
       </div>
 
-      {/* 图片预览 Modal */}
-      {previewIsImage ? (
-        <Image
-          style={{ display: 'none' }}
-          preview={{
-            visible: previewVisible,
-            src: previewUrl,
-            onVisibleChange: setPreviewVisible,
-          }}
-        />
-      ) : (
-        <Modal
-          open={previewVisible}
-          title={previewTitle}
-          footer={
-            <Button type="primary" onClick={() => setPreviewVisible(false)}>关闭</Button>
-          }
-          onCancel={() => setPreviewVisible(false)}
-          width="80%"
-          style={{ top: 20 }}
-          styles={{ body: { padding: 0, height: '75vh' } }}
-        >
-          <iframe
-            src={previewUrl}
-            style={{ width: '100%', height: '100%', border: 'none' }}
-            title={previewTitle}
-          />
-        </Modal>
-      )}
+      {/* 在线预览（PDF/图片/Word/Excel/文本） */}
+      <FilePreviewModal
+        open={preview.open}
+        url={preview.url}
+        filename={preview.name}
+        onClose={() => setPreview(p => ({ ...p, open: false }))}
+      />
       {/* 隐藏 input 用于触发文件选择 */}
       <input ref={fileInputRef} type="file" style={{ display: 'none' }} />
     </div>
@@ -236,10 +211,46 @@ const defaultUploadValues = {
 
 export default function ContractPage() {
   const { message, modal } = App.useApp()
+  const { user } = useAuth()
+  // 确认合同（草案→合同上传）/撤回由采购人方完成，代理机构只能上传合同草案
+  const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
   const [contracts, setContracts] = useState<Contract[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
-  const [tabStatus, setTabStatus] = useState<'合同草案' | '合同上传'>('合同草案')
+  const [tabStatus, setTabStatus] = useState<'合同草案' | '审核完成' | '合同上传'>('合同草案')
+  // 点合同名/合同文件：在线预览盖章合同
+  const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
+  // 合同详情只读弹窗：审核完成/合同上传后仍可点项目名查看草案录入的全部内容
+  const [detailC, setDetailC] = useState<Contract | null>(null)
+  const [detailAtts, setDetailAtts] = useState<ContractAttachment[]>([])
+  // rd-web 合同审签字段（标签须与 rd-web 表单一致，供 Hermes 自动填报）。
+  // 经办人/归口科室自动取项目；合同编码按规则；甲方为本院固定值。
+  const contractFields = useMemo<HermesField[]>(() => {
+    if (!detailC) return []
+    const proj = projects.find(p => p.id === detailC.project_id)
+    const pkgLabel = `${detailC.project_name || ''}　包${detailC.package_no || '1'}`
+    return [
+      { label: '合同名称', value: detailC.contract_name || '', long: true },
+      { label: '合同编码', value: detailC.contract_number || '' },
+      { label: '项目名称及包号', value: pkgLabel, long: true },
+      { label: '归口管理科室', value: proj?.manage_dept || '' },
+      { label: '合同金额', value: detailC.amount_is_text ? (detailC.amount_text || '') : (detailC.amount != null ? `${detailC.amount}元` : '') },
+      { label: '合同甲方', value: '内江市第一人民医院', readOnly: true },
+      { label: '甲方法定代表人', value: '谢晓阳', readOnly: true },
+      { label: '甲方联系电话', value: '0832-2256120', readOnly: true },
+      { label: '甲方地址', value: '四川省内江市市中区沱中路41号、汉安大道西段1866号', readOnly: true },
+      { label: '合同乙方', value: detailC.supplier_name || '' },
+      { label: '乙方法定代表人', value: detailC.supplier_legal_rep || '' },
+      { label: '乙方联系电话', value: detailC.supplier_contact || '' },
+      { label: '乙方地址', value: detailC.supplier_address || '', long: true },
+      { label: '合同类别', value: '采购部合同', readOnly: true },
+      { label: '经办人', value: proj?.officer || '' },
+    ]
+  }, [detailC, projects])
+  useEffect(() => {
+    if (!detailC) { setDetailAtts([]); return }
+    listAttachments(detailC.id).then(r => setDetailAtts(r.data.data || [])).catch(() => setDetailAtts([]))
+  }, [detailC])
 
   // ── 草案 Drawer ────────────────────────────────────────────────
   const [draftOpen, setDraftOpen] = useState(false)
@@ -277,6 +288,15 @@ export default function ContractPage() {
 
   const filtered = contracts.filter(c => c.status === tabStatus)
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p]))
+
+  // 可签合同的项目：存在「已中标未签约」的包（pending_contract>0）。
+  // 全量 projects 仍用于表格项目名映射；编辑既有合同时把已绑定项目补进下拉。
+  const watchedPid = Form.useWatch('project_id', draftForm)
+  const contractOptions = projects.filter(p => (p.pending_contract ?? 0) > 0)
+  if (watchedPid && !contractOptions.some(p => p.id === watchedPid)) {
+    const bound = projectMap[watchedPid]
+    if (bound) contractOptions.unshift(bound)
+  }
 
   // ── 打开草案 Drawer ───────────────────────────────────────────
   const openDraftCreate = () => {
@@ -328,6 +348,10 @@ export default function ContractPage() {
   }
 
   // ── 项目选择自动填充 ──────────────────────────────────────────
+  // 合同编码规则：单包 = 项目编号-HT；多包 = 项目编号-包N-HT（采购部约定）
+  const deriveContractNo = (proj: Project, pkgNo: string) =>
+    (proj.package_count ?? 1) <= 1 ? `${proj.number}-HT` : `${proj.number}-包${pkgNo}-HT`
+
   const handleProjectChange = (pid: number) => {
     const proj = projectMap[pid] || null
     setSelectedProject(proj)
@@ -335,7 +359,7 @@ export default function ContractPage() {
     const pkgNo = draftForm.getFieldValue('package_no') || '1'
     draftForm.setFieldsValue({
       contract_name: proj.name,
-      contract_number: `${proj.number}-${pkgNo}-HT`,
+      contract_number: deriveContractNo(proj, pkgNo),
     })
     setAmountWarning('')
   }
@@ -343,9 +367,22 @@ export default function ContractPage() {
   const handlePackageNoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const pkgNo = e.target.value || '1'
     if (selectedProject) {
-      draftForm.setFieldsValue({ contract_number: `${selectedProject.number}-${pkgNo}-HT` })
+      draftForm.setFieldsValue({ contract_number: deriveContractNo(selectedProject, pkgNo) })
     }
   }
+
+  // 待办「去处理」跳转：已有合同→切到其状态页签并高亮；否则打开新建草案并预选项目
+  useFocusTarget(!loading && projects.length > 0, (id) => {
+    const existing = contracts.find(c => c.project_id === id)
+    if (existing) {
+      setTabStatus(existing.status as '合同草案' | '审核完成' | '合同上传')
+      flashRow(existing.id)
+    } else {
+      openDraftCreate()
+      draftForm.setFieldsValue({ project_id: id })
+      handleProjectChange(id)
+    }
+  })
 
   const handleAmountChange = (val: number | null) => {
     if (!selectedProject?.amount) { setAmountWarning(''); return }
@@ -377,17 +414,36 @@ export default function ContractPage() {
     } finally { setDraftSaving(false) }
   }
 
-  // ── 草案提交为合同上传 ────────────────────────────────────────
+  // ── 草案提交审核（合同草案 → 审核完成）─────────────────────────
   const handleSubmitDraft = (record: Contract) => {
     modal.confirm({
-      title: '提交为合同上传',
-      content: `确认将「${record.contract_name}」提交为合同上传状态？`,
+      title: '提交审核',
+      content: `确认将「${record.contract_name}」提交审核？提交后由经办人审核，合同草案 → 审核完成。`,
       onOk: async () => {
         try {
           await submitContract(record.id)
-          message.success('已提交为合同上传')
+          message.success('已提交，合同草案 → 审核完成')
           loadContracts()
           setDraftOpen(false)
+        } catch (err: unknown) {
+          const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+          message.error(errMsg || '操作失败')
+        }
+      },
+    })
+  }
+
+  // ── 完成归档（审核完成 → 合同上传）：上传盖章合同后确认 ─────────
+  const handleFinalize = (record: Contract) => {
+    modal.confirm({
+      title: '完成归档',
+      content: `确认「${record.contract_name}」盖章合同已上传，完成归档？归档后状态变为「合同上传」。`,
+      onOk: async () => {
+        try {
+          await submitContract(record.id)
+          message.success('已完成归档')
+          loadContracts()
+          setUploadOpen(false)
         } catch (err: unknown) {
           const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
           message.error(errMsg || '操作失败')
@@ -411,15 +467,16 @@ export default function ContractPage() {
     finally { setUploadSaving(false) }
   }
 
-  // ── 撤回 ─────────────────────────────────────────────────────
+  // ── 撤回（逆向回退一步：合同上传→审核完成→合同草案）──────────
   const handleRevoke = (record: Contract) => {
+    const target = record.status === '合同上传' ? '审核完成' : '合同草案'
     modal.confirm({
-      title: '撤回为合同草案',
-      content: `确认撤回「${record.contract_name}」？`,
+      title: '撤回',
+      content: `确认撤回「${record.contract_name}」？将回退至「${target}」。`,
       onOk: async () => {
         try {
           await revokeContract(record.id)
-          message.success('已撤回为合同草案')
+          message.success(`已撤回至${target}`)
           loadContracts()
           setUploadOpen(false)
         } catch { message.error('操作失败') }
@@ -454,121 +511,99 @@ export default function ContractPage() {
     finally { setMainUploading(false) }
   }
 
-  // ── 草案列表列 ────────────────────────────────────────────────
-  const draftColumns: ColumnsType<Contract> = [
-    {
-      title: '合同编号', dataIndex: 'contract_number', width: 185,
-      render: (v: string) => <Text code style={{ fontSize: 12 }}>{v || '—'}</Text>,
-    },
-    { title: '合同名称', dataIndex: 'contract_name', ellipsis: true },
-    {
-      title: '项目编号', dataIndex: 'project_number', width: 130,
-      render: (v: string) => v || '—',
-    },
-    {
-      title: '包号', dataIndex: 'package_no', width: 55, align: 'center' as const,
-    },
-    {
-      title: '成交供应商', dataIndex: 'supplier_name', width: 140, ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '合同金额', key: 'amount', width: 150,
-      render: (_: unknown, r: Contract) => fmtAmount(r.amount, r.amount_is_text, r.amount_text),
-    },
-    {
-      title: '创建时间', dataIndex: 'created_at', width: 120,
-      render: (v: string) => v ? v.replace('T', ' ').slice(0, 16) : '—',
-    },
-    {
-      title: '操作', key: 'actions', width: 210,
-      render: (_: unknown, r: Contract) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openDraftEdit(r)}>编辑</Button>
-          <Button size="small" type="primary" icon={<CheckCircleOutlined />}
-            onClick={() => handleSubmitDraft(r)}>提交上传</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>删除</Button>
-        </Space>
-      ),
-    },
-  ]
-
-  // ── 上传列表列 ────────────────────────────────────────────────
-  const uploadColumns: ColumnsType<Contract> = [
-    {
-      title: '合同编号', dataIndex: 'contract_number', width: 185,
-      render: (v: string) => <Text code style={{ fontSize: 12 }}>{v || '—'}</Text>,
-    },
-    { title: '合同名称', dataIndex: 'contract_name', ellipsis: true },
-    {
-      title: '项目编号', dataIndex: 'project_number', width: 130,
-      render: (v: string) => v || '—',
-    },
-    {
-      title: '成交供应商', dataIndex: 'supplier_name', width: 140, ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '合同金额', key: 'amount', width: 150,
-      render: (_: unknown, r: Contract) => fmtAmount(r.amount, r.amount_is_text, r.amount_text),
-    },
-    {
-      title: '签订时间', dataIndex: 'sign_date', width: 115,
-      render: (v: string) => v || <Text type="secondary">待填写</Text>,
-    },
-    {
-      title: '服务期限', key: 'service', width: 200,
-      render: (_: unknown, r: Contract) => {
-        if (r.project_category !== '服务') return <Text type="secondary">—</Text>
-        if (!r.service_start && !r.service_end) return <Text type="secondary">待填写</Text>
-        return <span style={{ fontSize: 12 }}>{r.service_start} 至 {r.service_end}</span>
-      },
-    },
-    {
-      title: '合同文件', key: 'file', width: 130,
-      render: (_: unknown, r: Contract) => r.file_name ? (
-        <Tooltip title={r.file_name}>
-          <Button size="small" type="link" icon={<DownloadOutlined />}
-            onClick={() => window.open(contractFileUrl(r.id), '_blank')} style={{ padding: 0 }}>
-            下载
+  // ── 合同 → 卡片数据 ──────────────────────────────────────────
+  const ACCENT: Record<string, string> = { 合同草案: '#1a73e8', 审核完成: '#f9ab00', 合同上传: '#34a853' }
+  const STATUS_COLOR: Record<string, string> = { 合同草案: 'blue', 审核完成: 'gold', 合同上传: 'green' }
+  const contractToCard = (r: Contract) => {
+    const isDraft = tabStatus === '合同草案'
+    const fields = isDraft
+      ? [
+          { label: '项目编号', value: r.project_number },
+          { label: '包号', value: r.package_no },
+          { label: '成交供应商', value: r.supplier_name },
+          { label: '合同金额', value: fmtAmount(r.amount, r.amount_is_text, r.amount_text) },
+          { label: '创建时间', value: r.created_at ? r.created_at.replace('T', ' ').slice(0, 16) : '' },
+        ]
+      : [
+          { label: '项目编号', value: r.project_number },
+          { label: '成交供应商', value: r.supplier_name },
+          { label: '合同金额', value: fmtAmount(r.amount, r.amount_is_text, r.amount_text) },
+          { label: '签订时间', value: r.sign_date || '待填写' },
+          {
+            label: '合同文件',
+            value: r.file_name ? (
+              <Tooltip title={r.file_name}>
+                <a onClick={() => setDocPreview({ open: true, url: contractFilePreviewUrl(r.id), name: r.file_name })}>查看</a>
+              </Tooltip>
+            ) : '待上传',
+          },
+        ]
+    const actions = isDraft ? (
+      <>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openDraftEdit(r)}>编辑</Button>
+        {canConfirm && (
+          <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleSubmitDraft(r)}>提交审核</Button>
+        )}
+        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>删除</Button>
+      </>
+    ) : (
+      <>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openUploadEdit(r)}>编辑信息</Button>
+        <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" showUploadList={false}
+          beforeUpload={file => { handleMainFileUpload(file, r); return false }}>
+          <Button size="small" icon={<UploadOutlined />} loading={mainUploading}>
+            {r.file_name ? '重新上传盖章合同' : '上传盖章合同'}
           </Button>
-        </Tooltip>
-      ) : <Text type="secondary" style={{ fontSize: 12 }}>待上传</Text>,
-    },
-    {
-      title: '操作', key: 'actions', width: 250,
-      render: (_: unknown, r: Contract) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openUploadEdit(r)}>编辑信息</Button>
-          <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" showUploadList={false}
-            beforeUpload={file => { handleMainFileUpload(file, r); return false }}>
-            <Button size="small" icon={<UploadOutlined />} loading={mainUploading}>
-              {r.file_name ? '重新上传' : '上传合同'}
-            </Button>
-          </Upload>
+        </Upload>
+        {canConfirm && r.status === '审核完成' && (
+          <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleFinalize(r)}>完成归档</Button>
+        )}
+        {canConfirm && (
           <Button size="small" icon={<RollbackOutlined />} onClick={() => handleRevoke(r)}>撤回</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>删除</Button>
-        </Space>
+        )}
+        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>删除</Button>
+      </>
+    )
+    return {
+      key: r.id,
+      accent: ACCENT[r.status] || '#1a73e8',
+      title: (
+        <a style={{ color: '#202124', fontWeight: 600 }} onClick={() => setDetailC(r)}>
+          {r.contract_name}
+        </a>
       ),
-    },
-  ]
+      subtitle: r.contract_number || '—',
+      statusText: r.status,
+      statusColor: STATUS_COLOR[r.status],
+      tags: (
+        <>
+          <Tag bordered={false}>包 {r.package_no}</Tag>
+          {r.project_category && <Tag bordered={false} color="geekblue">{r.project_category}</Tag>}
+        </>
+      ),
+      fields,
+      meta: r.created_at ? `创建于 ${r.created_at.replace('T', ' ').slice(0, 16)}` : undefined,
+      actions,
+    }
+  }
 
   return (
     <Card
       title={<span style={{ fontWeight: 700, fontSize: 16 }}>合同管理</span>}
       extra={<Button type="primary" icon={<PlusOutlined />} onClick={openDraftCreate}>新建合同</Button>}
     >
-      <Tabs activeKey={tabStatus} onChange={k => setTabStatus(k as '合同草案' | '合同上传')}
+      <Tabs activeKey={tabStatus} onChange={k => setTabStatus(k as '合同草案' | '审核完成' | '合同上传')}
         items={[
           { key: '合同草案', label: <span>合同草案 <Tag color="blue">{contracts.filter(c => c.status === '合同草案').length}</Tag></span> },
-          { key: '合同上传', label: <span>合同上传 <Tag color="green">{contracts.filter(c => c.status === '合同上传').length}</Tag></span> },
+          { key: '审核完成', label: <span>审核完成 <Tag color="gold">{contracts.filter(c => c.status === '审核完成').length}</Tag></span> },
+          { key: '合同上传', label: <span>合同上传（归档）<Tag color="green">{contracts.filter(c => c.status === '合同上传').length}</Tag></span> },
         ]}
       />
-      <Table rowKey="id" dataSource={filtered}
-        columns={tabStatus === '合同草案' ? draftColumns : uploadColumns}
-        loading={loading} size="small"
-        pagination={{ pageSize: 15, showTotal: t => `共 ${t} 条` }}
-        scroll={{ x: tabStatus === '合同草案' ? 1050 : 1350 }}
+      <RecordCards
+        dataSource={filtered}
+        loading={loading}
+        emptyText="暂无合同"
+        toCard={contractToCard}
       />
 
       {/* ══ 草案 Drawer ══════════════════════════════════════════════ */}
@@ -596,7 +631,7 @@ export default function ContractPage() {
                 <Form.Item name="project_id" label="绑定项目" rules={[{ required: true, message: '请选择项目' }]}>
                   <Select showSearch placeholder="请选择项目（支持搜索）" onChange={handleProjectChange}
                     filterOption={(input, option) => (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase())}
-                    options={projects.map(p => ({ value: p.id, label: `${p.number ? p.number + ' — ' : ''}${p.name}` }))}
+                    options={contractOptions.map(p => ({ value: p.id, label: `${p.number ? p.number + ' — ' : ''}${p.name}` }))}
                   />
                 </Form.Item>
               </Col>
@@ -609,7 +644,7 @@ export default function ContractPage() {
               </Col>
               <Col span={19}>
                 <Form.Item name="contract_number" label="合同编号"
-                  extra={<span style={{ fontSize: 11, color: '#aaa' }}>格式：项目编号-包号-HT，可手动修改</span>}>
+                  extra={<span style={{ fontSize: 11, color: '#aaa' }}>单包＝项目编号-HT；多包＝项目编号-包N-HT，可手动修改</span>}>
                   <Input placeholder="自动生成" />
                 </Form.Item>
               </Col>
@@ -690,8 +725,8 @@ export default function ContractPage() {
             )}
           </Card>
 
-          {/* ── 提交提示 ── */}
-          {draftId && (
+          {/* ── 提交提示（确认合同由经办人完成，代理机构不显示） ── */}
+          {draftId && canConfirm && (
             <div style={{ textAlign: 'center', paddingBottom: 8 }}>
               <Button
                 type="primary" ghost icon={<CheckCircleOutlined />}
@@ -700,10 +735,10 @@ export default function ContractPage() {
                   if (record) handleSubmitDraft(record)
                 }}
               >
-                提交为合同上传
+                提交审核
               </Button>
               <div style={{ color: '#aaa', fontSize: 12, marginTop: 6 }}>
-                提交后可在「合同上传」页填写签订时间、上传正式合同文件
+                提交后进入「审核完成」，再上传盖章合同并完成归档
               </div>
             </div>
           )}
@@ -725,10 +760,12 @@ export default function ContractPage() {
         extra={
           <Space>
             <Button onClick={() => setUploadOpen(false)}>取消</Button>
-            <Button icon={<RollbackOutlined />}
-              onClick={() => uploadContract && handleRevoke(uploadContract)}>
-              撤回为草案
-            </Button>
+            {canConfirm && (
+              <Button icon={<RollbackOutlined />}
+                onClick={() => uploadContract && handleRevoke(uploadContract)}>
+                撤回为草案
+              </Button>
+            )}
             <Button type="primary" icon={<SaveOutlined />}
               loading={uploadSaving} onClick={handleSaveUpload}>
               保存
@@ -817,6 +854,94 @@ export default function ContractPage() {
           </>
         )}
       </Drawer>
+
+      {/* 点合同名/合同文件：在线预览盖章合同 */}
+      <FilePreviewModal
+        open={docPreview.open}
+        url={docPreview.url}
+        filename={docPreview.name}
+        onClose={() => setDocPreview((p) => ({ ...p, open: false }))}
+      />
+
+      {/* 合同详情（只读）：审核完成/合同上传后点项目名查看草案录入的全部内容 */}
+      <Modal
+        title={`合同详情 — ${detailC?.contract_name || ''}`}
+        open={!!detailC}
+        onCancel={() => setDetailC(null)}
+        width={680}
+        footer={
+          <Space>
+            {detailC?.file_name && (
+              <Button icon={<EyeOutlined />} onClick={() => detailC && setDocPreview({ open: true, url: contractFilePreviewUrl(detailC.id), name: detailC.file_name })}>
+                预览盖章合同
+              </Button>
+            )}
+            <Button type="primary" onClick={() => setDetailC(null)}>关闭</Button>
+          </Space>
+        }
+      >
+        {detailC && (
+          <Descriptions column={2} bordered size="small" labelStyle={{ width: 110 }}>
+            <Descriptions.Item label="合同编号" span={2}><Text code>{detailC.contract_number || '—'}</Text></Descriptions.Item>
+            <Descriptions.Item label="项目编号">{detailC.project_number || '—'}</Descriptions.Item>
+            <Descriptions.Item label="包号">{detailC.package_no || '—'}</Descriptions.Item>
+            <Descriptions.Item label="状态"><Tag color={STATUS_COLOR[detailC.status]}>{detailC.status}</Tag></Descriptions.Item>
+            <Descriptions.Item label="合同金额">{fmtAmount(detailC.amount, detailC.amount_is_text, detailC.amount_text)}</Descriptions.Item>
+            <Descriptions.Item label="成交供应商" span={2}>{detailC.supplier_name || '—'}</Descriptions.Item>
+            <Descriptions.Item label="法定代表人">{detailC.supplier_legal_rep || '—'}</Descriptions.Item>
+            <Descriptions.Item label="联系方式">{detailC.supplier_contact || '—'}</Descriptions.Item>
+            <Descriptions.Item label="供应商地址" span={2}>{detailC.supplier_address || '—'}</Descriptions.Item>
+            <Descriptions.Item label="签订时间">{detailC.sign_date || '—'}</Descriptions.Item>
+            <Descriptions.Item label="服务期限">{(detailC.service_start || detailC.service_end) ? `${detailC.service_start || ''} 至 ${detailC.service_end || ''}` : '—'}</Descriptions.Item>
+            <Descriptions.Item label="备注" span={2}>{detailC.notes || '—'}</Descriptions.Item>
+          </Descriptions>
+        )}
+        {detailC && (
+          <div style={{ marginTop: 14 }}>
+            <HermesPanel taskType="procurement-contract" projectId={detailC.project_id}
+              title={detailC.contract_name} fields={contractFields} contractId={detailC.id}
+              directSubmitUrl={`/contracts/${detailC.id}/submit-to-rdweb`}
+              directStatusUrl={`/contracts/${detailC.id}/rdweb-status`} />
+          </div>
+        )}
+        {detailC && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>
+              <PaperClipOutlined /> 相关附件（含代理机构上传的草案附件）
+            </div>
+            {detailAtts.length === 0 ? (
+              <Text type="secondary" style={{ fontSize: 13 }}>暂无附件</Text>
+            ) : (
+              detailAtts.map(att => (
+                <div key={att.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '6px 10px', borderRadius: 6, marginBottom: 4,
+                  background: '#fafafa', border: '1px solid #f0f0f0',
+                }}>
+                  <Space size={8} style={{ flex: 1, minWidth: 0 }}>
+                    <FileTypeIcon mime={att.mime_type} />
+                    <Tooltip title={att.original_name}>
+                      <span style={{ fontSize: 13, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+                        {att.original_name}
+                      </span>
+                    </Tooltip>
+                    <Tag color={att.stage === '草案' ? 'blue' : 'green'}>{att.stage}</Tag>
+                    <Text type="secondary" style={{ fontSize: 11 }}>{fmtSize(att.file_size)}</Text>
+                  </Space>
+                  <Space size={4}>
+                    {isPreviewable(att.original_name) && (
+                      <Button size="small" type="link" icon={<EyeOutlined />}
+                        onClick={() => setDocPreview({ open: true, url: attachmentPreviewUrl(detailC.id, att.id), name: att.original_name })}>预览</Button>
+                    )}
+                    <Button size="small" type="link" icon={<DownloadOutlined />}
+                      href={attachmentDownloadUrl(detailC.id, att.id)} download={att.original_name}>下载</Button>
+                  </Space>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </Modal>
     </Card>
   )
 }

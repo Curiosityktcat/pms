@@ -8,6 +8,7 @@ import {
   LogoutOutlined,
   KeyOutlined,
   ControlOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet, Navigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
@@ -57,6 +58,12 @@ export default function AdminLayout() {
           onClick: () => navigate('/admin/model'),
         },
         {
+          key: 'usage',
+          icon: <BarChartOutlined />,
+          label: 'Token 用量',
+          onClick: () => navigate('/admin/usage'),
+        },
+        {
           key: 'email',
           icon: <MailOutlined />,
           label: '邮件配置',
@@ -88,39 +95,39 @@ export default function AdminLayout() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
         width={220}
-        theme="dark"
+        theme="light"
         style={{
           overflow: 'auto',
           height: '100vh',
           position: 'sticky',
           top: 0,
           left: 0,
-          // 用青蓝色背景与业务系统的默认深蓝侧栏区分
-          background: '#001529',
+          background: '#fff',
+          borderRight: '1px solid #e8eaed',
         }}
       >
         <div style={{
-          padding: '14px 16px 12px',
-          borderBottom: '1px solid rgba(255,255,255,.1)',
-          background: 'rgba(0,0,0,.25)',
+          padding: '16px 16px 12px',
+          borderBottom: '1px solid #e8eaed',
+          background: '#fff',
         }}>
           <div style={{
-            color: '#fff',
-            fontWeight: 700,
+            color: '#202124',
+            fontWeight: 600,
             fontSize: 14,
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
+            gap: 10,
           }}>
             <span style={{
-              background: '#13c2c2',
-              borderRadius: 6,
-              width: 28, height: 28,
+              background: '#137333',
+              borderRadius: 8,
+              width: 30, height: 30,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 16, flexShrink: 0,
             }}>⚙️</span>
             <span style={{ lineHeight: 1.3 }}>后台管理系统<br />
-              <span style={{ fontSize: 11, fontWeight: 400, color: 'rgba(255,255,255,.55)' }}>
+              <span style={{ fontSize: 11, fontWeight: 400, color: '#5f6368' }}>
                 系统级配置
               </span>
             </span>
@@ -128,12 +135,12 @@ export default function AdminLayout() {
         </div>
 
         <Menu
-          theme="dark"
+          theme="light"
           mode="inline"
           selectedKeys={[activeKey]}
           defaultOpenKeys={['sys']}
           items={menuItems}
-          style={{ borderRight: 0, marginTop: 4 }}
+          style={{ borderRight: 0, marginTop: 6, background: 'transparent' }}
         />
       </Sider>
 
@@ -143,8 +150,8 @@ export default function AdminLayout() {
           padding: '0 24px',
           display: 'flex',
           alignItems: 'center',
-          borderBottom: '1px solid #f0f0f0',
-          boxShadow: '0 1px 4px rgba(0,0,0,.06)',
+          borderBottom: '1px solid #e8eaed',
+          boxShadow: '0 1px 2px 0 rgba(60,64,67,.05)',
           position: 'sticky',
           top: 0,
           zIndex: 100,

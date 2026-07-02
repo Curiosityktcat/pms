@@ -12,10 +12,12 @@
   "dependencies": {
     "antd": "^6.4.3",
     "axios": "^1.16.1",
+    "docx-preview": "^0.3.7",
     "mammoth": "^1.12.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.15.1"
+    "react-router-dom": "^7.15.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

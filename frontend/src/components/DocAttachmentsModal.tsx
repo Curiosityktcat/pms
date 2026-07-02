@@ -2,14 +2,16 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { Modal, Upload, Button, List, Popconfirm, Typography, Alert } from 'antd'
 import {
-  UploadOutlined, PaperClipOutlined, DownloadOutlined, DeleteOutlined,
+  UploadOutlined, PaperClipOutlined, DownloadOutlined, DeleteOutlined, EyeOutlined,
 } from '@ant-design/icons'
 import { App } from 'antd'
 import type { Project } from '../services/project'
 import {
   listDocAttachments, deleteDocAttachment, downloadDocAttachment,
-  uploadDocAttachmentUrl, type DocAttachment, type ConfirmKind,
+  uploadDocAttachmentUrl, docAttachmentPreviewUrl,
+  type DocAttachment, type ConfirmKind,
 } from '../services/procurementDoc'
+import FilePreviewModal, { isPreviewable } from './FilePreviewModal'
 
 const { Text } = Typography
 // antd 自定义上传选项类型较繁琐，这里用 any 简化
@@ -24,27 +26,30 @@ function fmtSize(n: number) {
 
 /** 采购文件编制阶段的附件上传/管理弹窗（采购需求确认 / 采购文件确认通用）。 */
 export default function DocAttachmentsModal({
-  project, kind, title, showHash = false, locked = false, open, onClose,
+  project, kind, title, showHash = false, locked = false, roundNumber, open, onClose,
 }: {
   project: Project | null
   kind: ConfirmKind
   title: string
   showHash?: boolean
   locked?: boolean
+  /** 指定轮次只读查看历史（不传则为当前轮，可上传/删除）。 */
+  roundNumber?: number
   open: boolean
   onClose: () => void
 }) {
   const { message } = App.useApp()
   const [files, setFiles] = useState<DocAttachment[]>([])
   const [uploading, setUploading] = useState(false)
+  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
 
   const load = useCallback(async () => {
     if (!project) return
     try {
-      const res = await listDocAttachments(project.id, kind)
+      const res = await listDocAttachments(project.id, kind, roundNumber)
       setFiles(res.data.data || [])
     } catch { /* ignore */ }
-  }, [project, kind])
+  }, [project, kind, roundNumber])
 
   useEffect(() => { if (open) load() }, [open, load])
 
@@ -132,6 +137,10 @@ export default function DocAttachmentsModal({
         renderItem={(f) => (
           <List.Item
             actions={[
+              ...(isPreviewable(f.original_name) ? [
+                <Button key="pv" type="link" size="small" icon={<EyeOutlined />}
+                  onClick={() => project && setPreview({ open: true, url: docAttachmentPreviewUrl(project.id, f.id), name: f.original_name })}>预览</Button>,
+              ] : []),
               <Button key="dl" type="link" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(f)}>下载</Button>,
               ...(locked ? [] : [
                 <Popconfirm key="del" title="删除该文件？" onConfirm={() => handleDelete(f)} okText="删除" cancelText="取消">
@@ -156,6 +165,12 @@ export default function DocAttachmentsModal({
             />
           </List.Item>
         )}
+      />
+      <FilePreviewModal
+        open={preview.open}
+        url={preview.url}
+        filename={preview.name}
+        onClose={() => setPreview(p => ({ ...p, open: false }))}
       />
     </Modal>
   )

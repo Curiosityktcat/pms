@@ -67,6 +67,13 @@ export default function LoginPage() {
   const { message } = App.useApp()
   const [form] = Form.useForm()
 
+  // 因长时间未操作被自动登出时，提示用户
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('expired') === '1') {
+      message.warning('因长时间未操作，您已自动退出，请重新登录')
+    }
+  }, [message])
+
   // 检测当前登录状态
   useEffect(() => {
     authMe()

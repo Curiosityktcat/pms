@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import {
-  Card, Table, Button, Tag, Space, Drawer, Form, Input, Select,
+  Card, Button, Tag, Space, Drawer, Form, Input, Select,
   Upload, App, Popconfirm, Typography, Segmented, Alert,
 } from 'antd'
+import RecordCards from '../components/RecordCards'
 import {
   PlusOutlined, EditOutlined, StopOutlined, UploadOutlined,
   WarningOutlined,
@@ -156,76 +157,6 @@ export default function PeopleManagePage() {
   const supervisors = people.filter(p => p.role_type === 'supervisor')
   const representatives = people.filter(p => p.role_type === 'representative')
 
-  const columns = [
-    {
-      title: '姓名',
-      dataIndex: 'name',
-      width: 100,
-      render: (v: string) => <Text strong>{v}</Text>,
-    },
-    {
-      title: '科室/部门',
-      dataIndex: 'department',
-      width: 140,
-      render: (v: string) => v || <Text type="secondary">未填</Text>,
-    },
-    {
-      title: '职位',
-      dataIndex: 'position',
-      width: 180,
-      ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '身份证号',
-      dataIndex: 'id_card',
-      width: 180,
-      render: (v: string) =>
-        v ? <Text code style={{ fontSize: 12 }}>{v}</Text>
-          : <Text type="secondary">未录入</Text>,
-    },
-    {
-      title: '类型',
-      dataIndex: 'role_type',
-      width: 100,
-      render: (v: string) => (
-        <Tag color={v === 'supervisor' ? 'purple' : 'blue'}>
-          {ROLE_LABEL[v] || v}
-        </Tag>
-      ),
-    },
-    {
-      title: '照片',
-      dataIndex: 'photo',
-      width: 80,
-      render: (v: string) =>
-        v ? <Tag color="green">有</Tag>
-          : <Tag color="default">无</Tag>,
-    },
-    {
-      title: '操作',
-      width: 100,
-      render: (_: unknown, row: Person) => (
-        <Space size={4}>
-          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(row)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title="停用后该人员不再出现在选择列表中"
-            onConfirm={() => handleDisable(row.id)}
-            okText="停用"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
-          >
-            <Button size="small" type="link" danger icon={<StopOutlined />}>
-              停用
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
-
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16, gap: 12 }}>
@@ -262,14 +193,31 @@ export default function PeopleManagePage() {
         />
       </div>
 
-      <Table
-        rowKey="id"
-        columns={columns}
+      <RecordCards
         dataSource={filtered}
         loading={loading}
-        size="small"
-        pagination={{ pageSize: 20, showTotal: t => `共 ${t} 位` }}
-        locale={{ emptyText: '暂无人员' }}
+        emptyText="暂无人员"
+        toCard={(p) => ({
+          key: p.id,
+          accent: p.role_type === 'supervisor' ? '#9334e6' : '#1a73e8',
+          title: p.name,
+          subtitle: p.id_card || '身份证未录入',
+          statusText: ROLE_LABEL[p.role_type] || p.role_type,
+          statusColor: p.role_type === 'supervisor' ? 'purple' : 'blue',
+          tags: p.photo ? <Tag color="green" style={{ marginInlineEnd: 0 }}>有照片</Tag> : undefined,
+          fields: [
+            { label: '科室', value: p.department },
+            { label: '职位', value: p.position },
+          ],
+          actions: (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(p)}>编辑</Button>
+              <Popconfirm title="停用后该人员不再出现在选择列表中" onConfirm={() => handleDisable(p.id)} okText="停用" okButtonProps={{ danger: true }} cancelText="取消">
+                <Button size="small" danger icon={<StopOutlined />}>停用</Button>
+              </Popconfirm>
+            </>
+          ),
+        })}
       />
 
       {/* 新增/编辑抽屉 */}

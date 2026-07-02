@@ -5,6 +5,7 @@ export interface ArchiveItem {
   number: string
   name: string
   officer: string
+  manage_dept: string
   agency_code: string
   status: string
   archived: boolean
@@ -21,3 +22,6 @@ export const archiveProject = (id: number) =>
 
 export const revokeArchive = (id: number) =>
   api.post(`/archive/${id}/revoke`)
+
+export const printBundleUrl = (id: number) =>
+  `/api/archive/${id}/print-bundle`

@@ -1,18 +1,41 @@
 import { useEffect, useState } from 'react'
 import {
   Form, Input, InputNumber, Select, Checkbox, Radio, Button, Card,
-  Space, Divider, Typography, App, Descriptions, Alert,
+  Space, Divider, Typography, App, Descriptions, Alert, DatePicker,
 } from 'antd'
+import dayjs from 'dayjs'
 import type { CheckboxChangeEvent } from 'antd/es/checkbox'
+
+// 开标时间：DatePicker 用 dayjs，存库用中文串 "2026年5月27日16:00"（无空格，兼容各处抓取正则）
+function parseCnDateTime(s?: string): dayjs.Dayjs | null {
+  if (!s) return null
+  const m = s.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:(\d{1,2})\s*[：:]\s*(\d{2}))?/)
+  if (!m) return null
+  const d = dayjs(new Date(+m[1], +m[2] - 1, +m[3], m[4] ? +m[4] : 0, m[5] ? +m[5] : 0))
+  return d.isValid() ? d : null
+}
+function fmtCnDateTime(d?: dayjs.Dayjs | null): string {
+  return d ? d.format('YYYY年M月D日HH:mm') : ''
+}
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   getProjectMeta, getProject, createProject, updateProject,
 } from '../services/project'
 import type { Agency } from '../services/project'
+import { listDistributions, type Distribution } from '../services/projectDistribution'
 import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
 const { Text } = Typography
+
+// 「项目分发」采购方式 → 立项采购方式
+const DIST_METHOD_MAP: Record<string, string> = {
+  '院内竞选': '院内竞选',
+  '院内单一来源采购': '院内单一来源采购',
+  '院内询价': '院内询价',
+  '院内议价': '院内议价',
+  '医用耗材紧急采购': '医用耗材紧急采购',
+}
 
 const M_YIJIA  = '院内议价'
 const M_XUNJIA = '院内询价'
@@ -40,6 +63,7 @@ export default function ProjectFormPage() {
   const { id } = useParams<{ id?: string }>()
   const [searchParams] = useSearchParams()
   const fromDemandId = searchParams.get('from_demand')  // 从采购需求立项时传入
+  const fromDistId = searchParams.get('from_dist')      // 从「2.1项目分发」点立项时传入，自动选中并预填
   const isEdit = !!id
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -57,6 +81,8 @@ export default function ProjectFormPage() {
   const [lockedAgencyCode, setLockedAgencyCode] = useState('')
   const [demandId, setDemandId] = useState<number | null>(null)       // 关联采购需求ID
   const [demandType, setDemandType] = useState<string>('')             // 'gov' 时正式立项后自动归档
+  const [distributions, setDistributions] = useState<Distribution[]>([])  // 分发给我、待立项的项目
+  const [distributionId, setDistributionId] = useState<number | null>(null)
 
   // 监听表单字段
   const methodVal = Form.useWatch('method', form)
@@ -82,6 +108,42 @@ export default function ProjectFormPage() {
     }
     loadMeta()
   }, [])
+
+  // 用一条分发记录预填立项表单
+  const fillFromDist = (d: Distribution) => {
+    setDistributionId(d.id)
+    form.setFieldsValue({
+      name: d.name,
+      content: d.content || undefined,
+      amount: d.budget || null,
+      is_unit_price: !d.budget,
+      method: DIST_METHOD_MAP[d.method] || undefined,
+      agency_code: d.agency_code || undefined,
+      sole_use_agency: d.method === '院内单一来源采购' ? 'yes' : undefined,
+    })
+  }
+
+  // 新立项时拉「分发给我、待立项」的项目；若带 from_dist 参数则自动选中预填
+  useEffect(() => {
+    if (isEdit || fromDemandId) return
+    listDistributions()
+      .then(res => {
+        const mine = (res.data.data || []).filter(
+          d => d.status === '已分发' && d.officer === user?.display_name)
+        setDistributions(mine)
+        if (fromDistId) {
+          const d = mine.find(x => x.id === Number(fromDistId))
+          if (d) fillFromDist(d)
+        }
+      })
+      .catch(() => {})
+  }, [isEdit, fromDemandId, fromDistId, user?.display_name]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyDistribution = (did: number | null) => {
+    if (!did) { setDistributionId(null); return }
+    const d = distributions.find(x => x.id === did)
+    if (d) fillFromDist(d)
+  }
 
   useEffect(() => {
     if (!isEdit) {
@@ -150,7 +212,7 @@ export default function ProjectFormPage() {
           manage_dept: p.manage_dept,
           officer: p.officer,
           content: p.content,
-          bid_time: p.bid_time,
+          bid_time: parseCnDateTime(p.bid_time),
           status: p.status,
           category: p.category,
           year: p.year,
@@ -191,11 +253,14 @@ export default function ProjectFormPage() {
       return
     }
     const values = form.getFieldsValue()
+    // 开标时间日历控件返回 dayjs，转回中文串存库（无空格，确保各处可正确抓取）
+    if ('bid_time' in values) values.bid_time = fmtCnDateTime(values.bid_time)
     // 从采购需求立项时，附带 demand_id + demand_type 让后端自动标记需求和处理归档
     const payload = {
       ...values, action,
       ...(demandId ? { demand_id: demandId } : {}),
       ...(demandType ? { demand_type: demandType } : {}),
+      ...(distributionId ? { distribution_id: distributionId } : {}),
     }
 
     setLoading(true)
@@ -228,6 +293,26 @@ export default function ProjectFormPage() {
         <Alert
           type="info" showIcon style={{ marginBottom: 16 }}
           message={`正在从采购需求（ID: ${demandId}）立项 —— 可修改名称、金额、采购方式后点击「正式立项」。`}
+        />
+      )}
+
+      {!isEdit && !fromDemandId && distributions.length > 0 && (
+        <Alert
+          type="success" showIcon style={{ marginBottom: 16 }}
+          message={
+            <Space wrap>
+              <span>从「项目分发」立项（自动带入名称/内容/预算/方式/代理，可改）：</span>
+              <Select
+                allowClear style={{ minWidth: 280 }} placeholder="选择分发给我的项目"
+                value={distributionId ?? undefined}
+                onChange={(v) => applyDistribution(v ?? null)}
+                options={distributions.map(d => ({
+                  value: d.id,
+                  label: `${d.name}${d.serial_no ? `（${d.serial_no}）` : ''}`,
+                }))}
+              />
+            </Space>
+          }
         />
       )}
 
@@ -377,7 +462,12 @@ export default function ProjectFormPage() {
               <Select options={statuses.map(s => ({ value: s, label: s }))} />
             </Form.Item>
             <Form.Item label="开标时间" name="bid_time" style={{ flex: 1 }}>
-              <Input placeholder="如 2026年5月27日16:00" />
+              <DatePicker
+                showTime={{ format: 'HH:mm' }}
+                format="YYYY年M月D日HH:mm"
+                style={{ width: '100%' }}
+                placeholder="选择开标日期时间"
+              />
             </Form.Item>
           </div>
         )}

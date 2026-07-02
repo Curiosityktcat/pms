@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
 import {
   Card, Form, Select, Button, Descriptions, App, Typography, Empty,
-  Tag, Alert, Input, Tabs, Table, Space, Popconfirm, Badge,
+  Tag, Alert, Input, Tabs, Popconfirm, Badge,
 } from 'antd'
 import {
   DownloadOutlined, FileWordOutlined, ArrowLeftOutlined,
   CheckCircleOutlined, DeleteOutlined, ReloadOutlined,
 } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
-import { getProjects } from '../services/project'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import { getBidOpenProjects } from '../services/project'
 import type { Project } from '../services/project'
 import { getSupervisors, getRepresentatives, generateAuthLetter } from '../services/people'
 import type { Person } from '../services/people'
 import {
   listAuthLetterRecords, createAuthLetterRecord, deleteAuthLetterRecord,
+  downloadAuthLetterRecordWord,
 } from '../services/authLetterRecord'
 import type { AuthLetterRecord } from '../services/authLetterRecord'
 import { useSearchParams, useNavigate } from 'react-router-dom'
@@ -70,11 +71,16 @@ export default function AuthLetterPage() {
   // 加载基础数据
   useEffect(() => {
     Promise.all([
-      getProjects(false),
+      getBidOpenProjects(),
       getSupervisors(),
       getRepresentatives(),
     ]).then(([pRes, sRes, rRes]) => {
-      const agencyProjects = pRes.data.data.filter(p => !p.is_draft && p.agency_code)
+      // 「开标期」项目（已发公告 ~ 采购结果确认前）由后端 /projects/bid-open 统一返回，跨两阶段：
+      // bid_open(可开标确认前) 与 result(可开标已确认、待结果)——流程是「先确认可开标→再做授权函」，
+      // 故 result 段也要可见。采购部全部可见、代理仅本机构。这里再兜底过滤一次。
+      const agencyProjects = pRes.data.data.filter(
+        p => !p.is_draft && p.agency_code && ['bid_open', 'result'].includes(p.current_stage || ''),
+      )
       setProjects(agencyProjects)
       setSupervisors(sRes.data.data)
       setRepresentatives(rRes.data.data)
@@ -200,6 +206,38 @@ export default function AuthLetterPage() {
     }
   }
 
+  const [downloadingId, setDownloadingId] = useState<number | null>(null)
+
+  const handleDownloadRecord = async (record: AuthLetterRecord) => {
+    setDownloadingId(record.id)
+    try {
+      const res = await downloadAuthLetterRecordWord(record.id)
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      const suffix = record.round_number > 1
+        ? `（第${'一二三四五'[record.round_number - 1]}次）`
+        : ''
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `授权函_${record.project_number || record.project_name}${suffix}.docx`
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success('授权函已下载')
+    } catch (err: any) {
+      if (err.response?.data instanceof Blob) {
+        const text = await err.response.data.text()
+        try { message.error(JSON.parse(text).error || '下载失败') }
+        catch { message.error('下载失败') }
+      } else {
+        message.error(err.response?.data?.error || '下载失败')
+      }
+    } finally {
+      setDownloadingId(null)
+    }
+  }
+
   const handleReGenerate = (record: AuthLetterRecord) => {
     // 从已授权记录跳转回待授权，预选项目
     const p = projects.find(x => x.id === record.project_id)
@@ -226,58 +264,38 @@ export default function AuthLetterPage() {
   const doneProjectIds = new Set(records.map(r => `${r.project_id}-${r.round_number}`))
 
   // ── 已授权表格列 ────────────────────────────────────────────────
-  const recordColumns: ColumnsType<AuthLetterRecord> = [
-    {
-      title: '项目编号',
-      dataIndex: 'project_number',
-      width: 180,
-      render: v => <Text code style={{ fontSize: 12 }}>{v || '—'}</Text>,
-    },
-    { title: '项目名称', dataIndex: 'project_name', ellipsis: true },
-    {
-      title: '开标次数',
-      dataIndex: 'round_number',
-      width: 90,
-      render: v => v > 1
-        ? <Tag color="orange">第{'一二三四五'[v - 1]}次</Tag>
-        : <Tag color="blue">第一次</Tag>,
-    },
-    {
-      title: '开标时间',
-      dataIndex: 'bid_time',
-      width: 175,
-      render: v => v || <Text type="secondary">—</Text>,
-    },
-    { title: '监督人员', dataIndex: 'supervisor_name', width: 90 },
-    { title: '采购人代表', dataIndex: 'representative_names', ellipsis: true },
-    { title: '生成人', dataIndex: 'generated_by', width: 90 },
-    {
-      title: '生成时间',
-      dataIndex: 'generated_at',
-      width: 145,
-      render: v => formatDate(v),
-    },
-    {
-      title: '操作',
-      width: 130,
-      render: (_, row) => (
-        <Space size={4}>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            onClick={() => handleReGenerate(row)}
-          >
-            重新生成
-          </Button>
-          {canDelete && (
-            <Popconfirm title="确认删除该记录？" onConfirm={() => handleDeleteRecord(row.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>
-          )}
-        </Space>
-      ),
-    },
-  ]
+  const recordToCard = (row: AuthLetterRecord): RecordCardData => ({
+    key: row.id,
+    accent: '#1a73e8',
+    title: row.project_name || '—',
+    subtitle: row.project_number || '无编号',
+    tags: row.round_number > 1
+      ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[row.round_number - 1]}次</Tag>
+      : <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>,
+    fields: [
+      { label: '开标时间', value: row.bid_time },
+      { label: '监督', value: row.supervisor_name },
+      { label: '代表', value: row.representative_names },
+      { label: '生成人', value: row.generated_by },
+    ],
+    meta: row.generated_at ? `生成于 ${formatDate(row.generated_at)}` : undefined,
+    actions: (
+      <>
+        <Button size="small" type="primary" ghost icon={<DownloadOutlined />}
+          loading={downloadingId === row.id} onClick={() => handleDownloadRecord(row)}>
+          下载授权函
+        </Button>
+        {canDelete && (
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => handleReGenerate(row)}>重新生成</Button>
+        )}
+        {canDelete && (
+          <Popconfirm title="确认删除该记录？" onConfirm={() => handleDeleteRecord(row.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        )}
+      </>
+    ),
+  })
 
   return (
     <Card>
@@ -479,18 +497,12 @@ export default function AuthLetterPage() {
             type="success" showIcon style={{ marginBottom: 16 }}
             message="以下为已生成授权函的项目记录。点击「重新生成」可切换到待授权标签重新填写并生成。"
           />
-          {records.length === 0 ? (
-            <Empty description="暂无授权函记录，生成后自动保存" />
-          ) : (
-            <Table
-              rowKey="id"
-              columns={recordColumns}
-              dataSource={records}
-              loading={recordsLoading}
-              size="small"
-              pagination={{ pageSize: 15, showTotal: t => `共 ${t} 条` }}
-            />
-          )}
+          <RecordCards
+            dataSource={records}
+            loading={recordsLoading}
+            emptyText="暂无授权函记录，生成后自动保存"
+            toCard={recordToCard}
+          />
         </>
       )}
     </Card>

@@ -31,3 +31,7 @@ export const createAuthLetterRecord = (data: AuthLetterRecordInput) =>
 
 export const deleteAuthLetterRecord = (id: number) =>
   api.delete<{ ok: boolean; message: string }>(`/auth-letter-records/${id}`)
+
+// 按记录重新生成并下载授权函 Word（经办人/代理机构均可下载自己有权的记录）
+export const downloadAuthLetterRecordWord = (id: number) =>
+  api.get<Blob>(`/auth-letter-records/${id}/word`, { responseType: 'blob' })

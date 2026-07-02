@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Button, Space, Tag, Upload, App, Typography } from 'antd'
+import { Card, Button, Space, Upload, App, Typography } from 'antd'
 import { DownloadOutlined, UploadOutlined, FileWordOutlined } from '@ant-design/icons'
 import type { UploadProps } from 'antd'
 import {
   listTemplates, downloadTemplate, replaceTemplate, type TemplateInfo,
 } from '../services/template'
+import RecordCards from '../components/RecordCards'
 
 const { Title, Text } = Typography
 
@@ -62,54 +63,6 @@ export default function TemplateManagePage() {
     },
   })
 
-  const columns = [
-    {
-      title: '模板用途',
-      dataIndex: 'label',
-      width: 180,
-      render: (v: string) => (
-        <Space><FileWordOutlined style={{ color: '#1677ff' }} />{v}</Space>
-      ),
-    },
-    { title: '文件名', dataIndex: 'filename', ellipsis: true },
-    {
-      title: '状态',
-      dataIndex: 'exists',
-      width: 90,
-      render: (v: boolean) =>
-        v ? <Tag color="green">正常</Tag> : <Tag color="red">缺失</Tag>,
-    },
-    { title: '大小', dataIndex: 'size', width: 100, render: fmtSize },
-    { title: '更新时间', dataIndex: 'updated_at', width: 150, render: (v: string) => v || '—' },
-    {
-      title: '操作',
-      width: 220,
-      render: (_: unknown, t: TemplateInfo) => (
-        <Space>
-          <Button
-            type="link"
-            size="small"
-            icon={<DownloadOutlined />}
-            disabled={!t.exists}
-            onClick={() => handleDownload(t)}
-          >
-            下载
-          </Button>
-          <Upload {...makeUploadProps(t)}>
-            <Button
-              type="link"
-              size="small"
-              icon={<UploadOutlined />}
-              loading={uploadingKey === t.key}
-            >
-              替换
-            </Button>
-          </Upload>
-        </Space>
-      ),
-    },
-  ]
-
   return (
     <Card>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -121,13 +74,30 @@ export default function TemplateManagePage() {
           </Text>
         </div>
 
-        <Table
-          rowKey="key"
-          loading={loading}
-          columns={columns}
+        <RecordCards
           dataSource={data}
-          pagination={false}
-          size="middle"
+          loading={loading}
+          emptyText="暂无模板"
+          toCard={(t) => ({
+            key: t.key,
+            accent: t.exists ? '#34a853' : '#d93025',
+            title: <Space><FileWordOutlined style={{ color: '#1a73e8' }} />{t.label}</Space>,
+            subtitle: t.filename,
+            statusText: t.exists ? '正常' : '缺失',
+            statusColor: t.exists ? 'green' : 'red',
+            fields: [
+              { label: '大小', value: fmtSize(t.size) },
+              { label: '更新时间', value: t.updated_at || '—' },
+            ],
+            actions: (
+              <>
+                <Button size="small" icon={<DownloadOutlined />} disabled={!t.exists} onClick={() => handleDownload(t)}>下载</Button>
+                <Upload {...makeUploadProps(t)}>
+                  <Button size="small" icon={<UploadOutlined />} loading={uploadingKey === t.key}>替换</Button>
+                </Upload>
+              </>
+            ),
+          })}
         />
       </Space>
     </Card>

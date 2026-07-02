@@ -9,45 +9,40 @@ import {
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined,
   SaveOutlined, DownloadOutlined, SendOutlined, MessageOutlined,
   PaperClipOutlined, FolderOpenOutlined, UploadOutlined, QuestionCircleOutlined,
+  EyeOutlined, SyncOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import dayjs from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import {
   listInquiries, createInquiry, updateInquiry, deleteInquiry,
-  completeInquiry, downloadWordUrl,
+  downloadWordUrl, previewWordUrl,
   listSuppliers, addSupplier, updateSupplier, deleteSupplier, sendEmailToSupplier,
+  sendAllToSuppliers, getReplies,
   listAttachments, uploadAttachment, deleteAttachment, attachFromTemplate,
+  attachmentDownloadUrl, attachmentPreviewUrl,
   listTemplates, uploadTemplate, updateTemplate, deleteTemplate,
   type InquiryLetter, type InquirySupplier, type InquiryAttachment, type InquiryTemplate,
+  type RepliesData,
 } from '../services/inquiry'
+import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import { getProjects, type Project } from '../services/project'
 import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
 const { Text } = Typography
 
-// ── 默认正文模板 ──────────────────────────────────────────────
-function buildDefaultContent(projectName: string, letterType: string): string {
-  return `尊敬的供应商：
-
-内江市第一人民医院拟对${projectName || '[项目名称]'}进行采购，现邀请贵公司参与${letterType}。
-
-一、采购项目
-项目名称：${projectName || '[项目名称]'}
-项目编号：[项目编号]
-
-二、报价要求
-请于[截止日期]前回复报价，报价需包含含税单价、总价及交货期。
-
-三、其他要求
-[请填写技术要求、商务要求等]
-
-四、联系方式
-采购部联系人：
-联系电话：
-
-内江市第一人民医院采购部
-[日期]`
+// ── 截止日期：从今天起顺延 N 个工作日（跳过周末）──────────────
+function addWorkingDays(start: dayjs.Dayjs, days: number): dayjs.Dayjs {
+  let d = start
+  let added = 0
+  while (added < days) {
+    d = d.add(1, 'day')
+    const wd = d.day()           // 0=周日 6=周六
+    if (wd !== 0 && wd !== 6) added++
+  }
+  return d
 }
 
 // ── 状态颜色 ──────────────────────────────────────────────────
@@ -56,6 +51,10 @@ const statusColor: Record<string, string> = {
   进行中: 'blue',
   已完成: 'green',
 }
+
+// 第几轮 → 中文序数（第二次/第三次…）
+const CN_ORD = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+const cnOrd = (n: number) => CN_ORD[n] || String(n)
 
 // ── 格式化金额 ────────────────────────────────────────────────
 function fmtAmount(v: number | null): string {
@@ -83,6 +82,22 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
   const [replyTarget, setReplyTarget] = useState<InquirySupplier | null>(null)
   const [replyForm] = Form.useForm()
   const [replySaving, setReplySaving] = useState(false)
+  // 邮箱回复跟踪
+  const [reps, setReps] = useState<RepliesData | null>(null)
+  const [repLoading, setRepLoading] = useState(false)
+  const loadReplies = useCallback(async () => {
+    if (!inquiryId) { message.warning('请先保存函件'); return }
+    setRepLoading(true)
+    try {
+      const res = await getReplies(inquiryId)
+      setReps(res.data.data)
+      message.success(`已拉取：${res.data.data.replied}/${res.data.data.sent} 家回复`)
+    } catch (e: unknown) {
+      const m = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '拉取回复失败')
+    } finally { setRepLoading(false) }
+  }, [inquiryId, message])
+  const repMap = new Map((reps?.suppliers || []).map(s => [s.id, s]))
 
   const load = useCallback(async () => {
     if (!inquiryId) { setSuppliers([]); return }
@@ -113,7 +128,7 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
   const handleDelete = (sup: InquirySupplier) => {
     modal.confirm({
       title: '删除供应商',
-      content: `确认删除「${sup.supplier_name}」？`,
+      content: `确认删除「${sup.supplier_name || sup.email || '该供应商'}」？`,
       okType: 'danger',
       onOk: async () => {
         try {
@@ -182,7 +197,10 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
   }
 
   const cols: ColumnsType<InquirySupplier> = [
-    { title: '供应商名称', dataIndex: 'supplier_name', width: 160, ellipsis: true },
+    {
+      title: '供应商名称', dataIndex: 'supplier_name', width: 160, ellipsis: true,
+      render: (v: string) => v || <Text type="secondary">待回函确认</Text>,
+    },
     { title: '联系人',    dataIndex: 'contact_name',  width: 80  },
     { title: '电话',      dataIndex: 'contact_phone', width: 120 },
     {
@@ -197,6 +215,21 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
           <Text type="secondary" style={{ fontSize: 11 }}>{r.sent_at.replace('T', ' ').slice(0, 16)}</Text>
         </Space>
       ) : <Tag>未发送</Tag>,
+    },
+    {
+      title: '邮箱回复', key: 'reply', width: 130,
+      render: (_: unknown, r: InquirySupplier) => {
+        const rp = repMap.get(r.id)
+        if (!reps) return <Text type="secondary">—</Text>
+        if (!rp?.replied) return <Tag>未回复</Tag>
+        return (
+          <Tooltip title={`${rp.reply_subject || ''}（${rp.reply_from || ''} ${(rp.reply_date || '').slice(0, 25)}）`}>
+            <Tag color={rp.reply_confident ? 'success' : 'warning'}>
+              {rp.reply_confident ? '已回复' : '已回复(待确认)'}
+            </Tag>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '报价金额', key: 'quote', width: 120,
@@ -260,6 +293,33 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
         )
       )}
 
+      {/* 邮箱回复跟踪 */}
+      {inquiryId && (
+        <div style={{ marginBottom: 8 }}>
+          <Space wrap>
+            <Button size="small" icon={<SyncOutlined />} loading={repLoading}
+              onClick={loadReplies}>拉取邮箱回复</Button>
+            {reps && (
+              <Text>已回复 <strong style={{ color: '#52c41a' }}>{reps.replied}</strong> / {reps.sent} 家</Text>
+            )}
+          </Space>
+          {reps && (
+            <Alert type="info" showIcon style={{ marginTop: 6 }}
+              message={<span style={{ fontSize: 12 }}>
+                供应商回复主题应为：<strong>{reps.reply_format}</strong>
+                {reps.unmatched.length > 0 && (
+                  <>　|　<span style={{ color: '#fa8c16' }}>
+                    另有 {reps.unmatched.length} 封含本项目名但未匹配到供应商的回复（待人工归类）：
+                    {reps.unmatched.map((u, i) => (
+                      <div key={i} style={{ marginLeft: 8 }}>· {u.subject.slice(0, 50)}（{u.from}）</div>
+                    ))}
+                  </span></>
+                )}
+              </span>} />
+          )}
+        </div>
+      )}
+
       {/* 供应商列表 */}
       <Table
         rowKey="id"
@@ -267,7 +327,7 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
         columns={cols}
         size="small"
         pagination={false}
-        scroll={{ x: 900 }}
+        scroll={{ x: 1000 }}
         style={{ marginBottom: 8 }}
         locale={{ emptyText: '暂无供应商，请点击下方「添加供应商」' }}
       />
@@ -282,17 +342,20 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
           ) : (
             <Card size="small" style={{ marginTop: 8 }}>
               <Form form={addForm} layout="inline" size="small">
-                <Form.Item name="supplier_name" rules={[{ required: true, message: '请输入供应商名称' }]}>
-                  <Input placeholder="供应商名称" style={{ width: 180 }} />
+                <Form.Item name="email" rules={[
+                  { required: true, message: '请输入邮箱' },
+                  { type: 'email', message: '请输入有效邮箱' },
+                ]}>
+                  <Input placeholder="邮箱地址（必填）" style={{ width: 220 }} />
+                </Form.Item>
+                <Form.Item name="supplier_name">
+                  <Input placeholder="供应商名称（回函后补填）" style={{ width: 180 }} />
                 </Form.Item>
                 <Form.Item name="contact_name">
                   <Input placeholder="联系人" style={{ width: 100 }} />
                 </Form.Item>
                 <Form.Item name="contact_phone">
                   <Input placeholder="联系电话" style={{ width: 130 }} />
-                </Form.Item>
-                <Form.Item name="email" rules={[{ type: 'email', message: '请输入有效邮箱' }]}>
-                  <Input placeholder="邮箱地址" style={{ width: 200 }} />
                 </Form.Item>
                 <Form.Item>
                   <Space>
@@ -308,7 +371,7 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
 
       {/* 记录回复 Modal */}
       <Modal
-        title={`记录回复 — ${replyTarget?.supplier_name || ''}`}
+        title={`记录回复 — ${replyTarget?.supplier_name || replyTarget?.email || ''}`}
         open={replyModal}
         onCancel={() => setReplyModal(false)}
         onOk={handleSaveReply}
@@ -355,6 +418,7 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
   const { message, modal } = App.useApp()
   const [attachments, setAttachments] = useState<InquiryAttachment[]>([])
   const [uploading, setUploading] = useState(false)
+  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // 模板库 modal 状态
@@ -513,6 +577,16 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
                   <Tag style={{ marginLeft: 4, fontSize: 10 }} color="purple">模板</Tag>
                 )}
               </Text>
+              {isPreviewable(att.filename) && (
+                <Button
+                  size="small" type="text" icon={<EyeOutlined />}
+                  onClick={() => setPreview({ open: true, url: attachmentPreviewUrl(inquiryId!, att.id), name: att.filename })}
+                />
+              )}
+              <Button
+                size="small" type="text" icon={<DownloadOutlined />}
+                href={attachmentDownloadUrl(inquiryId!, att.id)}
+              />
               <Button
                 size="small" type="text" danger icon={<DeleteOutlined />}
                 onClick={() => handleDeleteAtt(att)}
@@ -521,6 +595,12 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
           ))}
         </div>
       )}
+      <FilePreviewModal
+        open={preview.open}
+        url={preview.url}
+        filename={preview.name}
+        onClose={() => setPreview(p => ({ ...p, open: false }))}
+      />
 
       {/* 操作按钮 */}
       <Space size={8}>
@@ -714,6 +794,7 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
 
 export default function InquiryPage() {
   const { message, modal } = App.useApp()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [letters, setLetters] = useState<InquiryLetter[]>([])
   const [projects, setProjects] = useState<Project[]>([])
@@ -726,6 +807,8 @@ export default function InquiryPage() {
   const [saving, setSaving]         = useState(false)
   const [form] = Form.useForm()
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
+  const [wordPreview, setWordPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
+  const [sendingAllId, setSendingAllId] = useState<number | null>(null)
 
   // ── 数据加载 ──────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -745,6 +828,14 @@ export default function InquiryPage() {
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p]))
   const filtered   = letters.filter(l => l.status === tabStatus)
 
+  // 可立询/议价函的项目：方式∈院内询价/议价/紧急采购，且未处于进行中的采购轮次
+  // （无轮次=尚未开始 或 本轮已废标=待开下一轮 才可；已进轮次未废标的排除）
+  const eligibleProjects = projects.filter(p =>
+    (['院内询价', '院内议价', '医用耗材紧急采购'].includes(p.method) &&
+      ((p.current_round ?? 0) === 0 || p.current_stage === 'round_failed')) ||
+    p.id === selectedProject?.id,   // 编辑时保留当前记录的项目，避免下拉里消失
+  )
+
   // ── 打开新建 ──────────────────────────────────────────────────
   const openCreate = () => {
     setEditId(null)
@@ -761,12 +852,13 @@ export default function InquiryPage() {
     setSelectedProject(proj)
     form.resetFields()
     form.setFieldsValue({
-      project_id: record.project_id,
-      type:       record.type,
-      title:      record.title,
-      content:    record.content,
-      deadline:   record.deadline ? dayjs(record.deadline) : null,
-      notes:      record.notes,
+      project_id:   record.project_id,
+      type:         record.type,
+      title:        record.title,
+      detail:       record.detail,
+      requirements: record.requirements,
+      deadline:     record.deadline ? dayjs(record.deadline) : null,
+      notes:        record.notes,
     })
     setDrawerOpen(true)
   }
@@ -781,9 +873,13 @@ export default function InquiryPage() {
     if (!currentTitle) {
       form.setFieldsValue({ title: `${proj.display_name || proj.name}${letterType}邀请函` })
     }
-    const currentContent = form.getFieldValue('content')
-    if (!currentContent) {
-      form.setFieldsValue({ content: buildDefaultContent(proj.display_name || proj.name, letterType) })
+    // 项目细则和限价：默认取立项内容，未填时带出
+    if (!form.getFieldValue('detail') && proj.content) {
+      form.setFieldsValue({ detail: proj.content })
+    }
+    // 截止日期：未选时自动填为 5 个工作日后
+    if (!form.getFieldValue('deadline')) {
+      form.setFieldsValue({ deadline: addWorkingDays(dayjs(), 5) })
     }
   }
 
@@ -842,103 +938,124 @@ export default function InquiryPage() {
     })
   }
 
-  // ── 标记完成 ──────────────────────────────────────────────────
-  const handleComplete = (record: InquiryLetter) => {
-    modal.confirm({
-      title: '标记为已完成',
-      content: `确认将「${record.title}」标记为已完成？`,
-      onOk: async () => {
-        try {
-          await completeInquiry(record.id)
-          message.success('已完成')
-          load()
-        } catch { message.error('操作失败') }
-      },
-    })
-  }
+  // ── 截止日期是否已过（过了才能进入 8.1 询议价评审）────────────
+  const deadlinePassed = (record: InquiryLetter) =>
+    !!record.deadline && dayjs().format('YYYY-MM-DD') >= record.deadline
 
   // ── 下载 Word ────────────────────────────────────────────────
   const handleDownloadWord = (record: InquiryLetter) => {
     window.open(downloadWordUrl(record.id), '_blank')
   }
 
+  // ── 一键发送（操作栏，发给所有已填邮箱且未发送的供应商）─────────
+  const handleSendAll = (record: InquiryLetter) => {
+    const pending = record.supplier_count - record.sent_count
+    modal.confirm({
+      title: '一键发送邮件',
+      content: record.type === '询价'
+        ? `将把《${record.title || record.type + '邀请函'}》正文及附件发送给所有已填邮箱且未发送的供应商（待发约 ${pending} 家）。询价函要求至少 3 家填写邮箱，确认发送？`
+        : `将把《${record.title || record.type + '邀请函'}》正文及附件发送给所有已填邮箱且未发送的供应商（待发约 ${pending} 家），确认发送？`,
+      okText: '确认发送',
+      onOk: async () => {
+        setSendingAllId(record.id)
+        try {
+          const res = await sendAllToSuppliers(record.id)
+          const { sent = [], failed = [] } = res.data
+          if (failed.length > 0) {
+            message.warning(res.data.message || `成功 ${sent.length} 家，失败 ${failed.length} 家`)
+          } else {
+            message.success(res.data.message || `已发送 ${sent.length} 家`)
+          }
+          load()
+        } catch (err: unknown) {
+          const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+          message.error(errMsg || '发送失败，请检查供应商邮箱与邮件配置')
+        } finally {
+          setSendingAllId(null)
+        }
+      },
+    })
+  }
+
   // ── 表格列 ───────────────────────────────────────────────────
-  const columns: ColumnsType<InquiryLetter> = [
-    {
-      title: '类型', dataIndex: 'type', width: 70,
-      render: (v: string) => (
-        <Tag color={v === '询价' ? 'blue' : 'orange'}>{v}</Tag>
-      ),
-    },
-    {
-      title: '标题', dataIndex: 'title', ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '所属项目', dataIndex: 'project_name', width: 200, ellipsis: true,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '截止日期', dataIndex: 'deadline', width: 110,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '供应商', key: 'suppliers', width: 110, align: 'center' as const,
-      render: (_: unknown, r: InquiryLetter) => (
-        <Space>
-          <span>{r.supplier_count} 家</span>
-          {r.sent_count > 0 && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              已发 {r.sent_count}
-            </Text>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: '状态', dataIndex: 'status', width: 80,
-      render: (v: string) => <Tag color={statusColor[v] || 'default'}>{v}</Tag>,
-    },
-    {
-      title: '创建时间', dataIndex: 'created_at', width: 115,
-      render: (v: string) => v ? v.replace('T', ' ').slice(0, 16) : '—',
-    },
-    {
-      title: '操作', key: 'actions', width: 230,
-      render: (_: unknown, r: InquiryLetter) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>
-            {r.status === '草稿' ? '编辑' : '查看'}
-          </Button>
-          <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadWord(r)}>
-            Word
-          </Button>
-          {r.status === '进行中' && (
-            <Button
-              size="small" type="primary" ghost
-              icon={<CheckCircleOutlined />}
-              onClick={() => handleComplete(r)}
-            >
-              完成
+  const ACCENT_BY_STATUS: Record<string, string> = { 已完成: '#34a853', 进行中: '#1a73e8', 草稿: '#9aa0a6' }
+  const letterToCard = (r: InquiryLetter): RecordCardData => ({
+    key: r.id,
+    accent: ACCENT_BY_STATUS[r.status] || '#1a73e8',
+    title: r.title || `${r.type}邀请函`,
+    onTitleClick: () => setWordPreview({ open: true, url: previewWordUrl(r.id), name: `${r.title || r.type + '邀请函'}.docx` }),
+    subtitle: r.project_name || '—',
+    statusText: r.status,
+    statusColor: statusColor[r.status] || 'default',
+    tags: (
+      <Space size={4}>
+        <Tag color={r.type === '询价' ? 'blue' : r.type === '紧急采购' ? 'red' : 'orange'} style={{ marginInlineEnd: 0 }}>
+          {r.type}
+        </Tag>
+        {r.round > 1 && (
+          <Tag color="purple" style={{ marginInlineEnd: 0 }}>第{cnOrd(r.round)}次</Tag>
+        )}
+      </Space>
+    ),
+    fields: [
+      { label: '截止', value: r.deadline },
+      { label: '供应商', value: `${r.supplier_count} 家${r.sent_count > 0 ? ` · 已发${r.sent_count}` : ''}` },
+      { label: '创建', value: r.created_at ? r.created_at.replace('T', ' ').slice(0, 16) : '' },
+    ],
+    actions: (
+      <>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+          {r.status === '已完成' ? '查看' : '编辑'}
+        </Button>
+        <Button size="small" icon={<EyeOutlined />}
+          onClick={() => setWordPreview({ open: true, url: previewWordUrl(r.id), name: `${r.title || r.type + '邀请函'}.docx` })}>
+          预览
+        </Button>
+        <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadWord(r)}>Word</Button>
+        {r.status !== '已完成' && (() => {
+          const allSent = r.supplier_count > 0 && r.sent_count >= r.supplier_count
+          const noSup = r.supplier_count === 0
+          const disabled = noSup || allSent
+          const tip = noSup
+            ? '请先在「编辑」中添加供应商并填写邮箱'
+            : allSent ? '所有供应商均已发送' : '把函件正文+附件群发给所有已填邮箱且未发送的供应商'
+          return (
+            <Tooltip title={tip}>
+              <Button size="small" type="primary" icon={<SendOutlined />}
+                loading={sendingAllId === r.id} disabled={disabled} onClick={() => handleSendAll(r)}>
+                一键发送
+              </Button>
+            </Tooltip>
+          )
+        })()}
+        {r.status === '进行中' && (
+          <Tooltip title={deadlinePassed(r)
+            ? '截止日期已过，可开始资格性/符合性审查并出评定标报告'
+            : `递交截止日期 ${r.deadline || '未填写'} 未到，截止后方可评审`}>
+            <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />}
+              disabled={!deadlinePassed(r)} onClick={() => navigate(`/inquiry-review?inquiry=${r.id}`)}>
+              评审
             </Button>
-          )}
-          {r.status === '草稿' && (
-            <Button
-              size="small" danger icon={<DeleteOutlined />}
-              onClick={() => handleDelete(r)}
-            />
-          )}
-        </Space>
-      ),
-    },
-  ]
+          </Tooltip>
+        )}
+        {r.status === '已完成' && (
+          <Button size="small" icon={<FolderOpenOutlined />} onClick={() => navigate(`/inquiry-review?inquiry=${r.id}`)}>
+            评审记录
+          </Button>
+        )}
+        {r.status === '草稿' && (
+          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)} />
+        )}
+      </>
+    ),
+  })
 
   // 统计各状态数量
   const countOf = (s: string) => letters.filter(l => l.status === s).length
 
   return (
     <Card
-      title={<span style={{ fontWeight: 700, fontSize: 16 }}>询/议价函管理</span>}
+      title={<span style={{ fontWeight: 700, fontSize: 16 }}>询/议价函、紧急采购管理</span>}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           新建函件
@@ -955,15 +1072,7 @@ export default function InquiryPage() {
         ]}
       />
 
-      <Table
-        rowKey="id"
-        dataSource={filtered}
-        columns={columns}
-        loading={loading}
-        size="small"
-        pagination={{ pageSize: 15, showTotal: t => `共 ${t} 条` }}
-        scroll={{ x: 1100 }}
-      />
+      <RecordCards dataSource={filtered} loading={loading} emptyText="暂无函件" toCard={letterToCard} />
 
       {/* ══ 新建/编辑 Drawer ═══════════════════════════════════════ */}
       <Drawer
@@ -976,6 +1085,17 @@ export default function InquiryPage() {
           <Space>
             <Button onClick={() => setDrawerOpen(false)}>取消</Button>
             <Button
+              icon={<EyeOutlined />}
+              onClick={() => {
+                if (!editId) return
+                const r = letters.find(l => l.id === editId)!
+                setWordPreview({ open: true, url: previewWordUrl(editId), name: `${r.title || r.type + '邀请函'}.docx` })
+              }}
+              disabled={!editId}
+            >
+              预览
+            </Button>
+            <Button
               icon={<DownloadOutlined />}
               onClick={() => editId && handleDownloadWord(letters.find(l => l.id === editId)!)}
               disabled={!editId}
@@ -987,9 +1107,9 @@ export default function InquiryPage() {
               loading={saving}
               onClick={handleSave}
               type="primary"
-              disabled={editId != null && letters.find(l => l.id === editId)?.status !== '草稿'}
+              disabled={editId != null && letters.find(l => l.id === editId)?.status === '已完成'}
             >
-              保存草稿
+              保存
             </Button>
           </Space>
         }
@@ -1010,7 +1130,7 @@ export default function InquiryPage() {
                 filterOption={(input, option) =>
                   (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase())
                 }
-                options={projects.map(p => ({
+                options={eligibleProjects.map(p => ({
                   value: p.id,
                   label: `${p.number ? p.number + ' — ' : ''}${p.display_name || p.name}`,
                 }))}
@@ -1027,14 +1147,34 @@ export default function InquiryPage() {
                   议价
                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>（1-2家供应商）</Text>
                 </Radio>
+                <Radio value="紧急采购">
+                  紧急采购
+                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>（1家及以上，按院内议价）</Text>
+                </Radio>
               </Radio.Group>
+            </Form.Item>
+
+            <Form.Item label="项目编号">
+              <Input
+                value={selectedProject?.number || ''}
+                readOnly
+                disabled
+                placeholder="选择项目后自动带出"
+              />
+              <div style={{ marginTop: 2, color: '#aaa', fontSize: 11 }}>
+                取自立项编号，自动填入邀请函，无需手填
+              </div>
             </Form.Item>
 
             <Form.Item name="title" label="函件标题">
               <Input placeholder="如：[项目名称]询价邀请函" />
             </Form.Item>
 
-            <Form.Item name="deadline" label="截止回复日期">
+            <Form.Item
+              name="deadline"
+              label="截止回复日期"
+              extra="选择项目后自动填为 5 个工作日后，可按需修改"
+            >
               <DatePicker
                 style={{ width: '100%' }}
                 placeholder="请选择截止日期"
@@ -1043,17 +1183,32 @@ export default function InquiryPage() {
             </Form.Item>
           </Card>
 
-          {/* ── 函件正文 ── */}
-          <Card title="函件正文" size="small" style={{ marginBottom: 16 }}>
-            <Form.Item name="content" noStyle>
+          {/* ── 邀请函正文（公告体例） ── */}
+          <Card title="邀请函正文" size="small" style={{ marginBottom: 16 }}>
+            <Form.Item
+              name="detail"
+              label="项目细则和限价"
+              extra="默认取立项的采购内容与限价，可手动编辑"
+            >
               <TextArea
-                rows={14}
-                placeholder="请输入函件正文内容..."
+                rows={6}
+                placeholder="如：包1：××，最高单价限价××元；包2：……"
                 style={{ fontFamily: '微软雅黑, sans-serif', fontSize: 13 }}
               />
             </Form.Item>
-            <div style={{ marginTop: 4, color: '#aaa', fontSize: 11 }}>
-              正文内容将用于生成 Word 文档和邮件正文
+            <Form.Item
+              name="requirements"
+              label="相关要求"
+              extra="技术要求、商务要求、资质要求等，由经办人填写"
+            >
+              <TextArea
+                rows={5}
+                placeholder="请填写技术要求、商务要求、所需资质等"
+                style={{ fontFamily: '微软雅黑, sans-serif', fontSize: 13 }}
+              />
+            </Form.Item>
+            <div style={{ color: '#aaa', fontSize: 11 }}>
+              项目名称、项目编号、收件邮箱、联系人、落款日期由系统按样板自动生成
             </div>
           </Card>
 
@@ -1114,6 +1269,13 @@ export default function InquiryPage() {
                     </div>
                   )
                 }
+                if (type === '紧急采购') {
+                  return (
+                    <div style={{ marginBottom: 8, color: '#cf1322', fontSize: 12 }}>
+                      紧急采购按院内议价办理，1 家及以上供应商即可
+                    </div>
+                  )
+                }
                 return (
                   <div style={{ marginBottom: 8, color: '#1677ff', fontSize: 12 }}>
                     议价函适用于 1-2 家供应商
@@ -1128,26 +1290,27 @@ export default function InquiryPage() {
                 onSupplierChange={load}
               />
 
-              {/* 标记完成按钮 */}
+              {/* 前往评审入口（截止日期后） */}
               {(() => {
                 const letter = letters.find(l => l.id === editId)
                 if (!letter) return null
                 if (letter.status !== '进行中') return null
-                const hasAllReplied = letter.supplier_count > 0 &&
-                  letter.supplier_count === letter.sent_count
-                if (!hasAllReplied) return null
+                const passed = deadlinePassed(letter)
                 return (
                   <div style={{ textAlign: 'center', marginTop: 12 }}>
                     <Divider />
                     <Button
                       type="primary"
                       icon={<CheckCircleOutlined />}
-                      onClick={() => handleComplete(letter)}
+                      disabled={!passed}
+                      onClick={() => navigate(`/inquiry-review?inquiry=${letter.id}`)}
                     >
-                      标记为已完成
+                      前往评审
                     </Button>
                     <div style={{ color: '#aaa', fontSize: 12, marginTop: 4 }}>
-                      所有供应商均已发送邮件，可标记此次询/议价为已完成
+                      {passed
+                        ? '截止日期已过，可进入 8.1 询议价评审：审查供应商资料并出评定标报告'
+                        : `递交截止日期 ${letter.deadline || '未填写'} 过后可进入评审`}
                     </div>
                   </div>
                 )
@@ -1163,6 +1326,14 @@ export default function InquiryPage() {
           )}
         </Form>
       </Drawer>
+
+      {/* 询/议价函在线预览 */}
+      <FilePreviewModal
+        open={wordPreview.open}
+        url={wordPreview.url}
+        filename={wordPreview.name}
+        onClose={() => setWordPreview(p => ({ ...p, open: false }))}
+      />
     </Card>
   )
 }

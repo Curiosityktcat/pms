@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Button, Drawer, Form, Input, Select, Radio, DatePicker,
-  Card, Space, Tabs, Popconfirm, App, Typography, Checkbox,
-  Row, Col, Tag, Divider,
+  Button, Drawer, Form, Input, Select, Radio, DatePicker, InputNumber,
+  Card, Space, Tabs, Popconfirm, App, Checkbox,
+  Row, Col, Divider,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, FileWordOutlined,
   CheckCircleOutlined, RollbackOutlined,
 } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import dayjs from 'dayjs'
 import {
   listInternalBidDemands, createInternalBidDemand, updateInternalBidDemand,
@@ -16,10 +16,8 @@ import {
   internalBidDemandWordUrl,
   type InternalBidDemand, type BidItem, type BidPackage, type ReviewFactor,
 } from '../services/internalBidDemand'
-import { getProjects, type Project } from '../services/project'
 
 const { TextArea } = Input
-const { Text } = Typography
 
 type TabKey = '初稿' | '定稿'
 
@@ -62,7 +60,8 @@ function makeDefault(): Partial<InternalBidDemand> {
     demand_dept: '',
     manage_dept: '医学装备部',
     year: `${new Date().getFullYear()}`,
-    compile_date: dayjs().format('YYYY-MM-DD'),
+    // DatePicker 需要 dayjs 对象（传字符串会导致渲染崩溃白屏）
+    compile_date: dayjs() as unknown as string,
     category: '货物',
     overview: '',
     has_consultant: 0,
@@ -111,7 +110,6 @@ export default function InternalBidDemandPage() {
   const { message, modal } = App.useApp()
 
   const [demands, setDemands] = useState<InternalBidDemand[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<TabKey>('初稿')
 
@@ -146,7 +144,6 @@ export default function InternalBidDemandPage() {
 
   useEffect(() => {
     load()
-    getProjects().then(r => setProjects(r.data.data || [])).catch(() => {})
   }, [load])
 
   // ── 新建 ─────────────────────────────────────────────────────
@@ -321,62 +318,37 @@ export default function InternalBidDemandPage() {
   const filteredDemands = demands.filter(d => d.status === activeTab)
 
   // ── 列定义 ──────────────────────────────────────────────────
-  const columns: ColumnsType<InternalBidDemand> = [
-    {
-      title: '项目名称',
-      dataIndex: 'project_name',
-      width: 200,
-      render: (v: string) => v || <Text type="secondary">（未关联项目）</Text>,
-    },
-    { title: '需求科室', dataIndex: 'demand_dept', width: 120 },
-    { title: '归口管理科室', dataIndex: 'manage_dept', width: 130 },
-    { title: '编制时间', dataIndex: 'compile_date', width: 120 },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      width: 80,
-      render: (s: string) => (
-        <Tag color={s === '定稿' ? 'green' : 'default'}>{s}</Tag>
-      ),
-    },
-    {
-      title: '操作',
-      width: 200,
-      render: (_: unknown, record: InternalBidDemand) => (
-        <Space size="small">
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(record)}
-            disabled={record.status === '定稿'}
-          >
-            编辑
-          </Button>
-          {record.status === '定稿' && (
-            <Button
-              size="small"
-              icon={<FileWordOutlined />}
-              type="primary"
-              ghost
-              onClick={() => window.open(internalBidDemandWordUrl(record.id), '_blank')}
-            >
-              下载Word
-            </Button>
-          )}
-          {record.status === '定稿' && (
-            <Popconfirm title="确认撤回为初稿？" onConfirm={() => handleRevoke(record.id)}>
-              <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
-            </Popconfirm>
-          )}
-          {record.status === '初稿' && (
-            <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
-    },
-  ]
+  const demandToCard = (record: InternalBidDemand): RecordCardData => ({
+    key: record.id,
+    accent: record.status === '定稿' ? '#34a853' : '#1a73e8',
+    title: record.project_name || '（未命名）',
+    subtitle: record.demand_dept ? `需求科室 ${record.demand_dept}` : undefined,
+    statusText: record.status,
+    statusColor: record.status === '定稿' ? 'green' : 'default',
+    fields: [
+      { label: '归口管理科室', value: record.manage_dept },
+      { label: '编制时间', value: record.compile_date },
+    ],
+    actions: (
+      <>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)} disabled={record.status === '定稿'}>编辑</Button>
+        {record.status === '定稿' && (
+          <Button size="small" icon={<FileWordOutlined />} type="primary" ghost
+            onClick={() => window.open(internalBidDemandWordUrl(record.id), '_blank')}>下载Word</Button>
+        )}
+        {record.status === '定稿' && (
+          <Popconfirm title="确认撤回为初稿？" onConfirm={() => handleRevoke(record.id)}>
+            <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
+          </Popconfirm>
+        )}
+        {record.status === '初稿' && (
+          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        )}
+      </>
+    ),
+  })
 
   // ── 渲染 ─────────────────────────────────────────────────────
   return (
@@ -402,14 +374,7 @@ export default function InternalBidDemandPage() {
         ]}
       />
 
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={filteredDemands}
-        loading={loading}
-        pagination={{ pageSize: 20 }}
-        size="middle"
-      />
+      <RecordCards dataSource={filteredDemands} loading={loading} emptyText="暂无需求表" toCard={demandToCard} />
 
       {/* ── 编辑抽屉 ────────────────────────────────────────── */}
       <Drawer
@@ -453,17 +418,8 @@ export default function InternalBidDemandPage() {
           <Card title="表头" size="small" style={{ marginBottom: 16 }}>
             <Row gutter={16}>
               <Col span={8}>
-                <Form.Item label="关联项目" name="project_id">
-                  <Select
-                    allowClear
-                    showSearch
-                    placeholder="选择项目（可选）"
-                    optionFilterProp="label"
-                    options={projects.map(p => ({
-                      value: p.id,
-                      label: `${p.number} ${p.name}`,
-                    }))}
-                  />
+                <Form.Item label="项目名称" name="project_name" rules={[{ required: true, message: '请填写项目名称' }]}>
+                  <Input placeholder="本院内竞选项目名称（此处为项目起点，无需关联已立项项目）" />
                 </Form.Item>
               </Col>
               <Col span={8}>
@@ -508,16 +464,8 @@ export default function InternalBidDemandPage() {
                 <Radio value="工程">工程</Radio>
               </Radio.Group>
             </Form.Item>
-            <Form.Item label="1.6 预算金额（来自项目，只读）">
-              <Input
-                value={
-                  editingId
-                    ? demands.find(d => d.id === editingId)?.budget_amount?.toString() ?? ''
-                    : ''
-                }
-                disabled
-                placeholder="关联项目后自动带入"
-              />
+            <Form.Item label="1.6 预算金额（元）" name="budget_amount">
+              <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="请输入预算金额" />
             </Form.Item>
             <Form.Item label="1.7 项目概况" name="overview">
               <TextArea rows={4} placeholder="请填写项目概况" />

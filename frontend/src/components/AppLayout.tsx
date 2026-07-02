@@ -1,7 +1,9 @@
-import { Layout, Menu, Dropdown, Space, Button, Tooltip } from 'antd'
-import { HomeOutlined } from '@ant-design/icons'
+import { useState } from 'react'
+import { Layout, Menu, Dropdown, Space, Button, Tooltip, Grid, Drawer } from 'antd'
+import { HomeOutlined, BookOutlined, MenuOutlined } from '@ant-design/icons'
 import {
   FolderOpenOutlined,
+  EditOutlined,
   UserOutlined,
   LogoutOutlined,
   KeyOutlined,
@@ -22,10 +24,16 @@ import {
   ScheduleOutlined,
   SolutionOutlined,
   BarsOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { authLogout } from '../services/auth'
+import AiGuideButton from './AiGuideButton'
+import InboxBell from './InboxBell'
+import ChatWidget from './ChatWidget'
+import OnlineCount from './OnlineCount'
+import MouseAssistant from './MouseAssistant'
 
 const { Sider, Header, Content } = Layout
 
@@ -57,11 +65,17 @@ export default function AppLayout() {
       if (t === 'sole_source')  return 'procurement-demand-sole'
       if (t === 'inquiry')      return 'procurement-demand-inquiry'
       if (t === 'emergency')    return 'procurement-demand-emergency'
-      return 'dispatch'  // 无 type → 总览页，高亮「采购项目分发」
+      return 'dispatch-list'  // 无 type → 总览页，高亮「2.1 项目分发」
     }
     if (pathParts[0] === 'internal-bid-demand') return 'internal-bid-demand'
     if (pathParts[0] === 'procurement-doc') {
       return pathParts[1] === 'demand' ? 'doc-demand' : 'doc-file'
+    }
+    if (pathParts[0] === 'doc-form') {
+      const t = pathParts[1]
+      if (t === 'procurement_doc') return 'doc-file-online'
+      if (t === 'internal_demand') return 'doc-internal-online'
+      return 'doc-demand-online'
     }
     return pathParts[0] || 'flow'
   })()
@@ -69,14 +83,23 @@ export default function AppLayout() {
   // 根据路径确定默认展开的父菜单
   const getDefaultOpenKeys = () => {
     const k = activeKey
+    if (['project-distribution'].includes(k)) return ['dispatch']
+    if (['inquiry-review', 'project-review'].includes(k)) return ['review']
     if (['new', 'flow', 'bid', 'bid-board', 'auth-letter'].includes(k)) return ['pm']
-    if (['announcement'].includes(k)) return ['publish']
-    if (['people-manage', 'template-manage'].includes(k)) return ['base-data']
-    if (k.startsWith('procurement-demand-')) return ['procurement-req']
+    if (['announcement', 'correction'].includes(k)) return ['publish']
+    if (['people-manage', 'template-manage', 'agency-manage'].includes(k)) return ['base-data']
+    if (k.startsWith('procurement-demand-') || k === 'doc-demand-online' || k === 'doc-internal-online') return ['procurement-req']
     if (k === 'internal-bid-demand') return ['internal-procurement']
-    if (['doc-demand', 'doc-file'].includes(k)) return ['doc']
-    return ['pm']
+    if (['doc-demand', 'doc-file', 'doc-file-online'].includes(k)) return ['doc']
+    return []   // 门户/文档工具等非业务页：不自动展开任何分组
   }
+
+  // 响应式：md 以下视为手机/窄屏，侧栏改为抽屉
+  const screens = Grid.useBreakpoint()
+  const isMobile = !screens.md
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  // 菜单手风琴：同一时间只展开一个分组，减少视觉杂乱
+  const [openKeys, setOpenKeys] = useState<string[]>(getDefaultOpenKeys())
 
   const menuItems = [
     // ─── 1. 采购需求编制 ────────────────────────────────────────
@@ -110,6 +133,18 @@ export default function AppLayout() {
           label: '1.5 紧急采购登记',
           onClick: () => navigate('/procurement-demand/emergency'),
         },
+        {
+          key: 'doc-demand-online',
+          icon: <EditOutlined />,
+          label: '1.6 需求在线编制',
+          onClick: () => navigate('/doc-form/procurement_demand'),
+        },
+        {
+          key: 'doc-internal-online',
+          icon: <EditOutlined />,
+          label: '1.7 院内需求在线编制',
+          onClick: () => navigate('/doc-form/internal_demand'),
+        },
       ],
     },
 
@@ -118,8 +153,16 @@ export default function AppLayout() {
       key: 'dispatch',
       label: '2. 采购项目分发',
       icon: <AuditOutlined />,
-      // 复用采购需求页面，助理在「待分发」tab 进行分发
-      onClick: () => navigate('/procurement-demand'),
+      children: [
+        {
+          key: 'project-distribution',
+          icon: <AuditOutlined />,
+          label: '2.1 项目分发',
+          // 新版：采购部助理分发项目 + 指定经办人 + 自动派代理（来源 rd-web/手动）
+          onClick: () => navigate('/project-distribution'),
+        },
+        // 2.2 四川采购公告 / 2.3 采购需求分发 暂不开放——按需可恢复
+      ],
     },
 
     // ─── 3. 代理协议 ──────────────────────────────────────────
@@ -187,6 +230,12 @@ export default function AppLayout() {
           label: '5.2 采购文件确认',
           onClick: () => navigate('/procurement-doc/file'),
         },
+        {
+          key: 'doc-file-online',
+          icon: <EditOutlined />,
+          label: '5.3 文件在线编制',
+          onClick: () => navigate('/doc-form/procurement_doc'),
+        },
       ],
     },
 
@@ -203,7 +252,12 @@ export default function AppLayout() {
           onClick: () => navigate('/announcement'),
         },
         { key: 'survey',        label: <DevLabel label="6.2 调研公告" />,       disabled: true },
-        { key: 'correction',    label: <DevLabel label="6.3 更正公告" />,       disabled: true },
+        {
+          key: 'correction',
+          icon: <FileSearchOutlined />,
+          label: '6.3 更正公告',
+          onClick: () => navigate('/correction'),
+        },
         { key: 'single-source', label: <DevLabel label="6.4 单一来源公示" />,   disabled: true },
       ],
     },
@@ -211,7 +265,7 @@ export default function AppLayout() {
     // ─── 7. 询/议价函 ─────────────────────────────────────────
     {
       key: 'inquiry',
-      label: '7. 询/议价函',
+      label: '7. 询/议价函、紧急采购',
       icon: <ContainerOutlined />,
       onClick: () => navigate('/inquiry'),
     },
@@ -219,14 +273,33 @@ export default function AppLayout() {
     // ─── 8. 项目评审 ──────────────────────────────────────────
     {
       key: 'review',
-      label: <DevLabel label="8. 项目评审" />,
+      label: '8. 项目评审',
       icon: <BarChartOutlined />,
-      disabled: true,
       children: [
-        { key: 'supplier-reg', label: <DevLabel label="8.1 供应商报名" />, disabled: true },
-        { key: 'eval-report',  label: <DevLabel label="8.2 评定表报告" />, disabled: true },
-        { key: 'online-review',label: <DevLabel label="8.3 在线评审" />,  disabled: true },
+        {
+          key: 'inquiry-review',
+          icon: <ContainerOutlined />,
+          label: '8.1 询议价、紧急采购评审',
+          onClick: () => navigate('/inquiry-review'),
+        },
+        { key: 'supplier-reg', label: <DevLabel label="8.2 供应商报名" />, disabled: true },
+        { key: 'eval-report',  label: <DevLabel label="8.3 评定表报告" />, disabled: true },
+        { key: 'online-review',label: <DevLabel label="8.4 在线评审" />,  disabled: true },
+        {
+          key: 'project-review',
+          icon: <ContainerOutlined />,
+          label: '8.5 项目评审资料上传',
+          onClick: () => navigate('/project-review'),
+        },
       ],
+    },
+
+    // ─── 投标文件审查（AI 辅助，独立于 8 的占位） ─────────────
+    {
+      key: 'bid-review',
+      label: '投标文件审查',
+      icon: <FileSearchOutlined />,
+      onClick: () => navigate('/bid-review'),
     },
 
     // ─── 9. 采购结果确认 ──────────────────────────────────────
@@ -253,25 +326,63 @@ export default function AppLayout() {
       onClick: () => navigate('/archive'),
     },
 
-    // ─── 12. 基础数据维护 ─────────────────────────────────────
+    // ─── 12. 文件识别 ─────────────────────────────────────────
+    {
+      key: 'file-ocr',
+      label: '12. 文件识别',
+      icon: <FileSearchOutlined />,
+      onClick: () => navigate('/file-ocr'),
+    },
+
+    // ─── 私人文件库（仅黄新博本人可见可用）────────────────────
+    ...(user?.username === '黄新博' ? [{
+      key: 'filebox',
+      label: '我的文件库',
+      icon: <FolderOpenOutlined />,
+      onClick: () => navigate('/filebox'),
+    }] : []),
+
+    // ─── 13. 基础数据维护 ─────────────────────────────────────
     {
       key: 'base-data',
-      label: '12. 基础数据维护',
+      label: '13. 基础数据维护',
       icon: <SettingOutlined />,
       children: [
         {
           key: 'people-manage',
           icon: <TeamOutlined />,
-          label: '12.1 人员维护',
+          label: '13.1 人员维护',
           onClick: () => navigate('/people-manage'),
         },
         {
           key: 'template-manage',
           icon: <FileTextOutlined />,
-          label: '12.2 模板维护',
+          label: '13.2 模板维护',
           onClick: () => navigate('/template-manage'),
         },
+        {
+          key: 'agency-manage',
+          icon: <SafetyCertificateOutlined />,
+          label: '13.3 代理机构维护',
+          onClick: () => navigate('/agency-manage'),
+        },
       ],
+    },
+
+    // ─── 法规库 ───────────────────────────────────────────────
+    {
+      key: 'law-library',
+      label: '法规库',
+      icon: <BookOutlined />,
+      onClick: () => navigate('/law-library'),
+    },
+
+    // ─── 投诉质疑数据库 ───────────────────────────────────────
+    {
+      key: 'supervision',
+      label: '投诉质疑数据库',
+      icon: <AuditOutlined />,
+      onClick: () => navigate('/supervision'),
     },
   ]
 
@@ -282,7 +393,7 @@ export default function AppLayout() {
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
     'agency-agreement', 'doc',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
-    'inquiry', 'procurement-result', 'contract', 'archive',
+    'inquiry', 'inquiry-review', 'project-review', 'procurement-result', 'contract', 'archive', 'file-ocr', 'bid-review',
     'people-manage', 'template-manage',
   ])
   const permSet = new Set(user?.perms || [])
@@ -327,71 +438,130 @@ export default function AppLayout() {
     ],
   }
 
-  return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={230}
-        theme="dark"
-        style={{
-          overflow: 'auto',
-          height: '100vh',
-          position: 'sticky',
-          top: 0,
-          left: 0,
-        }}
-      >
-        {/* 侧边栏标题 */}
-        <div style={{
-          padding: '14px 16px 12px',
-          borderBottom: '1px solid rgba(255,255,255,.1)',
-          background: 'rgba(0,0,0,.2)',
-        }}>
-          <div style={{
-            color: '#fff',
-            fontWeight: 700,
-            fontSize: 14,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}>
-            <span style={{
-              background: '#1677ff',
-              borderRadius: 6,
-              width: 28, height: 28,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 16, flexShrink: 0,
-            }}>🏥</span>
-            <span style={{ lineHeight: 1.3 }}>自行采购管理<br />
-              <span style={{ fontSize: 11, fontWeight: 400, color: 'rgba(255,255,255,.55)' }}>
-                信息系统
-              </span>
-            </span>
-          </div>
-        </div>
+  // 菜单手风琴展开逻辑：仅保留最新点开的分组
+  const rootGroupKeys = (filteredMenuItems as Array<{ key: string; children?: unknown }>)
+    .filter((i) => i.children).map((i) => i.key)
+  const onOpenChange = (keys: string[]) => {
+    const latest = keys.find((k) => !openKeys.includes(k))
+    if (latest && rootGroupKeys.includes(latest)) setOpenKeys([latest])
+    else setOpenKeys(keys)
+  }
 
+  // 侧栏内容（桌面 Sider 与移动 Drawer 共用）
+  const navInner = (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* 侧边栏标题 */}
+      <div style={{
+        padding: '16px 16px 12px',
+        borderBottom: '1px solid #e8eaed',
+        background: '#fff',
+      }}>
+        <div style={{
+          color: '#202124',
+          fontWeight: 600,
+          fontSize: 14,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+        }}>
+          <span style={{
+            background: '#1a73e8',
+            borderRadius: 8,
+            width: 30, height: 30,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 11, fontWeight: 800, letterSpacing: -0.5, color: '#fff',
+            flexShrink: 0,
+          }}>PMS</span>
+          <span style={{ lineHeight: 1.3 }}>自行采购管理 PMS<br />
+            <span style={{ fontSize: 11, fontWeight: 400, color: '#5f6368' }}>
+              信息系统
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', paddingTop: 6 }}>
         <Menu
-          theme="dark"
+          theme="light"
           mode="inline"
           selectedKeys={[activeKey]}
-          defaultOpenKeys={getDefaultOpenKeys()}
+          openKeys={openKeys}
+          onOpenChange={onOpenChange}
+          onClick={() => { if (isMobile) setDrawerOpen(false) }}
           items={filteredMenuItems}
-          style={{ borderRight: 0, marginTop: 4 }}
+          style={{ borderRight: 0, background: 'transparent' }}
         />
-      </Sider>
+      </div>
+
+      {/* 底部署名 */}
+      <div style={{
+        flexShrink: 0,
+        padding: '10px 16px',
+        borderTop: '1px solid #e8eaed',
+        background: '#fff',
+        color: '#9aa0a6',
+        fontSize: 11,
+        textAlign: 'center',
+        letterSpacing: 0.3,
+      }}>
+        Made By Huangxb &amp; CC
+      </div>
+    </div>
+  )
+
+  return (
+    <Layout style={{ minHeight: '100vh' }}>
+      {!isMobile && (
+        <Sider
+          width={230}
+          theme="light"
+          style={{
+            height: '100vh',
+            position: 'sticky',
+            top: 0,
+            left: 0,
+            background: '#fff',
+            borderRight: '1px solid #e8eaed',
+          }}
+        >
+          {navInner}
+        </Sider>
+      )}
+      {isMobile && (
+        <Drawer
+          placement="left"
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          width={260}
+          styles={{ body: { padding: 0 }, header: { display: 'none' } }}
+        >
+          {navInner}
+        </Drawer>
+      )}
 
       <Layout>
         {/* 顶部导航栏 */}
         <Header style={{
           background: '#fff',
-          padding: '0 24px',
+          padding: isMobile ? '0 12px' : '0 24px',
           display: 'flex',
           alignItems: 'center',
-          borderBottom: '1px solid #f0f0f0',
-          boxShadow: '0 1px 4px rgba(0,0,0,.06)',
+          gap: isMobile ? 4 : 0,
+          borderBottom: '1px solid #e8eaed',
+          boxShadow: '0 1px 2px 0 rgba(60,64,67,.05)',
           position: 'sticky',
           top: 0,
           zIndex: 100,
         }}>
+          {/* 移动端：汉堡按钮打开抽屉菜单 */}
+          {isMobile && (
+            <Button
+              icon={<MenuOutlined />}
+              type="text"
+              onClick={() => setDrawerOpen(true)}
+              style={{ fontSize: 18, color: '#5f6368' }}
+            />
+          )}
           {/* 公告首页入口 */}
           <Tooltip title="查看公开采购公告（无需退出登录）">
             <Button
@@ -400,10 +570,17 @@ export default function AppLayout() {
               onClick={() => navigate('/login')}
               style={{ color: '#666', fontSize: 13 }}
             >
-              公告首页
+              {!isMobile && '公告首页'}
             </Button>
           </Tooltip>
           <div style={{ flex: 1 }} />
+          {/* 在线人数 — 所有登录用户可见 */}
+          <OnlineCount />
+          {/* 聊天 + 待办 — 所有登录用户可见 */}
+          <ChatWidget />
+          <InboxBell />
+          {/* AI 使用说明 — 所有用户可见 */}
+          <AiGuideButton isAdmin={!!user?.is_admin} />
           {/* 后台管理入口 — 仅系统管理员可见 */}
           {user?.is_admin && (
             <Tooltip title="进入后台管理系统（权限 / 大模型 / 邮件配置）">
@@ -413,7 +590,7 @@ export default function AppLayout() {
                 onClick={() => navigate('/admin')}
                 style={{ color: '#13c2c2', fontSize: 13, marginRight: 8 }}
               >
-                后台管理
+                {!isMobile && '后台管理'}
               </Button>
             </Tooltip>
           )}
@@ -431,29 +608,32 @@ export default function AppLayout() {
             >
               <div style={{
                 width: 30, height: 30, borderRadius: '50%',
-                background: '#1677ff',
+                background: '#1a73e8',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 <UserOutlined style={{ color: '#fff', fontSize: 14 }} />
               </div>
-              <div style={{ lineHeight: 1.3 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>
-                  {user?.display_name}
+              {!isMobile && (
+                <div style={{ lineHeight: 1.3 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>
+                    {user?.display_name}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#888' }}>{user?.role_cn}</div>
                 </div>
-                <div style={{ fontSize: 11, color: '#888' }}>{user?.role_cn}</div>
-              </div>
+              )}
             </Space>
           </Dropdown>
         </Header>
 
         <Content style={{
-          margin: 24,
-          background: '#f5f6fa',
+          margin: isMobile ? 12 : 24,
+          background: 'transparent',
           minHeight: 'calc(100vh - 64px - 48px)',
         }}>
           <Outlet />
         </Content>
       </Layout>
+      <MouseAssistant />
     </Layout>
   )
 }

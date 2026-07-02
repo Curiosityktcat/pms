@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  Card, Table, Button, Space, Tag, Input, Modal, Form, App, Typography,
+  Card, Button, Space, Tag, Input, Modal, Form, App, Typography,
 } from 'antd'
 import { FileWordOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
 import { generateAgencyAgreement } from '../services/agencyAgreement'
+import RecordCards from '../components/RecordCards'
+import HermesPanel, { type HermesField } from '../components/HermesPanel'
 
 const { Title, Text } = Typography
 
@@ -92,37 +94,23 @@ export default function AgencyAgreementPage() {
     }
   }
 
-  const columns = [
-    {
-      title: '项目编号',
-      dataIndex: 'number',
-      width: 180,
-      render: (v: string) => v || <Text type="secondary">—</Text>,
-    },
-    { title: '项目名称', dataIndex: 'name', ellipsis: true },
-    {
-      title: '代理机构',
-      dataIndex: 'agency_name',
-      width: 220,
-      render: (v: string, r: Project) =>
-        v ? <Tag color="blue">{v}</Tag> : <Tag>{r.agency_code}</Tag>,
-    },
-    { title: '经办人', dataIndex: 'officer', width: 100 },
-    { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag>{v}</Tag> },
-    {
-      title: '操作',
-      width: 150,
-      render: (_: unknown, r: Project) => (
-        <Button
-          type="link"
-          icon={<FileWordOutlined />}
-          onClick={() => openModal(r)}
-        >
-          生成代理协议
-        </Button>
-      ),
-    },
-  ]
+  const agencyFields = useMemo<HermesField[]>(() => current ? [
+    { label: '合同名称',       value: `委托代理服务协议—${current.name || ''}`, long: true },
+    { label: '合同编码',       value: `${current.number || ''}-代理-HT` },
+    { label: '项目名称及包号', value: current.name || '', long: true },
+    { label: '归口管理科室',   value: current.manage_dept || '' },
+    { label: '合同金额',       value: '按协议约定' },
+    { label: '合同甲方',       value: '内江市第一人民医院', readOnly: true },
+    { label: '甲方法定代表人', value: '谢晓阳', readOnly: true },
+    { label: '甲方联系电话',   value: '0832-2256120', readOnly: true },
+    { label: '甲方地址',       value: '四川省内江市市中区沱中路41号、汉安大道西段1866号', readOnly: true, long: true },
+    { label: '合同乙方',       value: current.agency_name || '' },
+    { label: '乙方法定代表人', value: current.agency_legal_rep || '' },
+    { label: '乙方联系电话',   value: current.agency_phone || '' },
+    { label: '乙方地址',       value: current.agency_address || '', long: true },
+    { label: '合同类别',       value: '采购部合同', readOnly: true },
+    { label: '经办人',         value: current.officer || '' },
+  ] : [], [current])
 
   return (
     <Card>
@@ -143,13 +131,27 @@ export default function AgencyAgreementPage() {
           onChange={e => setKeyword(e.target.value)}
         />
 
-        <Table
-          rowKey="id"
-          loading={loading}
-          columns={columns}
+        <RecordCards
           dataSource={filtered}
-          pagination={{ pageSize: 10, showSizeChanger: false }}
-          size="middle"
+          loading={loading}
+          emptyText="暂无可生成代理协议的项目"
+          toCard={(r) => ({
+            key: r.id,
+            accent: '#1a73e8',
+            title: r.name,
+            subtitle: r.number || '无编号',
+            statusText: r.status,
+            statusColor: 'blue',
+            tags: <Tag color="blue" style={{ marginInlineEnd: 0 }}>{r.agency_name || r.agency_code}</Tag>,
+            fields: [
+              { label: '经办人', value: r.officer },
+            ],
+            actions: (
+              <Button type="primary" ghost size="small" icon={<FileWordOutlined />} onClick={() => openModal(r)}>
+                生成代理协议
+              </Button>
+            ),
+          })}
         />
       </Space>
 
@@ -188,6 +190,12 @@ export default function AgencyAgreementPage() {
             <Input placeholder="如：2026年5月29日" />
           </Form.Item>
         </Form>
+        <div style={{ marginTop: 8 }}>
+          <HermesPanel taskType="agency-agreement" projectId={current?.id}
+            title={current?.name} fields={agencyFields}
+            directSubmitUrl={current ? `/projects/${current.id}/agency-agreement/submit-to-rdweb` : undefined}
+            directStatusUrl={current ? `/projects/${current.id}/agency-agreement/rdweb-status` : undefined} />
+        </div>
       </Modal>
     </Card>
   )

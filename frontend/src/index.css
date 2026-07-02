@@ -1,111 +1,85 @@
+/* ── PMS 全局基础样式：Google / Material 风格 ──────────────────────────────
+   配色与排版以 Google 产品（Gmail / Drive / Cloud Console）为参照：
+   Google Blue #1a73e8、浅灰背景 #f8f9fa、发丝级边框 #e8eaed、Roboto 字体。
+   细节（组件圆角/选中态等）在 App.tsx 的 ConfigProvider theme 中统一配置。 */
+
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  font-family: 'Roboto', 'Google Sans', 'PingFang SC', 'Microsoft YaHei',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+* {
   box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
+  background: #f8f9fa;
+  color: #202124;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+/* Google 风格的细滚动条 */
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #dadce0;
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #bdc1c6;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
+/* 卡片：发丝边框 + 轻微 Material 立体感，hover 抬升 */
+.ant-card {
+  border: 1px solid #e8eaed;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.06),
+    0 1px 3px 1px rgba(60, 64, 67, 0.04);
+  transition: box-shadow 0.2s ease;
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
-  margin: 0;
+.ant-card.ant-card-hoverable:hover {
+  box-shadow: 0 1px 3px 0 rgba(60, 64, 67, 0.18),
+    0 4px 8px 3px rgba(60, 64, 67, 0.1);
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+/* 表格表头：Google 灰底，字重收一点 */
+.ant-table-thead > tr > th {
+  font-weight: 500 !important;
+  color: #5f6368 !important;
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+/* 左侧导航：Material-3 浮动圆角药丸（选中态整条圆角高亮） */
+.ant-menu-light.ant-menu-inline .ant-menu-item,
+.ant-menu-light.ant-menu-inline .ant-menu-submenu-title {
+  width: calc(100% - 16px);
+  margin-inline: 8px;
 }
+
+/* 记录卡片：清晰边框 + hover 高亮 */
+.record-card {
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.record-card:hover {
+  border-color: #1a73e8;
+  box-shadow: 0 1px 4px rgba(26, 115, 232, 0.18);
+}
+
+/* docx 在线预览收紧行距：内容确认表等模板用 EXACTLY 大行距，浏览器渲染过松（不影响下载的真实文件） */
+.docx-compact .docx-wrapper p { line-height: 1.45 !important; }

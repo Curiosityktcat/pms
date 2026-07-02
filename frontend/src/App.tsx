@@ -1,45 +1,82 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { App as AntApp, ConfigProvider, Spin } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { AuthContext } from './hooks/useAuth'
+import { useIdleLogout } from './hooks/useIdleLogout'
 import type { UserInfo } from './services/auth'
 import { authMe } from './services/auth'
 import AppLayout from './components/AppLayout'
 import AdminLayout from './components/AdminLayout'
 import LoginPage from './pages/LoginPage'
-import ProjectFlowPage from './pages/ProjectFlowPage'
-import ProjectFormPage from './pages/ProjectFormPage'
-import BidManagePage from './pages/BidManagePage'
-import BidBoardPage from './pages/BidBoardPage'
-import ChpwdPage from './pages/ChpwdPage'
-import AuthLetterPage from './pages/AuthLetterPage'
-import PeopleManagePage from './pages/PeopleManagePage'
-import AnnouncementPage from './pages/AnnouncementPage'
-import PublicAnnouncementDetailPage from './pages/PublicAnnouncementDetailPage'
-import ProcurementDemandPage from './pages/ProcurementDemandPage'
-import ProcurementResultPage from './pages/ProcurementResultPage'
-import ContractPage from './pages/ContractPage'
-import InternalBidDemandPage from './pages/InternalBidDemandPage'
-import InquiryPage from './pages/InquiryPage'
-import AgencyAgreementPage from './pages/AgencyAgreementPage'
-import ProcurementDocPage from './pages/ProcurementDocPage'
-import ProcurementDemandConfirmPage from './pages/ProcurementDemandConfirmPage'
-import TemplateManagePage from './pages/TemplateManagePage'
-import ArchivePage from './pages/ArchivePage'
-import EmailSettingsPage from './pages/EmailSettingsPage'
-import ScraperSettingsPage from './pages/ScraperSettingsPage'
-import PermissionManagePage from './pages/PermissionManagePage'
+// 业务页按路由懒加载，缩小首屏包体（移动端尤其受益）
+const ProjectFlowPage = lazy(() => import('./pages/ProjectFlowPage'))
+const ProjectFormPage = lazy(() => import('./pages/ProjectFormPage'))
+const BidManagePage = lazy(() => import('./pages/BidManagePage'))
+const BidBoardPage = lazy(() => import('./pages/BidBoardPage'))
+const ChpwdPage = lazy(() => import('./pages/ChpwdPage'))
+const SupervisionPage = lazy(() => import('./pages/SupervisionPage'))  // 投诉质疑数据库
+const AuthLetterPage = lazy(() => import('./pages/AuthLetterPage'))
+const AgencyManagePage = lazy(() => import('./pages/AgencyManagePage'))
+const PeopleManagePage = lazy(() => import('./pages/PeopleManagePage'))
+const AnnouncementPage = lazy(() => import('./pages/AnnouncementPage'))
+const CorrectionAnnouncementPage = lazy(() => import('./pages/CorrectionAnnouncementPage'))
+const BidReviewPage = lazy(() => import('./pages/BidReviewPage'))
+const PublicAnnouncementDetailPage = lazy(() => import('./pages/PublicAnnouncementDetailPage'))
+const ProcurementDemandPage = lazy(() => import('./pages/ProcurementDemandPage'))
+const ProjectDistributionPage = lazy(() => import('./pages/ProjectDistributionPage'))
+const ProcurementResultPage = lazy(() => import('./pages/ProcurementResultPage'))
+const ContractPage = lazy(() => import('./pages/ContractPage'))
+const InternalBidDemandPage = lazy(() => import('./pages/InternalBidDemandPage'))
+const InquiryPage = lazy(() => import('./pages/InquiryPage'))
+const InquiryReviewPage = lazy(() => import('./pages/InquiryReviewPage'))
+const ProjectReviewUploadPage = lazy(() => import('./pages/ProjectReviewUploadPage'))
+const CcgpBoardPage = lazy(() => import('./pages/CcgpBoardPage'))
+const DocFormPage = lazy(() => import('./pages/DocFormPage'))
+const AgencyAgreementPage = lazy(() => import('./pages/AgencyAgreementPage'))
+const ProcurementDocPage = lazy(() => import('./pages/ProcurementDocPage'))
+const ProcurementDemandConfirmPage = lazy(() => import('./pages/ProcurementDemandConfirmPage'))
+const TemplateManagePage = lazy(() => import('./pages/TemplateManagePage'))
+const ArchivePage = lazy(() => import('./pages/ArchivePage'))
+const FileOcrPage = lazy(() => import('./pages/FileOcrPage'))
+const FileBoxPage = lazy(() => import('./pages/FileBoxPage'))
+const EmailSettingsPage = lazy(() => import('./pages/EmailSettingsPage'))
+const ScraperSettingsPage = lazy(() => import('./pages/ScraperSettingsPage'))
+const PermissionManagePage = lazy(() => import('./pages/PermissionManagePage'))
+const LlmUsagePage = lazy(() => import('./pages/LlmUsagePage'))
+const LawLibraryPage = lazy(() => import('./pages/LawLibraryPage'))
+const PortalPage = lazy(() => import('./pages/PortalPage'))
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
+  const [authError, setAuthError] = useState(false)
+
+  // 已登录后启用空闲计时：30 分钟无操作自动登出
+  useIdleLogout(!!user)
 
   useEffect(() => {
     authMe()
       .then((res) => setUser(res.data.user))
-      .catch(() => setUser(null))
+      .catch((e) => {
+        // 超时或网络错误：显示错误提示，可手动重试
+        if (e?.code === 'ECONNABORTED' || !e?.response) {
+          setAuthError(true)
+        } else {
+          setUser(null)
+        }
+      })
   }, [])
 
+  if (authError) {
+    return (
+      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+        <span style={{ fontSize: 16, color: '#d93025' }}>连接服务器失败，请检查网络或稍后重试</span>
+        <button onClick={() => window.location.reload()} style={{ padding: '8px 24px', cursor: 'pointer', borderRadius: 8, border: '1px solid #1a73e8', color: '#1a73e8', background: '#fff', fontSize: 14 }}>
+          重新加载
+        </button>
+      </div>
+    )
+  }
   if (user === undefined) {
     return <Spin fullscreen tip="加载中..." />
   }
@@ -53,13 +90,99 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   )
 }
 
+// ── Google / Material 主题（全局生效，所有页面共用）────────────────────────
+const googleTheme = {
+  token: {
+    colorPrimary: '#1a73e8',
+    colorInfo: '#1a73e8',
+    colorLink: '#1a73e8',
+    colorSuccess: '#1e8e3e',
+    colorWarning: '#f9ab00',
+    colorError: '#d93025',
+    colorTextBase: '#202124',
+    colorBgLayout: '#f8f9fa',
+    colorBorderSecondary: '#e8eaed',
+    borderRadius: 8,
+    borderRadiusLG: 12,
+    borderRadiusSM: 6,
+    fontSize: 14,
+    fontFamily:
+      "'Roboto','Google Sans','PingFang SC','Microsoft YaHei',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif",
+    controlHeight: 36,
+    wireframe: false,
+    boxShadowSecondary:
+      '0 1px 2px 0 rgba(60,64,67,.3), 0 2px 6px 2px rgba(60,64,67,.15)',
+  },
+  components: {
+    Layout: {
+      headerBg: '#ffffff',
+      siderBg: '#ffffff',
+      bodyBg: '#f8f9fa',
+      headerHeight: 64,
+      headerPadding: '0 24px',
+    },
+    Menu: {
+      itemBg: 'transparent',
+      itemColor: '#3c4043',
+      itemHoverBg: '#f1f3f4',
+      itemHoverColor: '#202124',
+      itemSelectedBg: '#e8f0fe',
+      itemSelectedColor: '#1a73e8',
+      itemActiveBg: '#e8f0fe',
+      itemHeight: 44,
+      itemBorderRadius: 22,
+      itemMarginInline: 0,
+      iconSize: 18,
+      fontSize: 14,
+      subMenuItemBg: 'transparent',
+    },
+    Button: {
+      controlHeight: 36,
+      fontWeight: 500,
+      primaryShadow: 'none',
+      defaultShadow: 'none',
+      borderRadius: 8,
+    },
+    Card: { borderRadiusLG: 12, headerFontSize: 16 },
+    Table: {
+      headerBg: '#f8f9fa',
+      headerColor: '#5f6368',
+      borderColor: '#e8eaed',
+      rowHoverBg: '#f8f9fa',
+      headerBorderRadius: 8,
+    },
+    Input: { borderRadius: 8, controlHeight: 36 },
+    Select: { borderRadius: 8, controlHeight: 36 },
+    Modal: { borderRadiusLG: 16 },
+    Tabs: { itemSelectedColor: '#1a73e8', inkBarColor: '#1a73e8', itemColor: '#5f6368' },
+    Segmented: { borderRadius: 20 },
+  },
+}
+
 export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null)
+  // 测试实例构建时注入 VITE_PMS_ENV=test，正式构建无此标志
+  const isTest = import.meta.env.VITE_PMS_ENV === 'test'
 
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider locale={zhCN} theme={googleTheme}>
       <AntApp>
+        {isTest && (
+          <div
+            style={{
+              position: 'fixed', top: 0, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 9999, pointerEvents: 'none',
+              background: '#ff4d4f', color: '#fff',
+              padding: '2px 18px', borderRadius: '0 0 8px 8px',
+              fontSize: 13, fontWeight: 600, letterSpacing: 1,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+            }}
+          >
+            🧪 测试环境 TEST · 数据为副本，操作不影响正式系统
+          </div>
+        )}
         <BrowserRouter>
+          <Suspense fallback={<div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin size="large" /></div>}>
           <Routes>
             <Route
               path="/login"
@@ -82,17 +205,22 @@ export default function App() {
                 </RequireAuth>
               }
             >
-              <Route index element={<Navigate to="/flow" replace />} />
+              <Route index element={<Navigate to="/portal" replace />} />
+              <Route path="portal" element={<PortalPage />} />
               <Route path="flow" element={<ProjectFlowPage />} />
               <Route path="new" element={<ProjectFormPage />} />
               <Route path="project/:id" element={<ProjectFormPage />} />
               <Route path="bid" element={<BidManagePage />} />
               <Route path="bid-board" element={<BidBoardPage />} />
+              <Route path="ccgp-board" element={<CcgpBoardPage />} />
+              <Route path="doc-form/:tplkey" element={<DocFormPage />} />
               <Route path="auth-letter" element={<AuthLetterPage />} />
               <Route path="people-manage" element={<PeopleManagePage />} />
               <Route path="template-manage" element={<TemplateManagePage />} />
               <Route path="announcement" element={<AnnouncementPage />} />
+              <Route path="correction" element={<CorrectionAnnouncementPage />} />
               {/* 采购需求编制：无 type 参数时显示总览（供助理分发用） */}
+              <Route path="project-distribution" element={<ProjectDistributionPage />} />
               <Route path="procurement-demand" element={<ProcurementDemandPage />} />
               {/* 各类型子板块：gov / competition / sole_source / inquiry / emergency */}
               <Route path="procurement-demand/:type" element={<ProcurementDemandPage />} />
@@ -100,12 +228,20 @@ export default function App() {
               <Route path="contract" element={<ContractPage />} />
               <Route path="internal-bid-demand" element={<InternalBidDemandPage />} />
               <Route path="inquiry" element={<InquiryPage />} />
+              <Route path="inquiry-review" element={<InquiryReviewPage />} />
+              <Route path="project-review" element={<ProjectReviewUploadPage />} />
               <Route path="agency-agreement" element={<AgencyAgreementPage />} />
+              <Route path="agency-manage" element={<AgencyManagePage />} />
               <Route path="procurement-doc" element={<ProcurementDocPage />} />
               <Route path="procurement-doc/demand" element={<ProcurementDemandConfirmPage />} />
               <Route path="procurement-doc/file" element={<ProcurementDocPage />} />
               <Route path="archive" element={<ArchivePage />} />
+              <Route path="file-ocr" element={<FileOcrPage />} />
+              <Route path="bid-review" element={<BidReviewPage />} />
+              <Route path="filebox" element={<FileBoxPage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
+              <Route path="supervision" element={<SupervisionPage />} />
+              <Route path="law-library" element={<LawLibraryPage />} />
             </Route>
             {/* 后台管理系统 — 与业务系统独立的一套界面，仅管理员可进入 */}
             <Route
@@ -119,9 +255,11 @@ export default function App() {
               <Route index element={<Navigate to="permissions" replace />} />
               <Route path="permissions" element={<PermissionManagePage />} />
               <Route path="model" element={<ScraperSettingsPage />} />
+              <Route path="usage" element={<LlmUsagePage />} />
               <Route path="email" element={<EmailSettingsPage />} />
             </Route>
           </Routes>
+          </Suspense>
         </BrowserRouter>
       </AntApp>
     </ConfigProvider>

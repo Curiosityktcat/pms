@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Tag, Space, Popconfirm, Tabs, Input, Select, App, Typography, Card } from 'antd'
+import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card } from 'antd'
 import { PlusOutlined, SearchOutlined, RollbackOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getProjects, deleteProject, restoreProject } from '../services/project'
+import ProjectProgressModal from '../components/ProjectProgressModal'
+import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import type { Project } from '../services/project'
 import { useAuth } from '../hooks/useAuth'
 
-const { Text } = Typography
-
 const STATUS_DONE = '已归档'
-const METHODS = ['院内议价', '院内询价', '院内竞选', '院内单一来源采购']
+const METHODS = ['院内议价', '院内询价', '院内竞选', '院内单一来源采购', '医用耗材紧急采购', '政府采购']
 
 export default function ProjectFlowPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -19,6 +19,7 @@ export default function ProjectFlowPage() {
   const [search, setSearch] = useState('')
   const [filterYear, setFilterYear] = useState<string | undefined>()
   const [filterMethod, setFilterMethod] = useState<string | undefined>()
+  const [progressId, setProgressId] = useState<number | null>(null)
   const { user } = useAuth()
   const navigate = useNavigate()
   const { message } = App.useApp()
@@ -89,126 +90,58 @@ export default function ProjectFlowPage() {
   const canEdit = user?.role === 'officer'
   const canCreate = user?.role === 'officer'
 
-  const baseColumns = [
-    {
-      title: '编号',
-      dataIndex: 'number',
-      width: 190,
-      render: (val: string, row: Project) =>
-        row.is_draft ? (
-          <Tag color="orange">草稿</Tag>
-        ) : (
-          <a onClick={() => navigate(`/project/${row.id}`)}>{val}</a>
-        ),
-    },
-    {
-      title: '项目名称',
-      dataIndex: 'name',
-      render: (val: string, row: Project) => (
-        <a style={{ color: '#333' }} onClick={() => navigate(`/project/${row.id}`)}>{val}</a>
-      ),
-    },
-    {
-      title: '年度',
-      dataIndex: 'year',
-      width: 80,
-      render: (val: string) => val || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '分类',
-      dataIndex: 'category',
-      width: 70,
-      render: (val: string) => val || <Text type="secondary">—</Text>,
-    },
-    {
-      title: '预算金额',
-      dataIndex: 'amount',
-      width: 110,
-      render: (val: number | null) =>
-        val && val > 0 ? `${val.toFixed(0)} 元` : <Text type="secondary">招单价</Text>,
-    },
-    {
-      title: '采购方式',
-      dataIndex: 'method',
-      width: 130,
-    },
-    {
-      title: '代理机构',
-      dataIndex: 'agency_name',
-      width: 160,
-      render: (val: string) => val || <Text type="secondary">—</Text>,
-    },
-    { title: '经办人', dataIndex: 'officer', width: 80 },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      width: 80,
-      render: (val: string) => (
-        <Tag color={val === STATUS_DONE ? 'default' : 'blue'}>{val}</Tag>
-      ),
-    },
-    {
-      title: '开标时间',
-      dataIndex: 'bid_time',
-      width: 160,
-      render: (val: string) => val || <Text type="secondary">—</Text>,
-    },
-  ]
-
-  const activeColumns = [
-    ...baseColumns,
-    {
-      title: '操作',
-      width: 100,
-      render: (_: unknown, row: Project) =>
-        canEdit ? (
-          <Space size={4}>
-            <Button size="small" type="link" onClick={() => navigate(`/project/${row.id}`)}>编辑</Button>
-            <Popconfirm
-              title="删除后可在「已删除」中恢复"
-              onConfirm={() => handleDelete(row.id)}
-              okText="删除"
-              okButtonProps={{ danger: true }}
-              cancelText="取消"
-            >
-              <Button size="small" type="link" danger>删除</Button>
-            </Popconfirm>
-          </Space>
-        ) : (
-          <Button size="small" type="link" onClick={() => navigate(`/project/${row.id}`)}>查看</Button>
-        ),
-    },
-  ]
-
-  const deletedColumns = [
-    ...baseColumns,
-    {
-      title: '删除时间',
-      dataIndex: 'deleted_at',
-      width: 160,
-      render: (val: string) => val ? val.replace('T', ' ') : '—',
-    },
-    {
-      title: '操作',
-      width: 80,
-      render: (_: unknown, row: Project) =>
-        canEdit ? (
-          <Popconfirm
-            title="确定恢复该项目？"
-            onConfirm={() => handleRestore(row.id)}
-            okText="恢复"
-            cancelText="取消"
-          >
-            <Button size="small" type="link" icon={<RollbackOutlined />}>恢复</Button>
-          </Popconfirm>
-        ) : null,
-    },
-  ]
 
   const currentData = tab === 'ongoing' ? filteredOngoing
     : tab === 'done' ? filteredDone
     : filteredDeleted
-  const currentColumns = tab === 'deleted' ? deletedColumns : activeColumns
+
+  const projectToCard = (p: Project): RecordCardData => {
+    const isDone = p.status === STATUS_DONE
+    const isDeleted = tab === 'deleted'
+    const amount = p.amount && p.amount > 0 ? `${p.amount.toFixed(0)} 元` : '招单价'
+    return {
+      key: p.id,
+      accent: isDeleted ? '#d93025' : isDone ? '#9aa0a6' : '#1a73e8',
+      title: p.name,
+      onTitleClick: () => navigate(`/project/${p.id}`),
+      subtitle: `${p.number || '无编号'}${p.year ? ` · ${p.year}年` : ''}`,
+      statusText: isDeleted ? '已删除' : p.status,
+      statusColor: isDeleted ? 'error' : isDone ? 'default' : 'blue',
+      tags: (
+        <>
+          {p.is_draft && <Tag color="orange" style={{ marginInlineEnd: 0 }}>草稿</Tag>}
+          {p.category && <Tag bordered={false} color="geekblue" style={{ marginInlineEnd: 0 }}>{p.category}</Tag>}
+        </>
+      ),
+      fields: [
+        { label: '方式', value: p.method },
+        { label: '预算', value: amount },
+        { label: '代理', value: p.agency_name },
+        { label: '经办人', value: p.officer },
+        { label: isDeleted ? '删除时间' : '开标', value: isDeleted ? (p.deleted_at ? p.deleted_at.replace('T', ' ') : '') : p.bid_time },
+      ],
+      actions: isDeleted
+        ? (canEdit ? (
+            <Popconfirm title="确定恢复该项目？" onConfirm={() => handleRestore(p.id)} okText="恢复" cancelText="取消">
+              <Button size="small" icon={<RollbackOutlined />}>恢复</Button>
+            </Popconfirm>
+          ) : null)
+        : canEdit ? (
+            <>
+              <Button size="small" disabled={p.is_draft} onClick={() => setProgressId(p.id)}>进展</Button>
+              <Button size="small" type="primary" ghost onClick={() => navigate(`/project/${p.id}`)}>编辑</Button>
+              <Popconfirm title="删除后可在「已删除」中恢复" onConfirm={() => handleDelete(p.id)} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
+                <Button size="small" danger>删除</Button>
+              </Popconfirm>
+            </>
+          ) : (
+            <>
+              <Button size="small" disabled={p.is_draft} onClick={() => setProgressId(p.id)}>进展</Button>
+              <Button size="small" type="primary" ghost onClick={() => navigate(`/project/${p.id}`)}>查看</Button>
+            </>
+          ),
+    }
+  }
 
   return (
     <Card>
@@ -269,14 +202,17 @@ export default function ProjectFlowPage() {
         ]}
       />
 
-      <Table
-        rowKey="id"
-        columns={currentColumns}
+      <RecordCards
         dataSource={currentData}
         loading={loading}
-        size="small"
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
-        locale={{ emptyText: tab === 'deleted' ? '没有已删除的项目' : '暂无项目' }}
+        emptyText={tab === 'deleted' ? '没有已删除的项目' : '暂无项目'}
+        toCard={projectToCard}
+      />
+
+      <ProjectProgressModal
+        projectId={progressId}
+        open={progressId !== null}
+        onClose={() => setProgressId(null)}
       />
     </Card>
   )
