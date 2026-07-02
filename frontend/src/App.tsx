@@ -39,6 +39,7 @@ const ProcurementDemandConfirmPage = lazy(() => import('./pages/ProcurementDeman
 const TemplateManagePage = lazy(() => import('./pages/TemplateManagePage'))
 const ArchivePage = lazy(() => import('./pages/ArchivePage'))
 const FileOcrPage = lazy(() => import('./pages/FileOcrPage'))
+const AiDocGenPage = lazy(() => import('./pages/AiDocGenPage'))
 const FileBoxPage = lazy(() => import('./pages/FileBoxPage'))
 const EmailSettingsPage = lazy(() => import('./pages/EmailSettingsPage'))
 const ScraperSettingsPage = lazy(() => import('./pages/ScraperSettingsPage'))
@@ -237,6 +238,7 @@ export default function App() {
               <Route path="procurement-doc/file" element={<ProcurementDocPage />} />
               <Route path="archive" element={<ArchivePage />} />
               <Route path="file-ocr" element={<FileOcrPage />} />
+              <Route path="ai-doc-gen" element={<AiDocGenPage />} />
               <Route path="bid-review" element={<BidReviewPage />} />
               <Route path="filebox" element={<FileBoxPage />} />
               <Route path="chpwd" element={<ChpwdPage />} />

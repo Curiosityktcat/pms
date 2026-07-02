@@ -56,6 +56,7 @@ def create_app():
     from routes.bid_board_api import bp as bid_board_bp
     from routes.permission_api import bp as permission_bp
     from routes.agency_agreement_api import bp as agency_agreement_bp
+    from routes.my_template_api import bp as my_template_bp  # 我的模板库（按用户隔离）
     from routes.procurement_doc_api import bp as procurement_doc_bp
     from routes.template_api import bp as template_bp
     from routes.archive_api import bp as archive_bp
@@ -66,6 +67,7 @@ def create_app():
     from routes.presence_api import bp as presence_bp
     from routes.supervision_api import bp as supervision_bp  # 投诉质疑数据库
     from routes.dept_announcement_api import bp as dept_announcement_bp  # 采购部公告
+    from routes.tools_doc_gen_api import bp as tools_doc_gen_bp  # AI采购文件生成工具
     from models.dept_announcement import DeptAnnouncement  # noqa: F401 建表用
     from routes.law_api import bp as law_bp  # 法规库
     from routes.project_distribution_api import bp as project_distribution_bp  # 采购项目分发
@@ -106,6 +108,8 @@ def create_app():
     app.register_blueprint(presence_bp)
     app.register_blueprint(supervision_bp)
     app.register_blueprint(dept_announcement_bp)
+    app.register_blueprint(tools_doc_gen_bp)
+    app.register_blueprint(my_template_bp)
     app.register_blueprint(law_bp)
     app.register_blueprint(project_distribution_bp)
     app.register_blueprint(project_review_bp)

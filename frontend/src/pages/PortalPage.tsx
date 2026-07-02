@@ -5,7 +5,7 @@ import {
   FileTextOutlined, GlobalOutlined, MailOutlined, TeamOutlined,
   CheckCircleOutlined, AuditOutlined, FileDoneOutlined, FileSearchOutlined,
   FileProtectOutlined, BookOutlined, AlertOutlined, FolderOpenOutlined,
-  SettingOutlined, RightOutlined,
+  SettingOutlined, RightOutlined, RobotOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../hooks/useAuth'
 import DeptAnnouncementBoard from '../components/DeptAnnouncementBoard'
@@ -51,6 +51,7 @@ const FLOW: Tile[] = [
 
 // ── 工具集合（流程之外的能力）───────────────────────────────────
 const TOOLS: Tile[] = [
+  { label: 'AI 采购文件生成', path: '/ai-doc-gen', icon: <RobotOutlined />, anyPerm: [] },
   { label: '文件识别（OCR）', path: '/file-ocr', icon: <FileSearchOutlined />,
     anyPerm: ['file-ocr'] },
   { label: '投标文件审查', path: '/bid-review', icon: <FileProtectOutlined />,
