@@ -59,6 +59,8 @@ def list_archive():
             "number": p.number or "",
             "name": p.name or "",
             "officer": p.officer or "",
+            "method": p.method or "",
+            "created_at": p.created_at or "",
             "manage_dept": p.manage_dept or "",
             "agency_code": p.agency_code or "",
             "status": p.status or "",

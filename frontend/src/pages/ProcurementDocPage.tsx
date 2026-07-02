@@ -11,11 +11,13 @@ import {
 } from '../services/procurementDoc'
 import DocAttachmentsModal from '../components/DocAttachmentsModal'
 import AiReviewModal from '../components/AiReviewModal'
+import AiGenerateDocModal from '../components/AiGenerateDocModal'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import FilePreviewModal from '../components/FilePreviewModal'
 import { useAuth } from '../hooks/useAuth'
 import { cnOrdinal } from '../utils/ordinal'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
+import ProjectListToolbar, { useProjectListFilter, PROJECT_ACCESSORS } from '../components/ProjectListToolbar'
 
 const { Title, Text } = Typography
 
@@ -49,7 +51,6 @@ export default function ProcurementDocPage() {
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<Project[]>([])
   const [confirmations, setConfirmations] = useState<DemandConfirmation[]>([])
-  const [keyword, setKeyword] = useState('')
   // 已确认历史里「查看采购文件」：round=确认轮次（标题用），filesRound=文件实际所属轮次（取文件用）
   const [viewDoc, setViewDoc] = useState<{ project: Project; round: number; filesRound: number } | null>(null)
   // 内容确认表在线预览（点「内容确认表」即生成并预览，弹窗内可下载/打印）
@@ -61,6 +62,7 @@ export default function ProcurementDocPage() {
   const [genId, setGenId] = useState<number | null>(null)
   const [attachProject, setAttachProject] = useState<Project | null>(null)
   const [aiProject, setAiProject] = useState<Project | null>(null)
+  const [aiGenProject, setAiGenProject] = useState<Project | null>(null)
   const [form] = Form.useForm()
   // 内容确认表所需的联系人信息（代理机构填写）
   const [contactProject, setContactProject] = useState<Project | null>(null)
@@ -81,16 +83,9 @@ export default function ProcurementDocPage() {
   }, [message])
   useEffect(() => { load() }, [load])
 
-  const filtered = useMemo(() => {
-    const kw = keyword.trim()
-    if (!kw) return projects
-    return projects.filter(
-      p =>
-        (p.name || '').includes(kw) ||
-        (p.number || '').includes(kw) ||
-        (p.agency_name || '').includes(kw),
-    )
-  }, [projects, keyword])
+  const listFilter = useProjectListFilter(projects, PROJECT_ACCESSORS)
+  const filtered = listFilter.filtered
+  const keyword = listFilter.kw
 
   // 未确认/已归档来自项目（按当前 stage 过滤）；已确认来自轮次确认历史（每次一行）。
   const grouped = useMemo(() => {
@@ -233,6 +228,12 @@ export default function ProcurementDocPage() {
         <Button size="small" icon={<FileWordOutlined />} onClick={() => openModal(r)}>招标文件封面</Button>
         <Button size="small" icon={<ContactsOutlined />} onClick={() => openContactModal(r)}>联系人</Button>
         <Button size="small" icon={<RobotOutlined />} onClick={() => setAiProject(r)}>AI 编制建议</Button>
+        {!r.doc_confirmed && (
+          <Button size="small" type="primary" ghost icon={<RobotOutlined />}
+            onClick={() => setAiGenProject(r)}>
+            AI 生成采购文件
+          </Button>
+        )}
         <Tooltip title={r.doc_confirmed ? '' : '需经办人确认采购文件后才能生成'}>
           <Button size="small" icon={<FileWordOutlined />} loading={genId === r.id} disabled={!r.doc_confirmed} onClick={() => handleContentConfirm(r)}>
             内容确认表
@@ -322,12 +323,7 @@ export default function ProcurementDocPage() {
           message="流程：代理机构上传采购文件并填写「联系人」→ 经办人「确认」采购文件 → 确认后即可生成《内容确认表》（自动填入文件 SHA256 哈希值与代理联系人）。"
         />
 
-        <Input.Search
-          placeholder="搜索项目名称 / 编号 / 代理机构"
-          allowClear
-          style={{ maxWidth: 360 }}
-          onChange={e => setKeyword(e.target.value)}
-        />
+        <ProjectListToolbar f={listFilter} />
 
         <Tabs
           activeKey={activeTab}
@@ -438,6 +434,13 @@ export default function ProcurementDocPage() {
         project={aiProject}
         open={!!aiProject}
         onClose={() => setAiProject(null)}
+      />
+
+      <AiGenerateDocModal
+        project={aiGenProject}
+        open={!!aiGenProject}
+        onClose={() => setAiGenProject(null)}
+        onGenerated={load}
       />
 
       {/* 内容确认表在线预览（弹窗内含下载/打印） */}

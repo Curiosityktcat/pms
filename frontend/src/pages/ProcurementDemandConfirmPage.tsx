@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  Card, Button, Space, Tag, Input, App, Typography, Tooltip, Popconfirm,
+  Card, Button, Space, Tag, App, Typography, Tooltip, Popconfirm,
   Modal, InputNumber, Alert, Tabs,
 } from 'antd'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
@@ -13,6 +13,7 @@ import DocAttachmentsModal from '../components/DocAttachmentsModal'
 import { useAuth } from '../hooks/useAuth'
 import { cnOrdinal } from '../utils/ordinal'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
+import ProjectListToolbar, { useProjectListFilter, PROJECT_ACCESSORS } from '../components/ProjectListToolbar'
 
 const { Title, Text } = Typography
 
@@ -33,7 +34,6 @@ export default function ProcurementDemandConfirmPage() {
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<Project[]>([])
   const [confirmations, setConfirmations] = useState<DemandConfirmation[]>([])
-  const [keyword, setKeyword] = useState('')
   const [attachProject, setAttachProject] = useState<Project | null>(null)
   // 已确认历史里「查看需求文件」：round=确认轮次（标题用），filesRound=文件实际所属轮次（取文件用）
   const [viewDemand, setViewDemand] = useState<{ project: Project; round: number; filesRound: number } | null>(null)
@@ -57,16 +57,9 @@ export default function ProcurementDemandConfirmPage() {
   }, [message])
   useEffect(() => { load() }, [load])
 
-  const filtered = useMemo(() => {
-    const kw = keyword.trim()
-    if (!kw) return projects
-    return projects.filter(
-      p =>
-        (p.name || '').includes(kw) ||
-        (p.number || '').includes(kw) ||
-        (p.agency_name || '').includes(kw),
-    )
-  }, [projects, keyword])
+  const listFilter = useProjectListFilter(projects, PROJECT_ACCESSORS)
+  const filtered = listFilter.filtered
+  const keyword = listFilter.kw
 
   // 待确认/已归档来自项目（按当前 stage 过滤）；已确认来自轮次确认历史（每次一行）。
   const grouped = useMemo(() => {
@@ -248,12 +241,7 @@ export default function ProcurementDemandConfirmPage() {
           </Text>
         </div>
 
-        <Input.Search
-          placeholder="搜索项目名称 / 编号 / 代理机构"
-          allowClear
-          style={{ maxWidth: 360 }}
-          onChange={e => setKeyword(e.target.value)}
-        />
+        <ProjectListToolbar f={listFilter} />
 
         <Tabs
           activeKey={activeTab}

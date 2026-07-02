@@ -8,6 +8,8 @@ export interface ArchiveItem {
   manage_dept: string
   agency_code: string
   status: string
+  method?: string
+  created_at?: string
   archived: boolean
   auth_letter_count: number
   contract_count: number

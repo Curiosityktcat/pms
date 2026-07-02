@@ -13,6 +13,14 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+
+const DEMAND_ACCESSORS: ListFilterAccessors<ProcurementDemand> = {
+  searchText: d => [d.project_name, d.project_number],
+  createdAt: d => d.created_at,
+  number: d => d.project_number,
+  method: d => d.procurement_method || d.budget_method,
+}
 import dayjs from 'dayjs'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
@@ -333,7 +341,8 @@ export default function ProcurementDemandPage() {
   const addItem    = () => setItems(p => [...p, emptyItem()])
   const removeItem = (idx: number) => setItems(p => p.filter((_, i) => i !== idx))
 
-  const byTab = (tab: TabKey) => demands.filter(d => d.status === tab)
+  const listFilter = useProjectListFilter(demands, DEMAND_ACCESSORS)
+  const byTab = (tab: TabKey) => listFilter.filtered.filter(d => d.status === tab)
 
   // ── 操作列 ───────────────────────────────────────────────────────
   const demandActions = (record: ProcurementDemand, status: DemandStatus) => (
@@ -460,6 +469,9 @@ export default function ProcurementDemandPage() {
           <Alert type="warning" showIcon style={{ marginBottom: 12 }}
             message="政府采购项目立项成功后将自动归档（不进入后续院内流程）" />
         )}
+        <div style={{ marginBottom: 8 }}>
+          <ProjectListToolbar f={listFilter} placeholder="搜索项目名称 / 编号" />
+        </div>
         <Tabs
           activeKey={activeTab}
           onChange={k => setActiveTab(k as TabKey)}

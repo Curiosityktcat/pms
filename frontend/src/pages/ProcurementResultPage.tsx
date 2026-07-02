@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import axios from 'axios'
 import {
   Button,
@@ -40,6 +40,7 @@ import {
   FileDoneOutlined,
 } from '@ant-design/icons'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 import {
   listResults,
   createResult,
@@ -182,11 +183,22 @@ export default function ProcurementResultPage() {
     getProjects().then((res) => setProjects(res.data.data || []))
   }, [loadResults])
 
-  // ─── 按 tab 过滤 ─────────────────────────────────────────────────────────────
-  const filtered = results.filter((r) => r.status === tabStatus)
-
   // ─── 项目 map ────────────────────────────────────────────────────────────────
   const projectMap = Object.fromEntries(projects.map((p) => [p.id, p]))
+
+  // ─── 按 tab 过滤 + 统一工具栏（搜索/年度/采购方式/排序）───────────────────────
+  const tabResults = useMemo(
+    () => results.filter((r) => r.status === tabStatus), [results, tabStatus])
+  const resultAccessors = useMemo<ListFilterAccessors<ProcurementResult>>(() => ({
+    searchText: (r) => [projectMap[r.project_id]?.name, projectMap[r.project_id]?.number,
+                        r.agency_name, ...(r.packages || []).map(pk => pk.winner)],
+    createdAt: (r) => r.created_at,
+    number: (r) => projectMap[r.project_id]?.number,
+    method: (r) => r.procurement_method || projectMap[r.project_id]?.method,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [projects])
+  const listFilter = useProjectListFilter(tabResults, resultAccessors)
+  const filtered = listFilter.filtered
 
   // ─── 可做采购结果的项目：当前轮已开标(可开标)且本轮尚未录结果 ──────────────────
   // current_stage==='result' 已涵盖：代理轨道 + 需求/文件已确认 + 已发公告 + 已确认可开标。
@@ -469,6 +481,9 @@ export default function ProcurementResultPage() {
           ]}
           style={{ marginBottom: 12 }}
         />
+        <div style={{ marginBottom: 12 }}>
+          <ProjectListToolbar f={listFilter} placeholder="搜索项目 / 编号 / 代理机构 / 供应商" />
+        </div>
         <RecordCards dataSource={filtered} loading={loading} emptyText="暂无采购结果" toCard={resultToCard} />
       </Card>
 

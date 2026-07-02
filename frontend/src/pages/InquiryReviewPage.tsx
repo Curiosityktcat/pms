@@ -21,6 +21,14 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+
+const REVIEW_ACCESSORS: ListFilterAccessors<InquiryReviewListRow> = {
+  searchText: r => [r.project_name, r.project_number],
+  createdAt: r => r.created_at,
+  number: r => r.project_number,
+  method: r => r.method,
+}
 import dayjs from 'dayjs'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import {
@@ -116,7 +124,8 @@ function ReviewList({ onOpen }: { onOpen: (id: number) => void }) {
 
   const pending = rows.filter(r => r.review_status !== '已完成' && r.letter_status !== '草稿')
   const done    = rows.filter(r => r.review_status === '已完成')
-  const data    = tab === '待评审' ? pending : done
+  const listFilter = useProjectListFilter(tab === '待评审' ? pending : done, REVIEW_ACCESSORS)
+  const data    = listFilter.filtered
 
   const reviewToCard = (r: InquiryReviewListRow): RecordCardData => {
     const isDone = r.review_status === '已完成'
@@ -179,6 +188,9 @@ function ReviewList({ onOpen }: { onOpen: (id: number) => void }) {
           { key: '已评审', label: <span>已评审 <Tag color="green">{done.length}</Tag></span> },
         ]}
       />
+      <div style={{ marginBottom: 12 }}>
+        <ProjectListToolbar f={listFilter} placeholder="搜索项目名称 / 编号" />
+      </div>
       <RecordCards dataSource={data} loading={loading} emptyText="暂无评审" toCard={reviewToCard} />
     </Card>
   )

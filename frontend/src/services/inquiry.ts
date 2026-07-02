@@ -282,6 +282,7 @@ export interface InquiryReviewListRow {
   deadline: string
   deadline_passed: boolean
   letter_status: string
+  created_at: string
   round_no: number
   supplier_count: number
   responded_count: number

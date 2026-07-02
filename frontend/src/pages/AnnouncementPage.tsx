@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   Card, Button, Form, Input, Select, Drawer, Space, Popconfirm,
   App, Tag, Typography, Divider, Descriptions, Alert, Modal,
-  Tooltip, Upload, List, Tabs, Badge, DatePicker,
+  Tooltip, Upload, List, Tabs, Badge, DatePicker, Segmented,
 } from 'antd'
 import dayjs from 'dayjs'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -390,6 +390,8 @@ export default function AnnouncementPage() {
   const [tab, setTab] = useState<AnnTab>('pending')
   const [search, setSearch] = useState('')
   const [filterAgency, setFilterAgency] = useState<string | undefined>()
+  const [filterYearAnn, setFilterYearAnn] = useState<string | undefined>()
+  const [sortByAnn, setSortByAnn] = useState<'created' | 'number'>('created')
   // 点项目名在线预览生成的公告 Word
   const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
 
@@ -434,15 +436,24 @@ export default function AnnouncementPage() {
     new Set(list.map(a => a.agency_name).filter(Boolean))
   ).sort().map(a => ({ value: a, label: a }))
 
+  const yearOptionsAnn = Array.from(new Set(list.map(a =>
+    (a.project_number || '').match(/^(20\d{2})/)?.[1] || (a.created_at || '').slice(0, 4),
+  ).filter(Boolean))).sort().reverse()
+
   const applyFilter = (data: Announcement[]) => {
     const q = search.trim().toLowerCase()
-    return data.filter(a => {
+    const out = data.filter(a => {
       const matchSearch = !q ||
         (a.project_name || '').toLowerCase().includes(q) ||
         (a.project_number || '').toLowerCase().includes(q)
       const matchAgency = !filterAgency || a.agency_name === filterAgency
-      return matchSearch && matchAgency
+      const y = (a.project_number || '').match(/^(20\d{2})/)?.[1] || (a.created_at || '').slice(0, 4)
+      const matchYear = !filterYearAnn || y === filterYearAnn
+      return matchSearch && matchAgency && matchYear
     })
+    return out.sort((a, b) => sortByAnn === 'number'
+      ? (a.project_number || '').localeCompare(b.project_number || '')
+      : (b.created_at || '').localeCompare(a.created_at || ''))
   }
 
   const filteredPending = applyFilter(pendingList)
@@ -719,6 +730,22 @@ export default function AnnouncementPage() {
           value={filterAgency}
           onChange={setFilterAgency}
           options={agencyOptions}
+        />
+        <Select
+          placeholder="年度"
+          allowClear
+          style={{ width: 100 }}
+          value={filterYearAnn}
+          onChange={setFilterYearAnn}
+          options={yearOptionsAnn.map(y => ({ value: y, label: `${y}年` }))}
+        />
+        <Segmented
+          value={sortByAnn}
+          onChange={v => setSortByAnn(v as 'created' | 'number')}
+          options={[
+            { value: 'created', label: '按新增时间' },
+            { value: 'number', label: '按项目编号' },
+          ]}
         />
         <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
           {tab === 'pending' ? `待挂网 ${filteredPending.length} 条`

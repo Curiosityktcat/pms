@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  Card, Button, Space, Input, Tabs, Popconfirm, App, Typography, Modal,
+  Card, Button, Space, Tabs, Popconfirm, App, Typography, Modal,
 } from 'antd'
 import { InboxOutlined, RollbackOutlined, PrinterOutlined, RobotOutlined } from '@ant-design/icons'
 import {
@@ -9,6 +9,14 @@ import {
 import FilePreviewModal from '../components/FilePreviewModal'
 import RecordCards from '../components/RecordCards'
 import HermesPanel, { type HermesField } from '../components/HermesPanel'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+
+const ARCHIVE_ACCESSORS: ListFilterAccessors<ArchiveItem> = {
+  searchText: it => [it.name, it.number, it.officer],
+  createdAt: it => it.created_at,
+  number: it => it.number,
+  method: it => it.method,
+}
 
 const { Title, Text } = Typography
 
@@ -16,7 +24,6 @@ export default function ArchivePage() {
   const { message } = App.useApp()
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState<ArchiveItem[]>([])
-  const [keyword, setKeyword] = useState('')
   const [tab, setTab] = useState<'todo' | 'done'>('todo')
   const [acting, setActing] = useState(0)
   const [printItem, setPrintItem] = useState<ArchiveItem | null>(null)
@@ -37,17 +44,11 @@ export default function ArchivePage() {
   }, [message])
   useEffect(() => { load() }, [load])
 
-  const filtered = useMemo(() => {
-    const kw = keyword.trim()
-    return items
-      .filter(it => (tab === 'done' ? it.archived : !it.archived))
-      .filter(it =>
-        !kw ||
-        (it.name || '').includes(kw) ||
-        (it.number || '').includes(kw) ||
-        (it.officer || '').includes(kw),
-      )
-  }, [items, keyword, tab])
+  const tabItems = useMemo(
+    () => items.filter(it => (tab === 'done' ? it.archived : !it.archived)),
+    [items, tab])
+  const listFilter = useProjectListFilter(tabItems, ARCHIVE_ACCESSORS)
+  const filtered = listFilter.filtered
 
   const doArchive = async (id: number) => {
     setActing(id)
@@ -95,12 +96,7 @@ export default function ArchivePage() {
             onChange={k => setTab(k as 'todo' | 'done')}
             items={[{ key: 'todo', label: '待归档' }, { key: 'done', label: '已归档' }]}
           />
-          <Input.Search
-            placeholder="搜索名称 / 编号 / 经办人"
-            allowClear
-            style={{ width: 280 }}
-            onChange={e => setKeyword(e.target.value)}
-          />
+          <ProjectListToolbar f={listFilter} placeholder="搜索名称 / 编号 / 经办人" />
         </Space>
 
         <RecordCards

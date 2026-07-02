@@ -13,6 +13,14 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+
+const LETTER_ACCESSORS: ListFilterAccessors<InquiryLetter> = {
+  searchText: l => [l.title, l.project_name, l.project_number],
+  createdAt: l => l.created_at,
+  number: l => l.project_number,
+  method: l => l.type,
+}
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -826,7 +834,9 @@ export default function InquiryPage() {
   }, [load])
 
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p]))
-  const filtered   = letters.filter(l => l.status === tabStatus)
+  const tabLetters = letters.filter(l => l.status === tabStatus)
+  const listFilter = useProjectListFilter(tabLetters, LETTER_ACCESSORS)
+  const filtered   = listFilter.filtered
 
   // 可立询/议价函的项目：方式∈院内询价/议价/紧急采购，且未处于进行中的采购轮次
   // （无轮次=尚未开始 或 本轮已废标=待开下一轮 才可；已进轮次未废标的排除）
@@ -1072,6 +1082,9 @@ export default function InquiryPage() {
         ]}
       />
 
+      <div style={{ marginBottom: 12 }}>
+        <ProjectListToolbar f={listFilter} placeholder="搜索函件标题 / 项目名称 / 编号" />
+      </div>
       <RecordCards dataSource={filtered} loading={loading} emptyText="暂无函件" toCard={letterToCard} />
 
       {/* ══ 新建/编辑 Drawer ═══════════════════════════════════════ */}

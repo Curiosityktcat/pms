@@ -23,8 +23,16 @@ import {
   listRdwebAccounts, createRdwebAccount, updateRdwebAccount, deleteRdwebAccount,
   type Distribution, type DistAttachment, type RdwebAccount,
 } from '../services/projectDistribution'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 
 const { Text } = Typography
+
+const DIST_ACCESSORS: ListFilterAccessors<Distribution> = {
+  searchText: r => [r.name, r.project_number, r.agency_name],
+  createdAt: r => r.created_at,
+  number: r => r.project_number,
+  method: r => r.method,
+}
 const { TextArea } = Input
 
 // 采购方式（与立项一致）；院内竞选/政府采购/单一来源 走代理轮派
@@ -411,7 +419,9 @@ export default function ProjectDistributionPage() {
     ),
   })
 
-  const filtered = rows.filter(r => r.status === tab)
+  const tabRows = rows.filter(r => r.status === tab)
+  const listFilter = useProjectListFilter(tabRows, DIST_ACCESSORS)
+  const filtered = listFilter.filtered
   const counts = (s: string) => rows.filter(r => r.status === s).length
 
   return (
@@ -434,6 +444,9 @@ export default function ProjectDistributionPage() {
         onChange={setTab}
         items={['待分发', '已分发', '已立项'].map(s => ({ key: s, label: `${s}（${counts(s)}）` }))}
       />
+      <div style={{ marginBottom: 12 }}>
+        <ProjectListToolbar f={listFilter} placeholder="搜索项目名称 / 编号 / 代理机构" />
+      </div>
       <RecordCards dataSource={filtered} toCard={toCard} loading={loading} emptyText={`暂无${tab}项目`} />
 
       {/* 新建/编辑分发 */}

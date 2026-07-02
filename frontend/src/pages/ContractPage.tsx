@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons'
 import RecordCards from '../components/RecordCards'
 import HermesPanel, { type HermesField } from '../components/HermesPanel'
+import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 import {
   listContracts, createContract, updateContract, deleteContract,
   submitContract, revokeContract, contractFileUrl, contractFilePreviewUrl, uploadContractFile,
@@ -286,8 +287,20 @@ export default function ContractPage() {
     getProjects().then(r => setProjects(r.data.data || []))
   }, [loadContracts])
 
-  const filtered = contracts.filter(c => c.status === tabStatus)
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p]))
+  const tabContracts = useMemo(
+    () => contracts.filter(c => c.status === tabStatus), [contracts, tabStatus])
+  // 合同模块：搜索多一个「供应商」；采购方式取所属项目
+  const contractAccessors = useMemo<ListFilterAccessors<Contract>>(() => ({
+    searchText: c => [c.contract_name, c.contract_number, c.project_name,
+                      c.supplier_name, projectMap[c.project_id]?.number],
+    createdAt: c => c.created_at,
+    number: c => projectMap[c.project_id]?.number || c.contract_number,
+    method: c => projectMap[c.project_id]?.method,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [projects])
+  const listFilter = useProjectListFilter(tabContracts, contractAccessors)
+  const filtered = listFilter.filtered
 
   // 可签合同的项目：存在「已中标未签约」的包（pending_contract>0）。
   // 全量 projects 仍用于表格项目名映射；编辑既有合同时把已绑定项目补进下拉。
@@ -599,6 +612,10 @@ export default function ContractPage() {
           { key: '合同上传', label: <span>合同上传（归档）<Tag color="green">{contracts.filter(c => c.status === '合同上传').length}</Tag></span> },
         ]}
       />
+      <div style={{ marginBottom: 12 }}>
+        <ProjectListToolbar f={listFilter}
+          placeholder="搜索合同 / 项目名称 / 编号 / 供应商" />
+      </div>
       <RecordCards
         dataSource={filtered}
         loading={loading}

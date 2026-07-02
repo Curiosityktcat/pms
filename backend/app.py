@@ -65,6 +65,8 @@ def create_app():
     from routes.filebox_api import bp as filebox_bp
     from routes.presence_api import bp as presence_bp
     from routes.supervision_api import bp as supervision_bp  # 投诉质疑数据库
+    from routes.dept_announcement_api import bp as dept_announcement_bp  # 采购部公告
+    from models.dept_announcement import DeptAnnouncement  # noqa: F401 建表用
     from routes.law_api import bp as law_bp  # 法规库
     from routes.project_distribution_api import bp as project_distribution_bp  # 采购项目分发
     from routes.project_review_api import bp as project_review_bp  # 8.5 项目评审资料上传
@@ -103,6 +105,7 @@ def create_app():
     app.register_blueprint(filebox_bp)
     app.register_blueprint(presence_bp)
     app.register_blueprint(supervision_bp)
+    app.register_blueprint(dept_announcement_bp)
     app.register_blueprint(law_bp)
     app.register_blueprint(project_distribution_bp)
     app.register_blueprint(project_review_bp)

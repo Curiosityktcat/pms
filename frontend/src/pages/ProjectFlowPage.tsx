@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card } from 'antd'
+import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card, Segmented } from 'antd'
 import { PlusOutlined, SearchOutlined, RollbackOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getProjects, deleteProject, restoreProject } from '../services/project'
@@ -19,6 +19,7 @@ export default function ProjectFlowPage() {
   const [search, setSearch] = useState('')
   const [filterYear, setFilterYear] = useState<string | undefined>()
   const [filterMethod, setFilterMethod] = useState<string | undefined>()
+  const [sortBy, setSortBy] = useState<'created' | 'number'>('created')
   const [progressId, setProgressId] = useState<number | null>(null)
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -67,10 +68,10 @@ export default function ProjectFlowPage() {
     new Set(projects.map(p => p.year).filter(Boolean))
   ).sort().reverse()
 
-  // 过滤逻辑
+  // 过滤 + 排序（默认按新增时间倒序，可切按项目编号）
   const applyFilter = (list: Project[]) => {
     const q = search.trim().toLowerCase()
-    return list.filter(p => {
+    const out = list.filter(p => {
       const matchSearch = !q ||
         p.name.toLowerCase().includes(q) ||
         (p.number || '').toLowerCase().includes(q)
@@ -78,6 +79,9 @@ export default function ProjectFlowPage() {
       const matchMethod = !filterMethod || p.method === filterMethod
       return matchSearch && matchYear && matchMethod
     })
+    return out.sort((a, b) => sortBy === 'number'
+      ? (a.number || '').localeCompare(b.number || '')
+      : (b.created_at || '').localeCompare(a.created_at || ''))
   }
 
   const ongoing = projects.filter(p => p.status !== STATUS_DONE)
@@ -171,6 +175,14 @@ export default function ProjectFlowPage() {
           value={filterMethod}
           onChange={setFilterMethod}
           options={METHODS.map(m => ({ value: m, label: m }))}
+        />
+        <Segmented
+          value={sortBy}
+          onChange={v => setSortBy(v as 'created' | 'number')}
+          options={[
+            { value: 'created', label: '按新增时间' },
+            { value: 'number', label: '按项目编号' },
+          ]}
         />
         {canCreate && (
           <Button

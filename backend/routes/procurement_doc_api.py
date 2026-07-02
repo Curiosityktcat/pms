@@ -2,7 +2,7 @@ import datetime
 import hashlib
 import os
 import uuid
-from flask import Blueprint, request, session, jsonify, send_file
+from flask import Blueprint, request, session, jsonify, send_file, current_app
 from models import db
 from models.project import Project
 from models.agency import Agency
@@ -637,3 +637,111 @@ def delete_doc_attachment(pid, aid):
     db.session.delete(att)
     db.session.commit()
     return jsonify({"ok": True, "message": "已删除"})
+
+# ══════════════════════════════════════════════════════════════════
+# AI 一键生成采购文件定稿：选初稿/模板 + 采购需求附件 → DeepSeek 段落级修订
+# （后台线程执行，前端轮询状态；按 token 计费，代理机构余额拦截）
+# ══════════════════════════════════════════════════════════════════
+import threading as _threading
+
+_aigen: dict = {}
+_aigen_lock = _threading.Lock()
+
+
+@bp.route("/<int:pid>/ai-generate-doc", methods=["POST"])
+@login_required
+def ai_generate_doc(pid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    if _kind_confirmed(project, "doc"):
+        return jsonify({"ok": False, "error": "采购文件已确认，如需重新生成请先撤销确认"}), 400
+
+    data = request.get_json(force=True) or {}
+    draft_id = data.get("draft_attachment_id")
+    demand_id = data.get("demand_attachment_id")
+
+    def _get_att(aid):
+        att = db.session.get(ProcurementDocAttachment, aid or 0)
+        if att is None or att.project_id != pid:
+            return None
+        return att
+
+    draft_att, demand_att = _get_att(draft_id), _get_att(demand_id)
+    if not draft_att or not demand_att:
+        return jsonify({"ok": False, "error": "请选择初稿/模板文件和采购需求文件"}), 400
+    for att, label in ((draft_att, "初稿/模板"), (demand_att, "采购需求")):
+        if os.path.splitext(att.saved_name)[1].lower() not in (".doc", ".docx"):
+            return jsonify({"ok": False,
+                            "error": f"{label}仅支持 Word（doc/docx）格式"}), 400
+
+    role = session.get("role", "")
+    agency_code = session.get("agency_code", "") if role == "agency" else ""
+    if agency_code:
+        from services.billing import get_balance
+        bal = get_balance(agency_code)
+        if bal is not None and bal <= 0:
+            return jsonify({"ok": False,
+                            "error": "AI 余额不足，请联系采购部充值后再使用"}), 402
+
+    with _aigen_lock:
+        if _aigen.get(pid, {}).get("running"):
+            return jsonify({"ok": False, "error": "该项目正在生成中，请稍候"}), 429
+        _aigen[pid] = {"running": True, "ok": None, "msg": "AI 生成中（约 2~5 分钟）…"}
+
+    app = current_app._get_current_object()
+    d = _attach_dir(pid)
+    draft_path = os.path.join(d, draft_att.saved_name)
+    demand_path = os.path.join(d, demand_att.saved_name)
+    username = session.get("user", "")
+    display = session.get("display_name", "")
+    rnd = _current_round(project)
+    rno = rnd.round_number if rnd else 1
+    proj_name = project.name or ""
+
+    def _worker():
+        try:
+            from services.procurement_doc_gen import generate_final_doc
+            saved_name = f"{uuid.uuid4().hex}.docx"
+            out_path = os.path.join(d, saved_name)
+            summary, applied, usage = None, None, None
+            with app.app_context():
+                summary, applied, usage = generate_final_doc(
+                    draft_path, demand_path, out_path)
+                att = ProcurementDocAttachment(
+                    project_id=pid,
+                    kind="doc",
+                    round_number=rno,
+                    original_name=f"{proj_name}（AI定稿）.docx",
+                    saved_name=saved_name,
+                    file_size=os.path.getsize(out_path),
+                    sha256=_sha256_of(out_path),
+                    uploaded_by=f"{display}（AI生成）",
+                    uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                )
+                db.session.add(att)
+                db.session.commit()
+                from services import llm_usage
+                llm_usage.record(username, display, "采购文件AI生成",
+                                 "deepseek-v4-flash", usage,
+                                 agency_code=agency_code)
+            with _aigen_lock:
+                _aigen[pid] = {"running": False, "ok": True,
+                               "msg": f"生成完成，共 {len(applied)} 处修订",
+                               "summary": summary, "edits": applied,
+                               "usage": usage}
+        except Exception as e:  # noqa: BLE001
+            with _aigen_lock:
+                _aigen[pid] = {"running": False, "ok": False,
+                               "msg": f"生成失败：{str(e)[:300]}"}
+
+    _threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"ok": True, "msg": "已开始生成"})
+
+
+@bp.route("/<int:pid>/ai-generate-doc/status")
+@login_required
+def ai_generate_doc_status(pid):
+    return jsonify({"ok": True, "data": _aigen.get(pid, {
+        "running": False, "ok": None, "msg": ""})})

@@ -136,3 +136,24 @@ export const aiReviewDoc = (projectId: number) =>
   api.post<{ ok: boolean; data: { suggestions: string; model: string; balance?: number } }>(
     `/projects/${projectId}/ai-review`,
   )
+
+// ── AI 一键生成采购文件定稿（初稿/模板 + 采购需求 → DeepSeek 段落级修订）──
+export interface AiGenStatus {
+  running: boolean
+  ok: boolean | null
+  msg: string
+  summary?: string
+  edits?: { idx: number; reason: string; old: string; new: string }[]
+  usage?: { total_tokens: number }
+}
+
+export const aiGenerateDoc = (
+  projectId: number, draftAttachmentId: number, demandAttachmentId: number,
+) =>
+  api.post<{ ok: boolean; msg: string }>(`/projects/${projectId}/ai-generate-doc`, {
+    draft_attachment_id: draftAttachmentId,
+    demand_attachment_id: demandAttachmentId,
+  })
+
+export const aiGenerateDocStatus = (projectId: number) =>
+  api.get<{ ok: boolean; data: AiGenStatus }>(`/projects/${projectId}/ai-generate-doc/status`)

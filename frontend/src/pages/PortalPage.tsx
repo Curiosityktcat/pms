@@ -8,6 +8,7 @@ import {
   SettingOutlined, RightOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../hooks/useAuth'
+import DeptAnnouncementBoard from '../components/DeptAnnouncementBoard'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -109,6 +110,8 @@ export default function PortalPage() {
       <Card title={<span><RightOutlined style={{ color: '#52c41a' }} /> 工具集合</span>}>
         <Row gutter={[14, 14]}>{tools.map(t => tile(t, '#52c41a'))}</Row>
       </Card>
+
+      <DeptAnnouncementBoard />
     </div>
   )
 }

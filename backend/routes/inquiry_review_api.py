@@ -141,6 +141,7 @@ def list_reviews():
             "deadline": l.deadline,
             "deadline_passed": _deadline_passed(l),
             "letter_status": l.status,
+            "created_at": l.created_at,
             "round_no": rv.round_no if rv else _round_no(l),
             "supplier_count": len(sups),
             "responded_count": sum(1 for s in sups if s.responded),
