@@ -329,6 +329,12 @@ export const startNextRound = (inquiryId: number) =>
     `/inquiries/${inquiryId}/next-round`,
   )
 
+// 询价废标后同轮转院内议价（第二轮起）：保留废标记录，另建同轮次议价函草稿
+export const convertToNegotiation = (inquiryId: number) =>
+  api.post<{ ok: boolean; message: string; data: InquiryLetter }>(
+    `/inquiries/${inquiryId}/convert-to-negotiation`,
+  )
+
 // 从收件箱抓取供应商回复：匹配的供应商置「已响应」并导入邮件附件为响应文件
 export const fetchReviewReplies = (inquiryId: number) =>
   api.post<{ ok: boolean; message: string; data: FetchRepliesResult }>(

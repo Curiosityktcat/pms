@@ -40,13 +40,24 @@ def _today():
 
 
 def _round_no(letter: InquiryLetter) -> int:
-    """该函件是同项目的第几轮邀请（按函件创建顺序，1 起）"""
-    ids = db.session.execute(
-        db.select(InquiryLetter.id)
+    """该函件是同项目的第几轮邀请。
+
+    默认按函件创建顺序逐个 +1；带 round_no 覆盖的函件（同轮"询价废标转议价"）
+    用覆盖值且不推进计数 —— 例如：询价①=1、询价②=2(废标)、议价(转,覆盖)=2、
+    再开下一轮询价=3。
+    """
+    letters = db.session.execute(
+        db.select(InquiryLetter)
         .filter_by(project_id=letter.project_id)
         .order_by(InquiryLetter.id)
     ).scalars().all()
-    return ids.index(letter.id) + 1 if letter.id in ids else 1
+    cur = 0
+    for lt in letters:
+        n = lt.round_no if lt.round_no else cur + 1
+        if lt.id == letter.id:
+            return n
+        cur = max(cur, n)
+    return 1
 
 
 def _deadline_passed(letter: InquiryLetter) -> bool:
@@ -476,6 +487,96 @@ def next_round(lid):
     db.session.commit()
     return jsonify({"ok": True,
                     "message": f"已开启第{new_round}轮（草稿），请到「7. 询/议价函」中调整供应商并发出邀请",
+                    "data": new_letter.to_dict()})
+
+
+# ─────────────────────────────────────────────────────────────────
+# 询价废标后同轮转院内议价（第二轮起）：
+# 保留本轮询价废标记录，另建同轮次的议价函/评审，两条过程都可追溯。
+# ─────────────────────────────────────────────────────────────────
+
+@bp.route("/api/inquiries/<int:lid>/convert-to-negotiation", methods=["POST"])
+@login_required
+def convert_to_negotiation(lid):
+    letter = db.session.get(InquiryLetter, lid)
+    review = db.session.execute(
+        db.select(InquiryReview).filter_by(inquiry_id=lid)
+    ).scalar_one_or_none()
+    if not letter:
+        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    if letter.type != "询价":
+        return jsonify({"ok": False, "error": "仅询价函可转为院内议价"}), 400
+    if not review or review.status != "已完成" or review.result_type != "废标":
+        return jsonify({"ok": False, "error": "仅本轮询价评审完成且废标后才能转为院内议价"}), 400
+    cur_round = _round_no(letter)
+    if cur_round < 2:
+        return jsonify({"ok": False, "error": "询价项目第一轮不允许转为院内议价（第二轮起可转）"}), 400
+    newer = db.session.execute(
+        db.select(InquiryLetter.id)
+        .filter(InquiryLetter.project_id == letter.project_id,
+                InquiryLetter.id > letter.id)
+    ).first()
+    if newer:
+        return jsonify({"ok": False, "error": "该项目已开启后续轮次，不能再转议价"}), 400
+
+    now = _now()
+    new_letter = InquiryLetter(
+        project_id   = letter.project_id,
+        type         = "议价",
+        title        = (letter.title or "").replace("询价", "议价") or letter.title,
+        content      = letter.content,
+        detail       = letter.detail,
+        requirements = letter.requirements,
+        deadline     = "",
+        status       = "草稿",
+        notes        = ((letter.notes or "") +
+                        f"\n[系统] 第{cur_round}次院内询价废标后转院内议价（{now}）").strip(),
+        round_no     = cur_round,   # 同轮：仍为第 cur_round 次
+        created_by   = session.get("display_name", ""),
+        created_at   = now,
+        updated_at   = now,
+    )
+    db.session.add(new_letter)
+    db.session.flush()
+
+    # 供应商名单：优先带已递交响应的（议价对象通常就是他们）；无响应则全部带过去
+    sups = _suppliers(lid)
+    src_sups = [s for s in sups if s.responded] or sups
+    for s in src_sups:
+        db.session.add(InquirySupplier(
+            inquiry_id    = new_letter.id,
+            supplier_name = s.supplier_name,
+            contact_name  = s.contact_name,
+            contact_phone = s.contact_phone,
+            email         = s.email,
+        ))
+
+    # 复制函件附件（独立副本，与开下一轮同口径）
+    from models.inquiry_attachment import InquiryAttachment
+    atts = db.session.execute(
+        db.select(InquiryAttachment).filter_by(inquiry_id=lid).order_by(InquiryAttachment.id)
+    ).scalars().all()
+    os.makedirs(ATTACH_DIR, exist_ok=True)
+    for i, att in enumerate(atts):
+        src = os.path.join(PMS_ROOT, att.filepath)
+        if not os.path.exists(src):
+            continue
+        ext = os.path.splitext(att.filename)[1].lower()
+        safe_name = f"{new_letter.id}_{int(time.time())}_{i}{ext}"
+        shutil.copy2(src, os.path.join(ATTACH_DIR, safe_name))
+        db.session.add(InquiryAttachment(
+            inquiry_id  = new_letter.id,
+            filename    = att.filename,
+            filepath    = f"询价附件/上传/{safe_name}",
+            uploaded_at = now,
+            uploaded_by = session.get("display_name", "") + "（询价轮沿用）",
+        ))
+
+    db.session.commit()
+    kept = "已递交响应的供应商" if any(s.responded for s in sups) else "全部供应商"
+    return jsonify({"ok": True,
+                    "message": f"已转为第{cur_round}次院内议价（草稿，名单带入{kept}）。"
+                               f"本次询价废标记录已保留，请到「7. 询/议价函」中确认后发出议价函",
                     "data": new_letter.to_dict()})
 
 

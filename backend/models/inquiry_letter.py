@@ -12,6 +12,8 @@ class InquiryLetter(db.Model):
     requirements = db.Column(db.Text, default="")           # 相关要求（经办人手填）
     deadline   = db.Column(db.String(30), default="")       # 截止回复日期
     status     = db.Column(db.String(10), default="草稿")   # 草稿|进行中|已完成
+    # 轮次覆盖：默认按函件顺序推算；同轮"询价废标转议价"时新函与废标轮同号
+    round_no   = db.Column(db.Integer, nullable=True)
     notes      = db.Column(db.Text, default="")
     created_by = db.Column(db.String(50), default="")
     created_at = db.Column(db.String(30), default="")

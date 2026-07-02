@@ -17,6 +17,7 @@ import {
   ArrowLeftOutlined, SaveOutlined, CheckCircleOutlined, DownloadOutlined,
   EyeOutlined, UploadOutlined, DeleteOutlined, RollbackOutlined,
   FileTextOutlined, PaperClipOutlined, SendOutlined, SyncOutlined,
+  SwapOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
@@ -24,7 +25,8 @@ import dayjs from 'dayjs'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import {
   listInquiryReviews, getInquiryReview, saveInquiryReview, completeInquiryReview,
-  reopenInquiryReview, startNextRound, reviewExcelUrl, fetchReviewReplies, earlyOpenReview,
+  reopenInquiryReview, startNextRound, convertToNegotiation, reviewExcelUrl,
+  fetchReviewReplies, earlyOpenReview,
   uploadSupplierFile, deleteSupplierFile, supplierFileDownloadUrl, supplierFilePreviewUrl,
   listAttachments, attachmentPreviewUrl, attachmentDownloadUrl, previewWordUrl,
   type InquiryReview, type InquiryReviewListRow, type InquirySupplier,
@@ -341,6 +343,26 @@ function ReviewWorkspace({ inquiryId, onBack }: { inquiryId: number; onBack: () 
     })
   }
 
+  const doConvertNegotiation = () => {
+    modal.confirm({
+      title: `转为第${review?.round_no || ''}次院内议价`,
+      width: 520,
+      content: `本次院内询价的废标记录将保留归档；系统另建同轮次（第${review?.round_no || ''}次）` +
+        '的院内议价函草稿（供应商名单默认带入已递交响应的供应商），' +
+        '到「7. 询/议价函」中确认后发出议价邀请。确认转换？',
+      okText: '转为院内议价',
+      onOk: async () => {
+        try {
+          const res = await convertToNegotiation(inquiryId)
+          message.success(res.data.message || '已转为院内议价')
+          navigate('/inquiry')
+        } catch (err: unknown) {
+          message.error(apiErr(err, '操作失败'))
+        }
+      },
+    })
+  }
+
   const doFetchReplies = async () => {
     setFetching(true)
     try {
@@ -541,6 +563,13 @@ function ReviewWorkspace({ inquiryId, onBack }: { inquiryId: number; onBack: () 
           {review.status === '已完成' && review.result_type === '废标' && (
             <Button type="primary" icon={<SendOutlined />} onClick={doNextRound}>
               开启下一轮
+            </Button>
+          )}
+          {review.status === '已完成' && review.result_type === '废标'
+            && review.letter_type === '询价' && (review.round_no || 1) >= 2 && (
+            <Button icon={<SwapOutlined />} style={{ color: '#d46b08', borderColor: '#d46b08' }}
+              onClick={doConvertNegotiation}>
+              转为院内议价（第{review.round_no}次）
             </Button>
           )}
           <Button icon={<DownloadOutlined />}

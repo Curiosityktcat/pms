@@ -382,6 +382,11 @@ def create_app():
                     conn4.execute(text(
                         f"ALTER TABLE inquiry_letters ADD COLUMN {col} TEXT DEFAULT ''"
                     ))
+            # 轮次覆盖列（同轮询价废标转议价）
+            if "round_no" not in existing4:
+                conn4.execute(text(
+                    "ALTER TABLE inquiry_letters ADD COLUMN round_no INTEGER"
+                ))
             conn4.commit()
 
         # 为 inquiry_suppliers 表追加评审字段（模块8 询议价评审）
