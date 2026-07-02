@@ -347,15 +347,16 @@ function ReviewWorkspace({ inquiryId, onBack }: { inquiryId: number; onBack: () 
     modal.confirm({
       title: `转为第${review?.round_no || ''}次院内议价`,
       width: 520,
-      content: `本次院内询价的废标记录将保留归档；系统另建同轮次（第${review?.round_no || ''}次）` +
-        '的院内议价函草稿（供应商名单默认带入已递交响应的供应商），' +
-        '到「7. 询/议价函」中确认后发出议价邀请。确认转换？',
-      okText: '转为院内议价',
+      content: `本次院内询价的废标记录将保留归档；系统建立同轮次（第${review?.round_no || ''}次）` +
+        '的院内议价评审，已递交响应供应商的资料与报价直接沿用，' +
+        '无需重新发函邀请，转换后立即进入议价评审。确认？',
+      okText: '转为院内议价并评审',
       onOk: async () => {
         try {
           const res = await convertToNegotiation(inquiryId)
           message.success(res.data.message || '已转为院内议价')
-          navigate('/inquiry')
+          // 直接进入新建的议价评审页
+          navigate(`/inquiry-review?inquiry=${res.data.data.id}`)
         } catch (err: unknown) {
           message.error(apiErr(err, '操作失败'))
         }

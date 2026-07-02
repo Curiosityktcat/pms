@@ -520,6 +520,7 @@ def convert_to_negotiation(lid):
         return jsonify({"ok": False, "error": "该项目已开启后续轮次，不能再转议价"}), 400
 
     now = _now()
+    operator = session.get("display_name", "")
     new_letter = InquiryLetter(
         project_id   = letter.project_id,
         type         = "议价",
@@ -527,28 +528,64 @@ def convert_to_negotiation(lid):
         content      = letter.content,
         detail       = letter.detail,
         requirements = letter.requirements,
-        deadline     = "",
-        status       = "草稿",
+        deadline     = _today(),      # 转议价当场评审，不再发函等待
+        status       = "进行中",
         notes        = ((letter.notes or "") +
-                        f"\n[系统] 第{cur_round}次院内询价废标后转院内议价（{now}）").strip(),
-        round_no     = cur_round,   # 同轮：仍为第 cur_round 次
-        created_by   = session.get("display_name", ""),
+                        f"\n[系统] 第{cur_round}次院内询价废标后转院内议价（{now}），"
+                        "沿用询价轮供应商响应资料直接评审").strip(),
+        round_no     = cur_round,     # 同轮：仍为第 cur_round 次
+        created_by   = operator,
         created_at   = now,
         updated_at   = now,
     )
     db.session.add(new_letter)
     db.session.flush()
 
-    # 供应商名单：优先带已递交响应的（议价对象通常就是他们）；无响应则全部带过去
+    # 供应商：带已递交响应的（议价对象就是他们），响应状态/报价原样沿用，
+    # 资格性/符合性结论清空由议价评审重新填写；无响应供应商不带入。
     sups = _suppliers(lid)
     src_sups = [s for s in sups if s.responded] or sups
+    sid_map = {}
     for s in src_sups:
-        db.session.add(InquirySupplier(
+        ns = InquirySupplier(
             inquiry_id    = new_letter.id,
             supplier_name = s.supplier_name,
             contact_name  = s.contact_name,
             contact_phone = s.contact_phone,
             email         = s.email,
+            sent_at       = now,
+            sent_by       = operator + "（询价轮转入）",
+            responded     = s.responded,
+            quote_amount  = s.quote_amount,
+            quote_date    = s.quote_date,
+            quote_note    = s.quote_note,
+        )
+        db.session.add(ns)
+        db.session.flush()
+        sid_map[s.id] = ns.id
+
+    # 复制供应商响应文件（独立副本，议价评审直接引用）
+    resp_files = db.session.execute(
+        db.select(InquirySupplierFile).filter_by(inquiry_id=lid)
+        .order_by(InquirySupplierFile.id)
+    ).scalars().all()
+    os.makedirs(RESP_DIR, exist_ok=True)
+    for i, rf in enumerate(resp_files):
+        if rf.supplier_id not in sid_map:
+            continue
+        src = os.path.join(PMS_ROOT, rf.filepath)
+        if not os.path.exists(src):
+            continue
+        ext = os.path.splitext(rf.filename)[1].lower()
+        safe_name = f"{new_letter.id}_{sid_map[rf.supplier_id]}_{int(time.time())}_{i}{ext}"
+        shutil.copy2(src, os.path.join(RESP_DIR, safe_name))
+        db.session.add(InquirySupplierFile(
+            inquiry_id  = new_letter.id,
+            supplier_id = sid_map[rf.supplier_id],
+            filename    = rf.filename,
+            filepath    = f"询价附件/响应/{safe_name}",
+            uploaded_at = now,
+            uploaded_by = operator + "（询价轮沿用）",
         ))
 
     # 复制函件附件（独立副本，与开下一轮同口径）
@@ -569,14 +606,17 @@ def convert_to_negotiation(lid):
             filename    = att.filename,
             filepath    = f"询价附件/上传/{safe_name}",
             uploaded_at = now,
-            uploaded_by = session.get("display_name", "") + "（询价轮沿用）",
+            uploaded_by = operator + "（询价轮沿用）",
         ))
 
+    # 直接建好议价评审记录（院内议价），转完即可进入 8.1 评审
+    new_review = _build_review(new_letter)
+    db.session.add(new_review)
+
     db.session.commit()
-    kept = "已递交响应的供应商" if any(s.responded for s in sups) else "全部供应商"
     return jsonify({"ok": True,
-                    "message": f"已转为第{cur_round}次院内议价（草稿，名单带入{kept}）。"
-                               f"本次询价废标记录已保留，请到「7. 询/议价函」中确认后发出议价函",
+                    "message": f"已转为第{cur_round}次院内议价，询价废标记录已保留；"
+                               f"供应商响应资料已沿用，可直接进行议价评审",
                     "data": new_letter.to_dict()})
 
 
