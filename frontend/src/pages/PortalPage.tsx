@@ -1,100 +1,114 @@
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Button, Typography, Space } from 'antd'
+import { Card, Row, Col, Typography, Tag } from 'antd'
 import {
-  ShoppingCartOutlined, FileTextOutlined, SettingOutlined, RightOutlined,
+  FormOutlined, ShareAltOutlined, SafetyCertificateOutlined, ProjectOutlined,
+  FileTextOutlined, GlobalOutlined, MailOutlined, TeamOutlined,
+  CheckCircleOutlined, AuditOutlined, FileDoneOutlined, FileSearchOutlined,
+  FileProtectOutlined, BookOutlined, AlertOutlined, FolderOpenOutlined,
+  SettingOutlined, RightOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../hooks/useAuth'
 
 const { Title, Paragraph, Text } = Typography
 
-interface Entry { label: string; path: string }
-interface Group {
-  key: string; title: string; desc: string; color: string
-  icon: React.ReactNode; primary: Entry; links: Entry[]; adminOnly?: boolean
+interface Tile {
+  no?: string           // 采购流程序号
+  label: string
+  path: string
+  icon: React.ReactNode
+  /** 有任一权限即可见；空数组 = 不受控（所有人可见） */
+  anyPerm: string[]
+  ownerOnly?: boolean   // 仅黄新博（私人文件库）
 }
 
-const GROUPS: Group[] = [
-  {
-    key: 'biz', title: '采购业务', desc: '从需求编制到立项、开标、合同的完整采购流程',
-    color: '#1677ff', icon: <ShoppingCartOutlined />,
-    primary: { label: '进入采购流程', path: '/flow' },
-    links: [
-      { label: '采购需求编制', path: '/procurement-demand' },
-      { label: '项目分发', path: '/project-distribution' },
-      { label: '开标管理', path: '/bid' },
-      { label: '采购文件编制', path: '/procurement-doc' },
-      { label: '投标审查', path: '/bid-review' },
-      { label: '询议价', path: '/inquiry' },
-      { label: '合同管理', path: '/contract' },
-      { label: '归档', path: '/archive' },
-    ],
-  },
-  {
-    key: 'doc', title: '文档工具', desc: '文件 OCR / 格式转换、法规知识库、个人文件库',
-    color: '#52c41a', icon: <FileTextOutlined />,
-    primary: { label: '文件 OCR / 转换', path: '/file-ocr' },
-    links: [
-      { label: '文件 OCR', path: '/file-ocr' },
-      { label: '法规库', path: '/law-library' },
-      { label: '文件库', path: '/filebox' },
-    ],
-  },
-  {
-    key: 'admin', title: '后台管理', desc: '权限、大模型、邮件等系统级配置', adminOnly: true,
-    color: '#722ed1', icon: <SettingOutlined />,
-    primary: { label: '进入后台', path: '/admin' },
-    links: [
-      { label: '权限管理', path: '/admin/permissions' },
-      { label: '大模型配置', path: '/admin/model' },
-      { label: 'Token 用量', path: '/admin/usage' },
-      { label: '邮件配置', path: '/admin/email' },
-    ],
-  },
+// ── 采购流程（严格按业务顺序 1~11）──────────────────────────────
+const FLOW: Tile[] = [
+  { no: '1', label: '采购需求编制', path: '/procurement-demand', icon: <FormOutlined />,
+    anyPerm: ['procurement-demand-gov', 'internal-bid-demand', 'procurement-demand-sole',
+              'procurement-demand-inquiry', 'procurement-demand-emergency'] },
+  { no: '2', label: '采购项目分发', path: '/project-distribution', icon: <ShareAltOutlined />,
+    anyPerm: ['dispatch'] },
+  { no: '3', label: '代理协议', path: '/agency-agreement', icon: <SafetyCertificateOutlined />,
+    anyPerm: ['agency-agreement'] },
+  { no: '4', label: '采购部项目管理', path: '/flow', icon: <ProjectOutlined />,
+    anyPerm: ['new', 'flow', 'bid', 'bid-board', 'auth-letter'] },
+  { no: '5', label: '采购文件编制', path: '/procurement-doc/demand', icon: <FileTextOutlined />,
+    anyPerm: ['doc'] },
+  { no: '6', label: '挂网管理', path: '/announcement', icon: <GlobalOutlined />,
+    anyPerm: ['announcement'] },
+  { no: '7', label: '询/议价函、紧急采购', path: '/inquiry', icon: <MailOutlined />,
+    anyPerm: ['inquiry'] },
+  { no: '8', label: '项目评审', path: '/inquiry-review', icon: <TeamOutlined />,
+    anyPerm: ['inquiry-review', 'project-review'] },
+  { no: '9', label: '采购结果确认', path: '/procurement-result', icon: <CheckCircleOutlined />,
+    anyPerm: ['procurement-result'] },
+  { no: '10', label: '合同管理', path: '/contract', icon: <AuditOutlined />,
+    anyPerm: ['contract'] },
+  { no: '11', label: '归档', path: '/archive', icon: <FileDoneOutlined />,
+    anyPerm: ['archive'] },
+]
+
+// ── 工具集合（流程之外的能力）───────────────────────────────────
+const TOOLS: Tile[] = [
+  { label: '文件识别（OCR）', path: '/file-ocr', icon: <FileSearchOutlined />,
+    anyPerm: ['file-ocr'] },
+  { label: '投标文件审查', path: '/bid-review', icon: <FileProtectOutlined />,
+    anyPerm: ['bid-review'] },
+  { label: '法规库', path: '/law-library', icon: <BookOutlined />, anyPerm: [] },
+  { label: '投诉质疑数据库', path: '/supervision', icon: <AlertOutlined />, anyPerm: [] },
+  { label: '我的文件库', path: '/filebox', icon: <FolderOpenOutlined />,
+    anyPerm: [], ownerOnly: true },
+  { label: '基础数据维护', path: '/agency-manage', icon: <SettingOutlined />, anyPerm: [] },
 ]
 
 export default function PortalPage() {
   const nav = useNavigate()
   const { user } = useAuth()
-  const groups = GROUPS.filter(g => !g.adminOnly || user?.is_admin)
+  const perms = new Set(user?.perms || [])
+  const visible = (t: Tile) => {
+    if (t.ownerOnly && user?.username !== '黄新博') return false
+    return t.anyPerm.length === 0 || t.anyPerm.some(p => perms.has(p))
+  }
+  const flow = FLOW.filter(visible)
+  const tools = TOOLS.filter(visible)
+
+  const tile = (t: Tile, color: string) => (
+    <Col xs={12} sm={8} md={6} lg={t.no ? 4 : 6} key={t.path} style={{ display: 'flex' }}>
+      <Card
+        hoverable
+        size="small"
+        style={{ width: '100%', textAlign: 'center', borderTop: `3px solid ${color}` }}
+        styles={{ body: { padding: '18px 8px 14px' } }}
+        onClick={() => nav(t.path)}
+      >
+        <div style={{ fontSize: 26, color, marginBottom: 8 }}>{t.icon}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
+          {t.no && <Tag color={color} style={{ marginRight: 4, padding: '0 5px' }}>{t.no}</Tag>}
+          {t.label}
+        </div>
+      </Card>
+    </Col>
+  )
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '8px 4px' }}>
-      <Title level={3} style={{ marginBottom: 2 }}>采购管理系统</Title>
-      <Paragraph type="secondary" style={{ marginBottom: 24 }}>
-        欢迎{user?.display_name ? `，${user.display_name}` : ''} · 选择一个工作区进入
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '8px 4px' }}>
+      <Title level={3} style={{ marginBottom: 2 }}>自行采购管理信息系统</Title>
+      <Paragraph type="secondary" style={{ marginBottom: 20 }}>
+        欢迎{user?.display_name ? `，${user.display_name}` : ''} · 选择要进入的功能
       </Paragraph>
-      <Row gutter={[20, 20]}>
-        {groups.map(g => (
-          <Col xs={24} md={12} lg={8} key={g.key}>
-            <Card
-              hoverable
-              style={{ height: '100%', borderTop: `3px solid ${g.color}` }}
-              styles={{ body: { display: 'flex', flexDirection: 'column', height: '100%' } }}
-              onClick={() => nav(g.primary.path)}
-            >
-              <Space align="center" style={{ marginBottom: 8 }}>
-                <span style={{ fontSize: 26, color: g.color }}>{g.icon}</span>
-                <Title level={4} style={{ margin: 0 }}>{g.title}</Title>
-              </Space>
-              <Text type="secondary" style={{ minHeight: 40, display: 'block' }}>{g.desc}</Text>
-              <div style={{ margin: '14px 0', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {g.links.map(l => (
-                  <Button
-                    key={l.path} size="small"
-                    onClick={e => { e.stopPropagation(); nav(l.path) }}
-                  >{l.label}</Button>
-                ))}
-              </div>
-              <Button
-                type="primary" block style={{ marginTop: 'auto', background: g.color, borderColor: g.color }}
-                onClick={e => { e.stopPropagation(); nav(g.primary.path) }}
-              >
-                {g.primary.label} <RightOutlined />
-              </Button>
-            </Card>
-          </Col>
-        ))}
-      </Row>
+
+      <Card
+        title={<span><RightOutlined style={{ color: '#1677ff' }} /> 采购流程</span>}
+        extra={<Text type="secondary">按业务顺序 1 → 11</Text>}
+        style={{ marginBottom: 20 }}
+      >
+        <Row gutter={[14, 14]}>{flow.map(t => tile(t, '#1677ff'))}</Row>
+        {flow.length === 0 && <Text type="secondary">当前账号没有可用的流程模块</Text>}
+      </Card>
+
+      <Card title={<span><RightOutlined style={{ color: '#52c41a' }} /> 工具集合</span>}>
+        <Row gutter={[14, 14]}>{tools.map(t => tile(t, '#52c41a'))}</Row>
+      </Card>
     </div>
   )
 }

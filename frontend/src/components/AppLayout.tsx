@@ -456,14 +456,19 @@ export default function AppLayout() {
         borderBottom: '1px solid #e8eaed',
         background: '#fff',
       }}>
-        <div style={{
-          color: '#202124',
-          fontWeight: 600,
-          fontSize: 14,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-        }}>
+        <div
+          onClick={() => navigate('/portal')}
+          title="回到功能分流页"
+          style={{
+            color: '#202124',
+            fontWeight: 600,
+            fontSize: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            cursor: 'pointer',
+          }}
+        >
           <span style={{
             background: '#1a73e8',
             borderRadius: 8,

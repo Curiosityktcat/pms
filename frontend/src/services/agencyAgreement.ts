@@ -31,3 +31,30 @@ export const submitAgencyAgreementToRdweb = (
 
 export const getRdwebAgencyStatus = (projectId: number) =>
   api.get<{ ok: boolean; data: RdwebStatus }>(`/projects/${projectId}/agency-agreement/rdweb-status`)
+
+// ── rd-web 审签附件（自行上传 / 从模板库选用，提交审签时随单带上）──────
+export interface AgencyAttachment {
+  name: string
+  size: number
+  updated_at: string
+}
+
+export const listAgencyAttachments = (projectId: number) =>
+  api.get<{ ok: boolean; data: AgencyAttachment[] }>(
+    `/projects/${projectId}/agency-agreement/attachments`)
+
+export const uploadAgencyAttachment = (projectId: number, file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return api.post<{ ok: boolean; data: AgencyAttachment[] }>(
+    `/projects/${projectId}/agency-agreement/attachments`, fd,
+    { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+
+export const addAgencyAttachmentFromTemplate = (projectId: number, key: string) =>
+  api.post<{ ok: boolean; data: AgencyAttachment[] }>(
+    `/projects/${projectId}/agency-agreement/attachments/from-template`, { key })
+
+export const deleteAgencyAttachment = (projectId: number, name: string) =>
+  api.delete<{ ok: boolean; data: AgencyAttachment[] }>(
+    `/projects/${projectId}/agency-agreement/attachments/${encodeURIComponent(name)}`)

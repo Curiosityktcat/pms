@@ -4,17 +4,47 @@ import tempfile
 import threading
 import datetime as _dt
 
-from flask import Blueprint, request, session, jsonify, send_file, current_app
+from flask import Blueprint, request, session, jsonify, send_file
+from werkzeug.utils import secure_filename
+
 from models import db
 from models.project import Project
 from models.agency import Agency
-from models.contract import Contract
 from routes.utils import login_required
 
 bp = Blueprint("agency_agreement", __name__, url_prefix="/api/projects")
 
 _rdweb: dict = {}
 _rdweb_lock = threading.Lock()
+
+# rd-web 审签附件（每项目一个目录：自行上传 + 从模板库复制，提交时全部随单带上）
+_PMS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ATTACH_ROOT = os.path.join(_PMS_ROOT, "uploads", "agency_agreement")
+ATTACH_ALLOWED = {".docx", ".doc", ".xlsx", ".xls", ".pdf", ".jpg", ".jpeg", ".png", ".zip"}
+
+
+def _attach_dir(pid: int) -> str:
+    d = os.path.join(ATTACH_ROOT, str(pid))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _safe_name(name: str) -> str:
+    """保留中文文件名，仅剥离路径与危险字符。"""
+    name = os.path.basename(name or "").replace("\x00", "").strip()
+    if name in ("", ".", ".."):
+        name = secure_filename(name) or "attachment"
+    return name
+
+
+def _check_project_access(project):
+    """经办人仅限本人项目，代理机构仅限本机构项目。返回错误响应或 None。"""
+    role = session.get("role", "")
+    if role == "officer" and project.officer != session.get("display_name", ""):
+        return jsonify({"ok": False, "error": "无权操作该项目"}), 403
+    if role == "agency" and project.agency_code != session.get("agency_code", ""):
+        return jsonify({"ok": False, "error": "无权操作该项目"}), 403
+    return None
 
 
 @bp.route("/<int:pid>/agency-agreement", methods=["POST"])
@@ -65,6 +95,100 @@ def generate_agency_agreement(pid):
 
 
 # ══════════════════════════════════════════════════════════════════
+# rd-web 审签附件管理（自行上传 / 从模板库选用）
+# ══════════════════════════════════════════════════════════════════
+
+def _list_attachments(pid: int) -> list:
+    d = _attach_dir(pid)
+    out = []
+    for n in sorted(os.listdir(d)):
+        p = os.path.join(d, n)
+        if os.path.isfile(p):
+            out.append({
+                "name": n,
+                "size": os.path.getsize(p),
+                "updated_at": _dt.datetime.fromtimestamp(os.path.getmtime(p))
+                .strftime("%Y-%m-%d %H:%M"),
+            })
+    return out
+
+
+@bp.route("/<int:pid>/agency-agreement/attachments", methods=["GET"])
+@login_required
+def list_agency_attachments(pid):
+    project = db.session.get(Project, pid)
+    if not project:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    err = _check_project_access(project)
+    if err:
+        return err
+    return jsonify({"ok": True, "data": _list_attachments(pid)})
+
+
+@bp.route("/<int:pid>/agency-agreement/attachments", methods=["POST"])
+@login_required
+def upload_agency_attachment(pid):
+    """自行上传附件。"""
+    project = db.session.get(Project, pid)
+    if not project:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    err = _check_project_access(project)
+    if err:
+        return err
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "未收到文件"}), 400
+    name = _safe_name(f.filename)
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in ATTACH_ALLOWED:
+        return jsonify({"ok": False,
+                        "error": f"不支持的附件格式：{ext or '未知'}"}), 400
+    f.save(os.path.join(_attach_dir(pid), name))
+    return jsonify({"ok": True, "data": _list_attachments(pid)})
+
+
+@bp.route("/<int:pid>/agency-agreement/attachments/from-template", methods=["POST"])
+@login_required
+def add_agency_attachment_from_template(pid):
+    """从模板维护库复制一份模板作为附件（上传并选用模板）。"""
+    project = db.session.get(Project, pid)
+    if not project:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    err = _check_project_access(project)
+    if err:
+        return err
+    key = (request.get_json(silent=True) or {}).get("key", "")
+    from routes.template_api import _BY_KEY, _abs_path
+    tpl = _BY_KEY.get(key)
+    if not tpl:
+        return jsonify({"ok": False, "error": f"未知模板：{key}"}), 404
+    src = _abs_path(tpl)
+    if not os.path.isfile(src):
+        return jsonify({"ok": False, "error": "模板文件不存在，请先在模板维护中上传"}), 404
+    import shutil
+    dst = os.path.join(_attach_dir(pid), _safe_name(tpl["rel"][-1]))
+    shutil.copyfile(src, dst)
+    return jsonify({"ok": True, "data": _list_attachments(pid)})
+
+
+@bp.route("/<int:pid>/agency-agreement/attachments/<path:name>", methods=["DELETE"])
+@login_required
+def delete_agency_attachment(pid, name):
+    project = db.session.get(Project, pid)
+    if not project:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    err = _check_project_access(project)
+    if err:
+        return err
+    d = _attach_dir(pid)
+    p = os.path.abspath(os.path.join(d, _safe_name(name)))
+    if not p.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(p):
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    os.remove(p)
+    return jsonify({"ok": True, "data": _list_attachments(pid)})
+
+
+# ══════════════════════════════════════════════════════════════════
 # rd-web 代理协议审签直连提交
 # ══════════════════════════════════════════════════════════════════
 
@@ -92,7 +216,6 @@ def submit_agency_agreement_to_rdweb(pid):
     from routes.utils import get_rdweb_creds
     _rdweb_user, _rdweb_pass = get_rdweb_creds(session.get("display_name", ""))
 
-    app = current_app._get_current_object()
     body = request.get_json(silent=True) or {}
 
     # 代理机构信息
@@ -158,27 +281,21 @@ def submit_agency_agreement_to_rdweb(pid):
 
             from services.contract_submit import submit_contract as rdweb_submit
             _display_name = f"委托代理服务协议_{rdweb_data.get('合同编码', _proj_number)}.docx"
+            # 附件 = 生成的协议 Word + 项目附件目录（自行上传/模板选用）
+            attachments = [{"path": tmp_path, "name": _display_name}]
+            for item in _list_attachments(_proj_id):
+                attachments.append({
+                    "path": os.path.join(_attach_dir(_proj_id), item["name"]),
+                    "name": item["name"],
+                })
             res = rdweb_submit(
                 data=rdweb_data,
-                attachments=[{"path": tmp_path, "name": _display_name}],
+                attachments=attachments,
                 loginuser=_rdweb_user,
                 password=_rdweb_pass,
             )
 
-            # rd-web 成功后自动在 PMS 创建代理协议合同记录（已审核状态）
-            if res.get("ok"):
-                _ensure_agency_contract(
-                    app=app,
-                    project_id=_proj_id,
-                    project_name=_proj_name,
-                    project_number=_proj_number,
-                    agency_name=_agency_name,
-                    legal_rep=legal_rep,
-                    agency_phone=agency_phone,
-                    agency_address=_agency_address,
-                    amount_str=amount_str,
-                    officer_name=_officer_name,
-                )
+            # 注：代理协议独立走本模块审签，不再推送到合同管理（合同审签）。
 
             with _rdweb_lock:
                 _rdweb[pid] = {
@@ -207,40 +324,3 @@ def agency_agreement_rdweb_status(pid):
     return jsonify({"ok": True, "data": _rdweb.get(pid, {
         "running": False, "ok": None, "serial_no": "", "msg": ""
     })})
-
-
-def _ensure_agency_contract(*, app, project_id, project_name, project_number,
-                             agency_name, legal_rep, agency_phone, agency_address,
-                             amount_str, officer_name):
-    """在 PMS 合同表中创建代理协议合同记录（幂等：相同 contract_number 只创建一次）。"""
-    contract_number = f"{project_number}-代理-HT"
-    contract_name   = f"委托代理服务协议—{project_name}"
-    now = _dt.datetime.now().isoformat(timespec="seconds")
-
-    with app.app_context():
-        existing = db.session.execute(
-            db.select(Contract).filter_by(
-                project_id=project_id, contract_number=contract_number
-            )
-        ).scalar_one_or_none()
-        if existing:
-            return  # 已存在，幂等
-
-        c = Contract(
-            project_id      = project_id,
-            contract_name   = contract_name,
-            contract_number = contract_number,
-            package_no      = "代理",
-            status          = "审核完成",   # rd-web 提交即视为已审核
-            supplier_name      = agency_name,
-            supplier_legal_rep = legal_rep,
-            supplier_contact   = agency_phone,
-            supplier_address   = agency_address,
-            amount_is_text  = 1,
-            amount_text     = amount_str or "按协议约定",
-            created_by      = officer_name,
-            created_at      = now,
-            updated_at      = now,
-        )
-        db.session.add(c)
-        db.session.commit()

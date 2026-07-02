@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Card, Upload, Button, Space, Tag, Typography, Input, App, Spin, Empty,
+  Radio, Alert,
 } from 'antd'
 import {
   InboxOutlined, FileSearchOutlined, CopyOutlined, DownloadOutlined,
   ReloadOutlined, ClearOutlined,
 } from '@ant-design/icons'
 import type { UploadFile } from 'antd/es/upload/interface'
-import { ocrRecognize, ocrHealth, type OcrResult } from '../services/ocr'
+import { ocrRecognize, ocrHealth, type OcrResult, type OcrEngine } from '../services/ocr'
 
 const { Title, Text, Paragraph } = Typography
 const { Dragger } = Upload
@@ -21,6 +22,7 @@ export default function FileOcrPage() {
   const [result, setResult] = useState<OcrResult | null>(null)
   const [online, setOnline] = useState<boolean | null>(null)
   const [server, setServer] = useState('')
+  const [engine, setEngine] = useState<OcrEngine>('classic')
 
   const checkHealth = useCallback(() => {
     setOnline(null)
@@ -43,10 +45,16 @@ export default function FileOcrPage() {
     setRecognizing(true)
     setResult(null)
     try {
-      const res = await ocrRecognize(selectedFile)
+      const res = await ocrRecognize(selectedFile, engine)
       if (res.data.ok) {
         setResult(res.data.data)
-        message.success('识别完成')
+        const d = res.data.data
+        if (d.usage) {
+          message.success(`识别完成，本次消耗 ${d.usage.total_tokens} token`
+            + (d.cost != null ? `（约 ${d.cost} 元）` : ''))
+        } else {
+          message.success('识别完成')
+        }
       } else {
         message.error(res.data.error || '识别失败')
       }
@@ -108,6 +116,30 @@ export default function FileOcrPage() {
       </Card>
 
       <Card title="选择文件">
+        <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
+          <Radio.Group
+            value={engine}
+            onChange={(e) => setEngine(e.target.value as OcrEngine)}
+            disabled={recognizing}
+          >
+            <Radio.Button value="classic">传统 OCR（免费）</Radio.Button>
+            <Radio.Button value="paddle">PaddleOCR-VL 大模型（按 token 计费）</Radio.Button>
+          </Radio.Group>
+          {engine === 'paddle' ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="大模型识别按 token 计费，价格较贵"
+              description="按系统 AI 定价从余额扣费，页数越多消耗越大。复杂版式、表格、手写、印章等效果显著更好；清晰打印件建议优先用免费的传统 OCR。"
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="传统 OCR 免费、速度快，适合清晰的打印文件；复杂版式或手写件请切换大模型识别。"
+            />
+          )}
+        </Space>
         <Dragger
           accept={ACCEPT}
           maxCount={1}
@@ -149,6 +181,13 @@ export default function FileOcrPage() {
           <Space>
             识别结果
             {result?.pages != null && <Tag color="blue">{result.pages} 页</Tag>}
+            {result?.engine === 'paddle' && <Tag color="purple">大模型</Tag>}
+            {result?.engine === 'classic' && <Tag>传统 OCR</Tag>}
+            {result?.usage && (
+              <Tag color="orange">{result.usage.total_tokens} token
+                {result.cost != null ? ` / 约${result.cost}元` : ''}</Tag>
+            )}
+            {result?.balance != null && <Tag color="gold">余额 {result.balance} 元</Tag>}
             {result?.filename && <Text type="secondary">{result.filename}</Text>}
           </Space>
         }
