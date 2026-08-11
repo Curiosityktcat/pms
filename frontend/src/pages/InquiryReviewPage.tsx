@@ -40,6 +40,7 @@ import {
   type InquiryReview, type InquiryReviewListRow, type InquirySupplier,
   type InquiryAttachment,
 } from '../services/inquiry'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
@@ -147,6 +148,7 @@ function ReviewList({ onOpen }: { onOpen: (id: number) => void }) {
       ),
       fields: [
         { label: '截止', value: r.deadline ? <span>{r.deadline} {r.deadline_passed ? <Tag color="green">已截止</Tag> : <Tag color="orange">未到期</Tag>}</span> : '' },
+        { label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> },
         { label: '供应商', value: `${r.supplier_count} 家` },
         { label: '办法', value: r.method },
       ],

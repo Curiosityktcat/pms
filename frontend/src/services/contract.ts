@@ -1,6 +1,8 @@
+import type { Pending } from './project'
 import api from './api'
 
 export interface Contract {
+  pending?: Pending          // 当前处理人
   id: number
   project_id: number
   contract_number: string

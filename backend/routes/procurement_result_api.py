@@ -174,7 +174,10 @@ def list_results():
         q = q.join(Project, ProcurementResult.project_id == Project.id).where(
             Project.officer == session.get("display_name", ""))
     rows = db.session.execute(q.order_by(ProcurementResult.id.desc())).scalars().all()
-    return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
+    out = [r.to_dict() for r in rows]
+    from services.pending_owner import attach_pending
+    attach_pending(out, "project_id")         # 每行带上当前处理人
+    return jsonify({"ok": True, "data": out})
 
 
 @bp.route("", methods=["POST"])
@@ -396,6 +399,41 @@ def recheck_result(rid):
                     "data": result.to_dict()})
 
 
+# 走代理招标的轨道（其余方式不做 8.5 评审资料这一步）
+_AGENCY_TRACK = ("院内竞选", "院内单一来源采购")
+
+
+def _review_gate(result):
+    """8.5 项目评审资料未确认 → 不许确认采购结果。返回错误响应或 None。
+
+    为什么要拦：确认采购结果会立刻驱动按包循环（成交的包进合同阶段、废标的包
+    自动开下一轮），是个难回退的动作。评审资料还没确认（尤其是被驳回，说明成交
+    结果本身有疑问）就把结果确认掉，等于拿一份还没坐实的评审结论去定标。
+    旧数据没有轮次记录时不拦，避免历史项目被卡死。
+    """
+    proj = db.session.get(Project, result.project_id)
+    if not proj or (proj.method or "") not in _AGENCY_TRACK:
+        return None
+    rnd = db.session.execute(
+        db.select(ProcurementRound).filter_by(
+            project_id=result.project_id, round_number=result.round_number or 1)
+    ).scalars().first()
+    if rnd is None:
+        return None
+    st = (rnd.review_status or "")
+    if st == "已确认":
+        return None
+    tip = {
+        "": "尚未上传提交",
+        "待确认": "代理机构已提交、待你确认",
+        "已驳回": f"已被驳回{f'（第{rnd.review_reject_count}次）' if rnd.review_reject_count else ''}，待代理机构补件后重新提交",
+    }.get(st, st)
+    return jsonify({
+        "ok": False,
+        "error": f"「8.5 项目评审资料」{tip}，请先确认评审资料，再确认采购结果",
+    }), 400
+
+
 @bp.route("/<int:rid>/confirm", methods=["POST"])
 @login_required
 def confirm_result(rid):
@@ -408,6 +446,9 @@ def confirm_result(rid):
         return jsonify({"ok": False, "error": "已确认，请勿重复操作"}), 400
     if result.status != "待确认":
         return jsonify({"ok": False, "error": "请先由代理机构提交后再确认"}), 400
+    gate = _review_gate(result)
+    if gate:
+        return gate
     result.status = "已确认"
     result.updated_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     msg = _apply_result_to_cycle(result)   # 驱动按包循环（成交退出/废标自动开下一轮）

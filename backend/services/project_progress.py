@@ -51,6 +51,15 @@ def _node(key, done, at="", by="", **extra):
     return d
 
 
+def _pending(pid):
+    """当前处理人（延迟导入避免与 pending_owner 循环依赖；出错不拖垮进展图）。"""
+    try:
+        from services.pending_owner import pending_for
+        return pending_for(pid)
+    except Exception:
+        return None
+
+
 def build_progress(project):
     """返回 {"project": {...}, "rounds": [{round_number, status, nodes:[...]}, ...]}。"""
     pid = project.id
@@ -159,6 +168,7 @@ def build_progress(project):
         "project": {
             "id": pid, "name": project.name, "number": project.number or "",
             "method": method, "current_round": current_round, "current_stage": current_stage,
+            "pending": _pending(pid),
         },
         "rounds": out_rounds,
     }
@@ -223,6 +233,7 @@ def _build_inquiry_progress(project):
         "project": {
             "id": pid, "name": project.name, "number": project.number or "",
             "method": project.method or "", "current_round": cr, "current_stage": cs,
+            "pending": _pending(pid),
         },
         "rounds": out_rounds,
     }

@@ -1,5 +1,25 @@
 import api from './api'
 
+/**
+ * 当前处理人：项目此刻卡在谁手上（后端 services/pending_owner.py）。
+ * null = 本环节无人待办（已办完/已归档/草稿）。
+ */
+export interface PendingEntry {
+  event: string
+  label: string          // 「待确认采购需求（5.1）」
+  role: 'officer' | 'agency' | string
+  role_label: string     // 经办人 / 代理机构
+  owner: string          // 系统账号（可能为空）
+  owner_name: string     // 姓名 / 代理机构名
+  is_reject: boolean     // 是被驳回后的返工
+  since: string          // 停留起始（本轮最后一次审批动作时间）
+  waiting_days: number | null
+}
+export type Pending = (PendingEntry & {
+  current_round: number
+  others: PendingEntry[]  // 并行待处理事项（授权函/更正公告/合同/考核等）
+}) | null
+
 export interface Project {
   id: number
   number: string
@@ -45,6 +65,7 @@ export interface Project {
   pending_contract?: number     // 已中标未签约的包数
   contract_rdweb_submitted?: boolean  // 合同已推送 rd-web 审签
   agency_rdweb_submitted?: boolean    // 代理协议已推送 rd-web 审签
+  pending?: Pending                   // 当前处理人
 }
 
 export interface Agency {
@@ -108,6 +129,7 @@ export interface ProjectProgress {
   project: {
     id: number; name: string; number: string; method: string
     current_round: number; current_stage: string
+    pending?: Pending
   }
   rounds: ProgressRound[]
 }

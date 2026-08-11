@@ -11,6 +11,7 @@ import {
   FileImageOutlined, FileOutlined, PaperClipOutlined, StopOutlined,
 } from '@ant-design/icons'
 import RecordCards from '../components/RecordCards'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import HermesPanel, { type HermesField } from '../components/HermesPanel'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 import {
@@ -578,6 +579,7 @@ export default function ContractPage() {
             ) : '待上传',
           },
         ]
+    fields.unshift({ label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> })
     // 推送审签的结果要看得见——否则推完不知道有没有成、到哪一步了
     fields.push({
       label: '审签推送',

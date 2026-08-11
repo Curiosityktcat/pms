@@ -8,6 +8,7 @@ import dayjs from 'dayjs'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type UploadRequestOption = any
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import {
   PlusOutlined, DownloadOutlined, EditOutlined, DeleteOutlined,
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
@@ -683,6 +684,7 @@ export default function AnnouncementPage() {
     const isOpened = tab === 'opened'
     const isPublished = tab === 'published'
     const fields: { label: string; value: React.ReactNode }[] = [
+      { label: '当前处理人', value: <PendingOwnerTag p={record.pending} compact /> },
       { label: '代理', value: record.agency_name },
       { label: '开标', value: record.response_deadline },
     ]

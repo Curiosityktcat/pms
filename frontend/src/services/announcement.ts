@@ -1,3 +1,4 @@
+import type { Pending } from './project'
 import axios from 'axios'
 
 export interface AnnProject {
@@ -11,6 +12,7 @@ export interface AnnProject {
 }
 
 export interface Announcement {
+  pending?: Pending          // 当前处理人
   id: number
   project_id: number
   project_name?: string

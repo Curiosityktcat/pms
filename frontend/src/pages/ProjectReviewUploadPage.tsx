@@ -16,6 +16,7 @@ import {
   submitReview, confirmReview, rejectReview,
   reviewPreviewUrl, reviewDownloadUrl, type ReviewProject,
 } from '../services/projectReview'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 
 const { Text } = Typography
 
@@ -135,6 +136,7 @@ export default function ProjectReviewUploadPage() {
         ? <Tag color="default" style={{ marginInlineEnd: 0 }}>历史资料</Tag>
         : undefined,
       fields: [
+        { label: '当前处理人', value: <PendingOwnerTag p={p.pending} compact /> },
         { label: '采购方式', value: p.method },
         { label: '代理机构', value: p.agency_name || p.agency_code || '—' },
         { label: '轮次', value: `第 ${p.current_round} 轮` },

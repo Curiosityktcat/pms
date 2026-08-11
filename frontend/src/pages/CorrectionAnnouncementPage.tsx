@@ -16,6 +16,7 @@ import {
   generateAnnouncementWord, listFiles, deleteFile, downloadFileUrl,
   type Announcement, type AnnProject, type AnnAttachment,
 } from '../services/announcement'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useAuth } from '../hooks/useAuth'
 import { cnOrdinal } from '../utils/ordinal'
 import { parseCnDate, fmtCnDateTime } from '../utils/cnDate'
@@ -292,6 +293,7 @@ export default function CorrectionAnnouncementPage() {
         ? r.corr_scope.split('、').map(s => <Tag key={s} color="purple" style={{ marginInlineEnd: 0 }}>{s}更正</Tag>)
         : undefined,
       fields: [
+        { label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> },
         { label: '发布时间', value: r.confirmed_at ? r.confirmed_at.replace('T', ' ') : '' },
         ...(r.status === '已驳回' && r.reject_reason
           ? [{

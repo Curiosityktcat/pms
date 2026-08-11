@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Modal, Steps, Tag, Spin, Empty, Typography, App } from 'antd'
 import {
-  getProjectProgress, type ProjectProgress, type ProgressNode,
+  getProjectProgress, type ProjectProgress, type ProgressNode, type Pending,
 } from '../services/project'
+import PendingOwnerTag from './PendingOwnerTag'
 
 const { Text } = Typography
 
@@ -22,9 +23,13 @@ function fmt(t: string): string {
   return t ? t.replace('T', ' ').slice(0, 16) : ''
 }
 
-/** 单个节点的描述（时间 + 操作人 + 各节点专属明细）。 */
-function NodeDesc({ node }: { node: ProgressNode }) {
+/** 单个节点的描述（时间 + 操作人 + 各节点专属明细）。
+ *  pending 有值 = 流程正卡在这个节点上，把「等谁办、等多久」直接写在节点下。 */
+function NodeDesc({ node, pending }: { node: ProgressNode; pending?: Pending }) {
   const lines: React.ReactNode[] = []
+  if (pending) {
+    lines.push(<div key="pending" style={{ marginBottom: 2 }}><PendingOwnerTag p={pending} /></div>)
+  }
   if (node.at || node.by) {
     lines.push(
       <div key="meta">
@@ -117,6 +122,7 @@ export default function ProjectProgressModal({
           {data.project.name}
           <Tag color="blue" style={{ marginInlineStart: 8 }}>当前第 {data.project.current_round} 次</Tag>
           <Tag>{stageLabel(data)}</Tag>
+          <PendingOwnerTag p={data.project.pending} doneText="本轮无待处理" />
         </span>
       ) : '项目进展'}
     >
@@ -142,7 +148,13 @@ export default function ProjectProgressModal({
                     : (isLatest(ri) && data.project.current_stage === n.key
                         ? ('process' as const)
                         : ('wait' as const)),
-                  description: <NodeDesc node={n} />,
+                  description: (
+                    <NodeDesc
+                      node={n}
+                      pending={isLatest(ri) && data.project.current_stage === n.key
+                        ? data.project.pending : null}
+                    />
+                  ),
                 }))}
               />
             </div>

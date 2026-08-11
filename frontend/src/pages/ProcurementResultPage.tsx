@@ -72,6 +72,7 @@ import {
   type PriceAttachment,
 } from '../services/procurementResult'
 import { getProjects, type Project } from '../services/project'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import { getProjectRounds } from '../services/procurementDoc'
 import { useAuth } from '../hooks/useAuth'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
@@ -486,6 +487,7 @@ export default function ProcurementResultPage() {
       statusColor: STATUS_COLOR[r.status],
       tags: r.procurement_method ? <Tag bordered={false} style={{ marginInlineEnd: 0 }}>{r.procurement_method}</Tag> : undefined,
       fields: [
+        { label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> },
         { label: '竞选时间', value: r.bid_time },
         { label: '代理', value: r.agency_name },
         { label: '结果', value: packagesSummary(r.packages) },
@@ -515,7 +517,16 @@ export default function ProcurementResultPage() {
           <Button size="small" icon={<PaperClipOutlined />} onClick={() => setAttachModal({ open: true, result: r })}>附件</Button>
           {r.status === '待确认' && canConfirm && (
             <>
-              <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleConfirm(r)}>确认</Button>
+              {(() => {
+                // 8.5 评审资料未确认时后端会拒绝确认采购结果，按钮同步禁掉并写明卡在哪
+                const reviewBlocked = r.pending?.event?.startsWith('review') ? r.pending.label : ''
+                return (
+                  <Tooltip title={reviewBlocked ? `${reviewBlocked}——请先在「8.5 项目评审资料上传」确认评审资料，再确认采购结果` : ''}>
+                    <Button size="small" type="primary" ghost disabled={!!reviewBlocked}
+                      icon={<CheckCircleOutlined />} onClick={() => handleConfirm(r)}>确认</Button>
+                  </Tooltip>
+                )
+              })()}
               {/* 驳回=单据编制有误，打回改；不确认=不认可评审委员会的结果本身 */}
               <Tooltip title="确认函本身有误（供应商名称、金额、包号等），打回代理机构修改">
                 <Button size="small" danger ghost icon={<StopOutlined />}

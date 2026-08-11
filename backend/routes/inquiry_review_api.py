@@ -162,6 +162,8 @@ def list_reviews():
             "method": rv.method if rv else ("院内询价" if l.type == "询价" else "院内议价"),
             "completed_at": rv.completed_at if rv else "",
         })
+    from services.pending_owner import attach_pending
+    attach_pending(rows, "project_id")        # 每行带上当前处理人
     return jsonify({"ok": True, "data": rows})
 
 

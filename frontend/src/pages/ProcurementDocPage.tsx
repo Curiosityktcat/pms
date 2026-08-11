@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined, PaperClipOutlined, ContactsOutlined, RobotOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import {
   generateBidCover, generateContentConfirm, setDocConfirm, saveDocContact,
   getDocConfirmations, type DemandConfirmation,
@@ -221,6 +222,7 @@ export default function ProcurementDocPage() {
       : (r.agency_code ? <Tag style={{ marginInlineEnd: 0 }}>{r.agency_code}</Tag> : undefined),
     fields: [
       { label: '采购文件确认', value: <ConfirmTag confirmed={r.doc_confirmed} by={r.doc_confirmed_by} at={r.doc_confirmed_at} /> },
+      { label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> },
     ],
     actions: (
       <>

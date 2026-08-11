@@ -78,7 +78,10 @@ def project_progress(pid):
 
 
 def _attach_round_info(rows):
-    """给项目行补充 package_count、current_round、current_stage、pending_contract。"""
+    """给项目行补充 package_count、current_round、current_stage、pending_contract、pending。
+
+    pending = 当前处理人（此刻卡在谁手上、哪个环节、等了几天），见 services/pending_owner.py。
+    """
     if not rows:
         return
     from models.package import Package
@@ -105,6 +108,9 @@ def _attach_round_info(rows):
         r["pending_contract"] = st.get("pending_contract", 0)
         r["contract_rdweb_submitted"] = r["id"] in contract_rdweb_ids
         r["agency_rdweb_submitted"] = bool(r.get("agency_rdweb_serial_no"))
+
+    from services.pending_owner import attach_pending
+    attach_pending(rows, "id")
 
 
 @bp.route("", methods=["POST"])

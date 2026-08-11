@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons'
 import WebAnnPanel from '../components/WebAnnPanel'
 import { getWebAnnCounts } from '../services/webAnnouncement'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useNavigate } from 'react-router-dom'
 import { getProjects, deleteProject, restoreProject } from '../services/project'
 import ProjectProgressModal from '../components/ProjectProgressModal'
@@ -139,6 +140,7 @@ export default function ProjectFlowPage() {
         { label: '预算', value: amount },
         { label: '代理', value: p.agency_name },
         { label: '经办人', value: p.officer },
+        { label: '当前处理人', value: <PendingOwnerTag p={p.pending} compact /> },
         { label: isDeleted ? '删除时间' : '开标', value: isDeleted ? (p.deleted_at ? p.deleted_at.replace('T', ' ') : '') : p.bid_time },
         ...(annCounts[String(p.id)] ? [{
           label: '官网公告',

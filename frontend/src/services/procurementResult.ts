@@ -1,3 +1,4 @@
+import type { Pending } from './project'
 import api from './api'
 
 export interface ResultPackage {
@@ -19,6 +20,7 @@ export interface PriceAttachment {
 }
 
 export interface ProcurementResult {
+  pending?: Pending          // 当前处理人
   id: number
   project_id: number
   round_number: number

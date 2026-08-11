@@ -117,6 +117,8 @@ def list_projects():
         d["review_confirmed_by"] = (row.review_confirmed_by if row else "") or ""
         d["review_confirmed_at"] = (row.review_confirmed_at if row else "") or ""
         out.append(d)
+    from services.pending_owner import attach_pending
+    attach_pending(out, "id")                 # 每行带上当前处理人
     return jsonify({"ok": True, "data": out})
 
 

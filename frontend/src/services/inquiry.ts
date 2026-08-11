@@ -1,3 +1,4 @@
+import type { Pending } from './project'
 import api from './api'
 
 // ── Interfaces ──────────────────────────────────────────────────
@@ -277,6 +278,7 @@ export interface FetchRepliesResult {
 }
 
 export interface InquiryReviewListRow {
+  pending?: Pending          // 当前处理人
   inquiry_id: number
   project_id: number
   project_name: string

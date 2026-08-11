@@ -1,3 +1,4 @@
+import type { Pending } from './project'
 import api from './api'
 
 export interface ReviewAttachment {
@@ -9,6 +10,7 @@ export interface ReviewAttachment {
 }
 
 export interface ReviewProject {
+  pending?: Pending          // 当前处理人
   id: number
   name: string
   number: string

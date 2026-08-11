@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons'
 import { getBidList, markCanOpen, proposeBidFail, confirmBidFail, revokeBidFail } from '../services/bid'
 import type { Project } from '../services/project'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useAuth } from '../hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
@@ -153,6 +154,7 @@ export default function BidManagePage() {
         ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>
         : <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[rn - 1]}次</Tag>,
       fields: [
+        { label: '当前处理人', value: <PendingOwnerTag p={row.pending} compact /> },
         { label: '经办人', value: row.officer || '—' },
         { label: '代理', value: row.agency_name },
         { label: '开标时间', value: deadline ? <span style={{ color: tcolor, fontWeight: 500 }}><ClockCircleOutlined style={{ marginRight: 4 }} />{deadline}</span> : '' },

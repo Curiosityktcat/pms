@@ -379,6 +379,8 @@ def list_announcements():
         if not _scope_ok(project):
             continue
         result.append(_enrich(a))
+    from services.pending_owner import attach_pending
+    attach_pending(result, "project_id")      # 每行带上当前处理人
     return jsonify({"ok": True, "data": result})
 
 

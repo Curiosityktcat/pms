@@ -6,6 +6,7 @@ import {
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import { AuditOutlined, CheckCircleOutlined, PaperClipOutlined, AppstoreOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
+import PendingOwnerTag from '../components/PendingOwnerTag'
 import {
   setDocConfirm, setPackageCount, getDemandConfirmations, type DemandConfirmation,
 } from '../services/procurementDoc'
@@ -155,6 +156,7 @@ export default function ProcurementDemandConfirmPage() {
     ),
     fields: [
       { label: '采购需求确认', value: <ConfirmTag confirmed={r.demand_confirmed} by={r.demand_confirmed_by} at={r.demand_confirmed_at} /> },
+      { label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> },
     ],
     actions: (
       <>

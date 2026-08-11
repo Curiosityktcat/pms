@@ -237,32 +237,12 @@ def _collect(p, meta, ctx):
     return events
 
 
-def reconcile_system_todos():
-    projects = db.session.execute(
-        db.select(Project).where(
-            db.or_(Project.is_draft == 0, Project.is_draft.is_(None)),
-            db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)),
-            # 已归档 = 这个项目彻底办完了，不该再往任何人待办里塞东西。
-            # 尤其是导入的历史存量项目：服务启动时的存量回填会给它们补出
-            # 采购轮次骨架，阶段就被算成「待确认采购需求」，
-            # 一下子往待办里灌进上百条早就办完的活（踩过一次，91 个项目灌了 100 条）。
-            db.or_(Project.status != ARCHIVED_STATUS, Project.status.is_(None)),
-        )
-    ).scalars().all()
-    if not projects:
-        _complete_orphans({}, None)
-        db.session.commit()
-        return
+def load_ctx(pids):
+    """一次性载入派单判定要用的全部单据（避免逐项目 N+1）。
 
-    pids = [p.id for p in projects]
-    info = stage_map(pids)
-
-    users = db.session.execute(db.select(User).where(User.active == 1)).scalars().all()
-    users_by_username = {u.username: u for u in users}
-    users_by_display = {u.display_name: u for u in users if u.display_name}
-    agency_by_code = {u.agency_code: u for u in users
-                      if u.role == "agency" and u.agency_code}
-
+    与「当前处理人」共用：services/pending_owner.py 也调这个，
+    保证待办里的归属方与各页面显示的当前处理人出自同一批数据。
+    """
     # ── 一次性把判定要用的单据全量载入，避免逐项目 N+1 ────────────
     doc_uploaded = set()
     review_uploaded = set()
@@ -328,6 +308,36 @@ def reconcile_system_todos():
         "assessed": assessed,
         "assess_ready": assess_ready,
     }
+    return ctx
+
+
+def reconcile_system_todos():
+    projects = db.session.execute(
+        db.select(Project).where(
+            db.or_(Project.is_draft == 0, Project.is_draft.is_(None)),
+            db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)),
+            # 已归档 = 这个项目彻底办完了，不该再往任何人待办里塞东西。
+            # 尤其是导入的历史存量项目：服务启动时的存量回填会给它们补出
+            # 采购轮次骨架，阶段就被算成「待确认采购需求」，
+            # 一下子往待办里灌进上百条早就办完的活（踩过一次，91 个项目灌了 100 条）。
+            db.or_(Project.status != ARCHIVED_STATUS, Project.status.is_(None)),
+        )
+    ).scalars().all()
+    if not projects:
+        _complete_orphans({}, None)
+        db.session.commit()
+        return
+
+    pids = [p.id for p in projects]
+    info = stage_map(pids)
+
+    users = db.session.execute(db.select(User).where(User.active == 1)).scalars().all()
+    users_by_username = {u.username: u for u in users}
+    users_by_display = {u.display_name: u for u in users if u.display_name}
+    agency_by_code = {u.agency_code: u for u in users
+                      if u.role == "agency" and u.agency_code}
+
+    ctx = load_ctx(pids)
 
     desired = {}
     for p in projects:
