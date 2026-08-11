@@ -1,17 +1,31 @@
+import json
 import mimetypes
 import os
 import threading
+import time
 import uuid
 from datetime import datetime
-from flask import Blueprint, request, session, jsonify, send_file
+from flask import Blueprint, request, session, jsonify, send_file, current_app
 from models import db
 from models.contract import Contract
 from models.contract_attachment import ContractAttachment
 from models.project import Project
-from routes.utils import login_required
+from services import approval_log as alog
+from routes.utils import login_required, can_view_project
 
 # ── rd-web 合同审签单直连提交状态（按合同 id 隔离）────────────────
-_rdweb: dict = {}   # {cid: {running, ok, serial_no, msg}}
+_rdweb: dict = {}   # {cid: {running, ok, serial_no, msg, started_at}}
+RDWEB_STALE_SEC = 8 * 60   # 超过此时长仍未返回，认定线程僵死，允许重推
+
+# rd-web 合同审签单上带 * 的必填文本字段（与 contract_submit.TEXT_FIELDS 同源）。
+# 少一个，rd-web 自己的校验就会拦下提交且不给明确提示，
+# 所以 PMS 这边在启动浏览器之前先自查一遍。
+RDWEB_REQUIRED = [
+    "合同名称", "合同编码", "项目名称及包号", "归口管理科室", "合同金额",
+    "合同甲方", "甲方法定代表人", "甲方联系电话", "甲方地址",
+    "合同乙方", "乙方法定代表人", "乙方联系电话", "乙方地址",
+    "经办人",
+]
 _rdweb_lock = threading.Lock()
 
 bp = Blueprint("contract", __name__, url_prefix="/api/contracts")
@@ -31,6 +45,18 @@ def _file_dir(cid: int) -> str:
 def _can_confirm() -> bool:
     """确认合同（草案→合同上传）/撤回仅限采购人方；代理机构只能上传合同草案。"""
     return session.get("role", "") in ("officer", "assistant", "leader")
+
+
+def _scoped(cid):
+    """取合同并做归属校验（agency 本机构 / officer 本人经办 / 助理·负责人·管理员全部）。
+    返回 (contract, project, error)；error 非空时应直接 return error。"""
+    c = db.session.get(Contract, cid)
+    if not c:
+        return None, None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    project = db.session.get(Project, c.project_id)
+    if not can_view_project(project):
+        return None, None, (jsonify({"ok": False, "error": "无权访问该合同"}), 403)
+    return c, project, None
 
 def _enrich(c: Contract):
     d = c.to_dict()
@@ -68,19 +94,15 @@ def _validate_amount(amount, project):
 @login_required
 def list_contracts():
     project_id = request.args.get("project_id", type=int)
-    role = session.get("role", "")
-    agency_code = session.get("agency_code", "")
     q = db.select(Contract)
     if project_id:
         q = q.where(Contract.project_id == project_id)
     rows = db.session.execute(q.order_by(Contract.id.desc())).scalars().all()
+    # 隔离：agency 本机构、officer 本人经办、助理/负责人/管理员全部
     result = []
     for c in rows:
-        # agency 只看自己的项目
-        if role == "agency":
-            p = db.session.get(Project, c.project_id)
-            if not p or p.agency_code != agency_code:
-                continue
+        if not can_view_project(db.session.get(Project, c.project_id)):
+            continue
         result.append(_enrich(c))
     return jsonify({"ok": True, "data": result})
 
@@ -96,6 +118,8 @@ def create_contract():
     project = db.session.get(Project, project_id)
     if not project:
         return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if not can_view_project(project):
+        return jsonify({"ok": False, "error": "无权为该项目创建合同"}), 403
 
     package_no = data.get("package_no", "1") or "1"
 
@@ -159,11 +183,10 @@ def create_contract():
 @bp.route("/<int:cid>", methods=["PUT"])
 @login_required
 def update_contract(cid):
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    c, project, err = _scoped(cid)
+    if err:
+        return err
     data = request.get_json(force=True) or {}
-    project = db.session.get(Project, c.project_id)
 
     updatable = ["contract_number","contract_name","package_no","supplier_name",
                  "supplier_address","supplier_contact","supplier_legal_rep",
@@ -187,9 +210,9 @@ def update_contract(cid):
 @bp.route("/<int:cid>", methods=["DELETE"])
 @login_required
 def delete_contract(cid):
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
     # 删除文件
     if c.file_saved_name:
         path = os.path.join(_file_dir(cid), c.file_saved_name)
@@ -203,9 +226,9 @@ def delete_contract(cid):
 @bp.route("/<int:cid>/upload", methods=["POST"])
 @login_required
 def upload_file(cid):
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
@@ -229,8 +252,10 @@ def upload_file(cid):
 @bp.route("/<int:cid>/file", methods=["GET"])
 @login_required
 def download_file(cid):
-    c = db.session.get(Contract, cid)
-    if not c or not c.file_saved_name:
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
+    if not c.file_saved_name:
         return jsonify({"ok": False, "error": "文件不存在"}), 404
     path = os.path.join(_file_dir(cid), c.file_saved_name)
     if not os.path.exists(path):
@@ -242,36 +267,73 @@ def download_file(cid):
 @login_required
 def preview_file(cid):
     """内联预览盖章合同文件（点合同名调用，PDF/图片浏览器直接渲染）。"""
-    c = db.session.get(Contract, cid)
-    if not c or not c.file_saved_name:
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
+    if not c.file_saved_name:
         return jsonify({"ok": False, "error": "文件不存在"}), 404
     path = os.path.join(_file_dir(cid), c.file_saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失"}), 404
-    mime = mimetypes.guess_type(c.file_name)[0] or "application/octet-stream"
-    return send_file(path, mimetype=mime, as_attachment=False, download_name=c.file_name)
+    from services.office_convert import send_preview
+    return send_preview(path, c.file_name)
 
 
 @bp.route("/<int:cid>/submit", methods=["POST"])
 @login_required
 def submit_contract(cid):
-    if not _can_confirm():
-        return jsonify({"ok": False, "error": "仅项目经办人或负责人可确认合同"}), 403
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "不存在"}), 404
-    # 多步状态机：合同草案 →(经办人提交/审核)→ 审核完成 →(上传盖章合同/完成)→ 合同上传(归档)
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
+    is_agency = session.get("role", "") == "agency"
+    # 多步状态机：合同草案 →(代理机构拟好提交)→ 审核完成 →(经办人核完/传盖章件)→ 合同上传(归档)
+    #
+    # 第一步允许代理机构做——合同本来就是代理拟的，让经办人替他点提交没有道理；
+    # 第二步（定稿归档）仍只限采购人方。
     if c.status == "合同草案":
+        if not (is_agency or _can_confirm()):
+            return jsonify({"ok": False, "error": "无权提交该合同"}), 403
         c.status = "审核完成"
-        msg = "已提交，合同草案 → 审核完成"
+        msg = "已提交，转经办人审核"
     elif c.status == "审核完成":
+        if not _can_confirm():
+            return jsonify({"ok": False, "error": "仅项目经办人或负责人可完成合同归档"}), 403
         c.status = "合同上传"
         msg = "盖章合同已上传，已完成归档"
     else:
         return jsonify({"ok": False, "error": "当前状态不可提交"}), 400
     c.updated_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    alog.log(c.project_id, "contract",
+             "resubmit" if c.reject_reason else "submit", target_id=c.id)
     db.session.commit()
     return jsonify({"ok": True, "message": msg})
+
+
+# ── 驳回合同（打回修改，写明原因）──────────────────────────────────
+@bp.route("/<int:cid>/reject", methods=["POST"])
+@login_required
+def reject_contract(cid):
+    if not _can_confirm():
+        return jsonify({"ok": False, "error": "仅项目经办人或负责人可驳回合同"}), 403
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
+    if c.status == "合同草案":
+        return jsonify({"ok": False, "error": "合同尚在草案阶段，无需驳回"}), 400
+    reason = ((request.get_json(silent=True) or {}).get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "请填写驳回原因"}), 400
+    # 驳回一律退回「合同草案」，由编制方改完重新提交
+    c.status = "合同草案"
+    c.reject_reason = reason
+    c.reject_count = int(c.reject_count or 0) + 1
+    c.rejected_by = session.get("display_name", "")
+    c.rejected_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    c.updated_at = c.rejected_at
+    alog.log(c.project_id, "contract", "reject", target_id=c.id, reason=reason)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "message": f"已驳回（第{c.reject_count}次），退回合同草案待修改"})
 
 
 @bp.route("/<int:cid>/revoke", methods=["POST"])
@@ -279,9 +341,9 @@ def submit_contract(cid):
 def revoke_contract(cid):
     if not _can_confirm():
         return jsonify({"ok": False, "error": "仅项目经办人或负责人可撤回合同"}), 403
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
     # 逆向回退一步：合同上传 → 审核完成 → 合同草案
     if c.status == "合同上传":
         c.status = "审核完成"
@@ -318,6 +380,9 @@ PREVIEW_MIME = {
 @bp.route("/<int:cid>/attachments", methods=["GET"])
 @login_required
 def list_attachments(cid):
+    _c, _project, err = _scoped(cid)
+    if err:
+        return err
     rows = db.session.execute(
         db.select(ContractAttachment)
         .where(ContractAttachment.contract_id == cid)
@@ -329,9 +394,9 @@ def list_attachments(cid):
 @bp.route("/<int:cid>/attachments", methods=["POST"])
 @login_required
 def upload_attachment(cid):
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "合同不存在"}), 404
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
@@ -365,6 +430,9 @@ def upload_attachment(cid):
 @bp.route("/<int:cid>/attachments/<int:aid>", methods=["DELETE"])
 @login_required
 def delete_attachment(cid, aid):
+    _c, _project, err = _scoped(cid)
+    if err:
+        return err
     att = db.session.get(ContractAttachment, aid)
     if not att or att.contract_id != cid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
@@ -379,6 +447,9 @@ def delete_attachment(cid, aid):
 @bp.route("/<int:cid>/attachments/<int:aid>/download", methods=["GET"])
 @login_required
 def download_attachment(cid, aid):
+    _c, _project, err = _scoped(cid)
+    if err:
+        return err
     att = db.session.get(ContractAttachment, aid)
     if not att or att.contract_id != cid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
@@ -392,15 +463,17 @@ def download_attachment(cid, aid):
 @login_required
 def preview_attachment(cid, aid):
     """内联预览（PDF/图片直接在浏览器渲染）"""
+    _c, _project, err = _scoped(cid)
+    if err:
+        return err
     att = db.session.get(ContractAttachment, aid)
     if not att or att.contract_id != cid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
     path = os.path.join(_att_dir(cid), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失"}), 404
-    mime = att.mime_type or "application/octet-stream"
-    return send_file(path, mimetype=mime, as_attachment=False,
-                     download_name=att.original_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name, mimetype=att.mime_type)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -411,15 +484,24 @@ def preview_attachment(cid, aid):
 @login_required
 def submit_to_rdweb(cid):
     """从 PMS 合同数据自动提交到 rd-web 合同审签单。"""
-    c = db.session.get(Contract, cid)
-    if not c:
-        return jsonify({"ok": False, "error": "合同不存在"}), 404
-    project = db.session.get(Project, c.project_id)
+    c, project, err = _scoped(cid)
+    if err:
+        return err
+    app = current_app._get_current_object()
 
     with _rdweb_lock:
-        if _rdweb.get(cid, {}).get("running"):
-            return jsonify({"ok": False, "error": "该合同正在提交 rd-web，请稍后重试"}), 429
-        _rdweb[cid] = {"running": True, "ok": None, "serial_no": "", "msg": "提交中…"}
+        # 同 rdweb_contract_api：线程僵死会让这个合同永远推不了，超时后强制接管
+        st = _rdweb.get(cid, {})
+        started = st.get("started_at", 0)
+        stale = st.get("running") and started and (time.time() - started > RDWEB_STALE_SEC)
+        if st.get("running") and not stale:
+            waited = int(time.time() - started) if started else 0
+            return jsonify({"ok": False,
+                            "error": f"该合同正在提交 rd-web（已 {waited} 秒），请稍后重试"}), 429
+        if stale:
+            print(f"[rdweb] 合同 {cid} 上次提交已僵死，自动解锁重来", flush=True)
+        _rdweb[cid] = {"running": True, "ok": None, "serial_no": "", "msg": "提交中…",
+                       "started_at": time.time()}
 
     from routes.utils import get_rdweb_creds
     _rdweb_user, _rdweb_pass = get_rdweb_creds(session.get("display_name", ""))
@@ -453,6 +535,22 @@ def submit_to_rdweb(cid):
     body = request.get_json(silent=True) or {}
     overrides = body.get("data") or {}
     rdweb_data.update({k: v for k, v in overrides.items() if k in rdweb_data})
+
+    # ── 推送前先自查必填字段 ──────────────────────────────────────
+    # rd-web 那 13 个文本字段全部带 * 必填，缺一个就会在点「提交」后
+    # 卡住不关表单，报「可能存在校验错误」——而那时浏览器自动化已经跑了两分钟。
+    # 与其事后猜，不如出发前就说清楚缺哪个，让人几秒钟补上。
+    missing = [k for k in RDWEB_REQUIRED if not str(rdweb_data.get(k, "")).strip()]
+    if missing:
+        tip = "、".join(missing)
+        with _rdweb_lock:
+            _rdweb[cid] = {"running": False, "ok": False, "serial_no": "",
+                           "msg": f"合同信息不全，缺：{tip}"}
+        return jsonify({
+            "ok": False,
+            "error": f"以下 rd-web 必填项为空，请先在合同里补全再推送：{tip}",
+            "missing": missing,
+        }), 400
 
     # 收集所有附件（主文件 + ContractAttachment + 中标通知书，按上传顺序）
     _uploads = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "uploads"))
@@ -504,6 +602,20 @@ def submit_to_rdweb(cid):
         return jsonify({"ok": False,
                         "error": "请先上传合同附件文件，rd-web 审签单要求必须上传附件"}), 400
 
+    # 落一条推送记录：之前从合同管理推的失败不写库，排查只能翻系统日志
+    from models.rdweb_push_log import RdwebPushLog
+    _log = RdwebPushLog(
+        username=session.get("user", ""),
+        display_name=session.get("display_name", ""),
+        contract_name=c.contract_name or "",
+        file_name="、".join(a["name"] for a in attachments_to_upload)[:200],
+        data_json=json.dumps(rdweb_data, ensure_ascii=False),
+        status="running",
+    )
+    db.session.add(_log)
+    db.session.commit()
+    _log_id = _log.id
+
     def _worker():
         import sys, traceback
         from services.contract_submit import submit_contract as rdweb_submit
@@ -519,11 +631,40 @@ def submit_to_rdweb(cid):
                     "serial_no": res.get("serial_no", ""),
                     "msg":       res.get("msg", ""),
                 }
+            with app.app_context():
+                _row = db.session.get(RdwebPushLog, _log_id)
+                if _row is not None:
+                    _row.status = "ok" if res.get("ok") else "fail"
+                    _row.serial_no = res.get("serial_no", "")
+                    _row.msg = (res.get("msg", "") or "")[:500]
+                    _row.finished_at = datetime.now()
+                    db.session.commit()
+            # 成功且有流水号 → 落库到合同，供项目列表打标
+            if res.get("ok") and res.get("serial_no"):
+                try:
+                    with app.app_context():
+                        _c = db.session.get(Contract, cid)
+                        if _c:
+                            _c.rdweb_serial_no = res.get("serial_no", "")
+                            _c.rdweb_submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            db.session.commit()
+                except Exception as _pe:
+                    print(f"[rdweb] 合同流水号落库失败 cid={cid}: {_pe}", flush=True)
         except Exception as e:
             tb = traceback.format_exc()
             print(f"[rdweb] 提交异常 cid={cid}: {e}\n{tb}", flush=True)
             with _rdweb_lock:
                 _rdweb[cid] = {"running": False, "ok": False, "serial_no": "", "msg": str(e)[:300]}
+            try:
+                with app.app_context():
+                    _row = db.session.get(RdwebPushLog, _log_id)
+                    if _row is not None:
+                        _row.status = "fail"
+                        _row.msg = str(e)[:500]
+                        _row.finished_at = datetime.now()
+                        db.session.commit()
+            except Exception:
+                pass
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"ok": True, "msg": "已开始提交 rd-web"})
@@ -532,6 +673,62 @@ def submit_to_rdweb(cid):
 @bp.route("/<int:cid>/rdweb-status")
 @login_required
 def rdweb_contract_status(cid):
+    _c, _project, err = _scoped(cid)
+    if err:
+        return err
     return jsonify({"ok": True, "data": _rdweb.get(cid, {
         "running": False, "ok": None, "serial_no": "", "msg": ""
     })})
+
+
+@bp.route("/<int:cid>/rdweb-autofill", methods=["POST"])
+@login_required
+def rdweb_contract_autofill(cid):
+    """读取合同附件内容，AI 抽取 rd-web 审签字段（与工具页同一套逻辑）。
+
+    识别源优先级：合同主文件 → 第一个合同附件（跳过读不出字的继续试下一个）。"""
+    from services.rdweb_autofill import extract_file_text, autofill_fields, FIELD_KEYS
+
+    c, _project, err = _scoped(cid)
+    if err:
+        return err
+
+    candidates = []
+    if c.file_saved_name:
+        fp = os.path.join(_file_dir(cid), c.file_saved_name)
+        if os.path.exists(fp):
+            candidates.append((fp, c.file_name or c.file_saved_name))
+    atts = db.session.execute(
+        db.select(ContractAttachment)
+        .filter_by(contract_id=cid)
+        .order_by(ContractAttachment.id.asc())
+    ).scalars().all()
+    for att in atts:
+        if att.saved_name:
+            fp = os.path.join(_att_dir(cid), att.saved_name)
+            if os.path.exists(fp):
+                candidates.append((fp, att.original_name or att.saved_name))
+    if not candidates:
+        return jsonify({"ok": False, "error": "该合同还没有附件，请先上传合同文件"}), 400
+
+    text, src_name, last_err = "", "", ""
+    for fp, name in candidates:
+        try:
+            text = extract_file_text(fp)
+            src_name = name
+            break
+        except RuntimeError as e:
+            last_err = str(e)
+    if not text:
+        return jsonify({"ok": False, "error": f"附件内容识别失败：{last_err}"}), 422
+
+    usage_ctx = {"username": session.get("user", ""),
+                 "display_name": session.get("display_name", ""),
+                 "feature": "合同审签推送-自动填写(合同管理)"}
+    try:
+        out = autofill_fields(text, usage_ctx=usage_ctx,
+                              operator=session.get("display_name", ""))
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+    filled = sum(1 for k in FIELD_KEYS if out.get(k))
+    return jsonify({"ok": True, "data": out, "filled": filled, "source": src_name})

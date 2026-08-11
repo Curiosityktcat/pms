@@ -43,6 +43,8 @@ export interface Project {
   current_round?: number
   current_stage?: string        // demand_confirm|doc_confirm|announce|bid_open|result|round_failed|done
   pending_contract?: number     // 已中标未签约的包数
+  contract_rdweb_submitted?: boolean  // 合同已推送 rd-web 审签
+  agency_rdweb_submitted?: boolean    // 代理协议已推送 rd-web 审签
 }
 
 export interface Agency {

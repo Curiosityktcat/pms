@@ -122,7 +122,7 @@ function ReviewList({ onOpen }: { onOpen: (id: number) => void }) {
     }
   }
 
-  const pending = rows.filter(r => r.review_status !== '已完成' && r.letter_status !== '草稿')
+  const pending = rows.filter(r => r.review_status !== '已完成' && r.letter_status !== '待办')
   const done    = rows.filter(r => r.review_status === '已完成')
   const listFilter = useProjectListFilter(tab === '待评审' ? pending : done, REVIEW_ACCESSORS)
   const data    = listFilter.filtered
@@ -342,7 +342,7 @@ function ReviewWorkspace({ inquiryId, onBack }: { inquiryId: number; onBack: () 
   const doNextRound = () => {
     modal.confirm({
       title: '开启下一轮',
-      content: '将复制本轮函件（含供应商名单与附件）为新一轮草稿，到「7. 询/议价函」中调整后重新发出邀请。确认？',
+      content: '将复制本轮函件（含供应商名单与附件）为新一轮待办件，到「7. 询/议价函」中调整后重新发出邀请。确认？',
       onOk: async () => {
         try {
           const res = await startNextRound(inquiryId)

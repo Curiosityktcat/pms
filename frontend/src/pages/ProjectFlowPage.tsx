@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card, Segmented } from 'antd'
-import { PlusOutlined, SearchOutlined, RollbackOutlined } from '@ant-design/icons'
+import {
+  PlusOutlined, SearchOutlined, RollbackOutlined,
+  SortAscendingOutlined, SortDescendingOutlined,
+} from '@ant-design/icons'
+import WebAnnPanel from '../components/WebAnnPanel'
+import { getWebAnnCounts } from '../services/webAnnouncement'
 import { useNavigate } from 'react-router-dom'
 import { getProjects, deleteProject, restoreProject } from '../services/project'
 import ProjectProgressModal from '../components/ProjectProgressModal'
@@ -20,7 +25,14 @@ export default function ProjectFlowPage() {
   const [filterYear, setFilterYear] = useState<string | undefined>()
   const [filterMethod, setFilterMethod] = useState<string | undefined>()
   const [sortBy, setSortBy] = useState<'created' | 'number'>('created')
+  const [sortAsc, setSortAsc] = useState(false)   // 默认倒序（新的/编号大的在前）
   const [progressId, setProgressId] = useState<number | null>(null)
+  // 官网公告条数一次性取回，避免每张卡片各发一次请求
+  const [annCounts, setAnnCounts] = useState<Record<string, number>>({})
+  const [annProject, setAnnProject] = useState<Project | null>(null)
+  useEffect(() => {
+    getWebAnnCounts().then(r => setAnnCounts(r.data.data || {})).catch(() => {})
+  }, [])
   const { user } = useAuth()
   const navigate = useNavigate()
   const { message } = App.useApp()
@@ -68,7 +80,7 @@ export default function ProjectFlowPage() {
     new Set(projects.map(p => p.year).filter(Boolean))
   ).sort().reverse()
 
-  // 过滤 + 排序（默认按新增时间倒序，可切按项目编号）
+  // 过滤 + 排序（两种排序键都默认倒序，可按钮切正/倒序）
   const applyFilter = (list: Project[]) => {
     const q = search.trim().toLowerCase()
     const out = list.filter(p => {
@@ -79,9 +91,12 @@ export default function ProjectFlowPage() {
       const matchMethod = !filterMethod || p.method === filterMethod
       return matchSearch && matchYear && matchMethod
     })
-    return out.sort((a, b) => sortBy === 'number'
-      ? (a.number || '').localeCompare(b.number || '')
-      : (b.created_at || '').localeCompare(a.created_at || ''))
+    return out.sort((a, b) => {
+      const r = sortBy === 'number'
+        ? (a.number || '').localeCompare(b.number || '')
+        : (a.created_at || '').localeCompare(b.created_at || '')
+      return sortAsc ? r : -r
+    })
   }
 
   const ongoing = projects.filter(p => p.status !== STATUS_DONE)
@@ -115,6 +130,8 @@ export default function ProjectFlowPage() {
         <>
           {p.is_draft && <Tag color="orange" style={{ marginInlineEnd: 0 }}>草稿</Tag>}
           {p.category && <Tag bordered={false} color="geekblue" style={{ marginInlineEnd: 0 }}>{p.category}</Tag>}
+          {p.contract_rdweb_submitted && <Tag bordered={false} color="green" style={{ marginInlineEnd: 0 }}>已推合同签</Tag>}
+          {p.agency_rdweb_submitted && <Tag bordered={false} color="green" style={{ marginInlineEnd: 0 }}>已推代理协议签</Tag>}
         </>
       ),
       fields: [
@@ -123,6 +140,14 @@ export default function ProjectFlowPage() {
         { label: '代理', value: p.agency_name },
         { label: '经办人', value: p.officer },
         { label: isDeleted ? '删除时间' : '开标', value: isDeleted ? (p.deleted_at ? p.deleted_at.replace('T', ' ') : '') : p.bid_time },
+        ...(annCounts[String(p.id)] ? [{
+          label: '官网公告',
+          value: (
+            <a onClick={e => { e.stopPropagation(); setAnnProject(p) }}>
+              {annCounts[String(p.id)]} 条
+            </a>
+          ),
+        }] : []),
       ],
       actions: isDeleted
         ? (canEdit ? (
@@ -184,6 +209,12 @@ export default function ProjectFlowPage() {
             { value: 'number', label: '按项目编号' },
           ]}
         />
+        <Button
+          icon={sortAsc ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+          onClick={() => setSortAsc(v => !v)}
+        >
+          {sortAsc ? '正序' : '倒序'}
+        </Button>
         {canCreate && (
           <Button
             type="primary"
@@ -225,6 +256,13 @@ export default function ProjectFlowPage() {
         projectId={progressId}
         open={progressId !== null}
         onClose={() => setProgressId(null)}
+      />
+
+      <WebAnnPanel
+        projectId={annProject?.id ?? null}
+        projectName={annProject?.name}
+        open={annProject !== null}
+        onClose={() => setAnnProject(null)}
       />
     </Card>
   )

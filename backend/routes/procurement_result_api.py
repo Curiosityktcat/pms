@@ -11,6 +11,7 @@ from models.project import Project
 from models.package import Package
 from models.procurement_round import ProcurementRound
 from models.round_package import RoundPackage
+from services import approval_log as alog
 from routes.utils import login_required
 
 bp = Blueprint("procurement_result", __name__, url_prefix="/api/procurement-results")
@@ -45,6 +46,30 @@ def _can_confirm() -> bool:
 def _project_agency(project_id) -> str:
     p = db.session.get(Project, project_id)
     return p.agency_code if p else ""
+
+
+def _scope_ok(project_id) -> bool:
+    """当前登录用户是否有权访问该项目对应的采购结果。
+    与项目列表口径一致：agency 只看本机构、officer 只看本人经办，
+    assistant/leader/admin 全部可见。"""
+    role = session.get("role", "")
+    if role == "agency":
+        return _project_agency(project_id) == session.get("agency_code", "")
+    if role == "officer":
+        p = db.session.get(Project, project_id)
+        return bool(p) and p.officer == session.get("display_name", "")
+    return True  # assistant / leader / admin
+
+
+def _scoped_result(rid):
+    """按 rid 取采购结果并做可见性校验。
+    返回 (result, error_response)；error_response 非空时应直接 return。"""
+    result = db.session.get(ProcurementResult, rid)
+    if not result:
+        return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if not _scope_ok(result.project_id):
+        return None, (jsonify({"ok": False, "error": "无权访问该采购结果"}), 403)
+    return result, None
 
 
 def _current_round_number(project_id):
@@ -140,6 +165,14 @@ def list_results():
     q = db.select(ProcurementResult)
     if project_id:
         q = q.where(ProcurementResult.project_id == project_id)
+    # 权限分离：按角色收窄可见范围，与项目列表一致（避免看到他人项目）
+    role = session.get("role", "")
+    if role == "agency":
+        q = q.join(Project, ProcurementResult.project_id == Project.id).where(
+            Project.agency_code == session.get("agency_code", ""))
+    elif role == "officer":
+        q = q.join(Project, ProcurementResult.project_id == Project.id).where(
+            Project.officer == session.get("display_name", ""))
     rows = db.session.execute(q.order_by(ProcurementResult.id.desc())).scalars().all()
     return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
 
@@ -155,6 +188,8 @@ def create_result():
     pid = data.get("project_id")
     if not pid:
         return jsonify({"ok": False, "error": "请选择项目"}), 400
+    if not _scope_ok(pid):
+        return jsonify({"ok": False, "error": "无权为该项目创建采购结果"}), 403
     from services.project_progress import stage_map
     sm = stage_map([pid]).get(pid, {})
     if sm.get("current_stage") != "result":
@@ -191,9 +226,9 @@ def create_result():
 @bp.route("/<int:rid>", methods=["PUT"])
 @login_required
 def update_result(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     data = request.get_json(force=True) or {}
     packages = data.pop("packages", None)
     if packages is not None:
@@ -212,9 +247,9 @@ def update_result(rid):
 @bp.route("/<int:rid>", methods=["DELETE"])
 @login_required
 def delete_result(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     db.session.delete(result)
     db.session.commit()
     return jsonify({"ok": True})
@@ -224,15 +259,141 @@ def delete_result(rid):
 @login_required
 def submit_result(rid):
     """第一步：代理机构（或编制人）提交采购结果 → 待经办人确认。"""
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     if result.status == "已确认":
         return jsonify({"ok": False, "error": "已确认，无需重复提交"}), 400
+    was_rejected = result.status == "已驳回"
     result.status = "待确认"
     result.updated_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    alog.log(result.project_id, "result", "resubmit" if was_rejected else "submit",
+             round_number=result.round_number or 1, target_id=result.id)
     db.session.commit()
     return jsonify({"ok": True, "message": "已提交，等待经办人确认", "data": result.to_dict()})
+
+
+# ── 驳回：单据编制有误，打回代理机构修改后重新提交 ────────────────────
+@bp.route("/<int:rid>/reject", methods=["POST"])
+@login_required
+def reject_result(rid):
+    if not _can_confirm():
+        return jsonify({"ok": False, "error": "仅项目经办人或负责人可驳回"}), 403
+    result, err = _scoped_result(rid)
+    if err:
+        return err
+    if result.status == "已确认":
+        return jsonify({"ok": False, "error": "已确认，如需修改请先撤回"}), 400
+    reason = ((request.get_json(silent=True) or {}).get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "请填写驳回原因"}), 400
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    result.status = "已驳回"
+    result.reject_reason = reason
+    result.reject_count = int(result.reject_count or 0) + 1
+    result.rejected_by = session.get("display_name", "")
+    result.rejected_at = now
+    result.updated_at = now
+    alog.log(result.project_id, "result", "reject",
+             round_number=result.round_number or 1, target_id=result.id, reason=reason)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "message": f"已驳回（第{result.reject_count}次），代理机构可修改后重新提交",
+                    "data": result.to_dict()})
+
+
+# ── 不确认本次采购结果（≠驳回）──────────────────────────────────────
+@bp.route("/<int:rid>/not-confirm", methods=["POST"])
+@login_required
+def not_confirm_result(rid):
+    """采购人不认可评审委员会作出的采购结果。
+
+    评审已经结束，结果不是"改一改"能解决的，所以这里不退回编制，而是
+    转入「不确认」状态：采购人写明不认可的原由 → 代理机构复核 → 由代理
+    机构给出处置（维持原结果 / 废标 / 部分废标 / 顺延候选人）后重新推送确认。
+    """
+    if not _can_confirm():
+        return jsonify({"ok": False, "error": "仅项目经办人或负责人可不确认采购结果"}), 403
+    result, err = _scoped_result(rid)
+    if err:
+        return err
+    if result.status == "已确认":
+        return jsonify({"ok": False, "error": "结果已确认，如需推翻请先撤回确认"}), 400
+    if result.status != "待确认":
+        return jsonify({"ok": False, "error": "请先由代理机构提交结果后再操作"}), 400
+    reason = ((request.get_json(silent=True) or {}).get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "请写明不确认该采购结果的原由"}), 400
+
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    result.status = "不确认"
+    result.not_confirm_reason = reason
+    result.not_confirm_count = int(result.not_confirm_count or 0) + 1
+    result.not_confirmed_by = session.get("display_name", "")
+    result.not_confirmed_at = now
+    # 进入新一轮复核，清空上一次的复核处置
+    result.recheck_handling = ""
+    result.recheck_note = ""
+    result.updated_at = now
+    alog.log(result.project_id, "result", "not_confirm",
+             round_number=result.round_number or 1, target_id=result.id, reason=reason)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "message": "已记录「不确认本次采购结果」，代理机构将复核后重新推送",
+                    "data": result.to_dict()})
+
+
+RECHECK_HANDLINGS = ("维持原结果", "废标", "部分废标", "顺延候选人")
+
+
+# ── 代理机构复核后重新推送 ────────────────────────────────────────────
+@bp.route("/<int:rid>/recheck", methods=["POST"])
+@login_required
+def recheck_result(rid):
+    """代理机构针对采购人的「不确认」进行复核，给出处置并重新推送确认。
+
+    处置四选一：维持原结果 / 废标 / 部分废标 / 顺延候选人。
+    若复核后结果内容有变（如某包改为废标、中标人顺延），先用 PUT 改
+    packages 再调本接口，或直接在 packages 字段里带上新的分包结果。
+    """
+    result, err = _scoped_result(rid)
+    if err:
+        return err
+    if result.status != "不确认":
+        return jsonify({"ok": False, "error": "仅「不确认」状态的采购结果需要复核"}), 400
+    is_owner_agency = (
+        session.get("role") == "agency"
+        and _project_agency(result.project_id) == session.get("agency_code", "")
+    )
+    if not (is_owner_agency or _can_confirm()):
+        return jsonify({"ok": False, "error": "仅本项目代理机构可提交复核意见"}), 403
+
+    data = request.get_json(silent=True) or {}
+    handling = (data.get("handling") or "").strip()
+    if handling not in RECHECK_HANDLINGS:
+        return jsonify({"ok": False,
+                        "error": f"处置结论须为：{'、'.join(RECHECK_HANDLINGS)}"}), 400
+    note = (data.get("note") or "").strip()
+    if not note:
+        return jsonify({"ok": False, "error": "请填写复核说明"}), 400
+    packages = data.get("packages")
+    if packages is not None:
+        result.packages_json = json.dumps(packages, ensure_ascii=False)
+
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    result.recheck_handling = handling
+    result.recheck_note = note
+    result.recheck_by = session.get("display_name", "")
+    result.recheck_at = now
+    result.status = "待确认"          # 复核完毕，重新推送给采购人确认
+    result.updated_at = now
+    alog.log(result.project_id, "result", "recheck",
+             round_number=result.round_number or 1, target_id=result.id,
+             handling=handling, handling_note=note)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "message": f"复核结论「{handling}」已提交，等待采购人重新确认",
+                    "data": result.to_dict()})
 
 
 @bp.route("/<int:rid>/confirm", methods=["POST"])
@@ -240,9 +401,9 @@ def submit_result(rid):
 def confirm_result(rid):
     if not _can_confirm():
         return jsonify({"ok": False, "error": "仅项目经办人或负责人可确认采购结果"}), 403
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     if result.status == "已确认":
         return jsonify({"ok": False, "error": "已确认，请勿重复操作"}), 400
     if result.status != "待确认":
@@ -250,6 +411,8 @@ def confirm_result(rid):
     result.status = "已确认"
     result.updated_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     msg = _apply_result_to_cycle(result)   # 驱动按包循环（成交退出/废标自动开下一轮）
+    alog.log(result.project_id, "result", "confirm",
+             round_number=result.round_number or 1, target_id=result.id)
     db.session.commit()
     return jsonify({"ok": True, "message": msg or "已确认"})
 
@@ -257,9 +420,9 @@ def confirm_result(rid):
 @bp.route("/<int:rid>/revoke", methods=["POST"])
 @login_required
 def revoke_result(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     # 待确认：代理机构可自行撤回提交；已确认：仅经办人/负责人可撤回
     if result.status == "待确认":
         is_owner_agency = (
@@ -289,9 +452,9 @@ def revoke_result(rid):
 def generate_word(rid):
     """生成采购结果确认函 Word 文档"""
     from services.procurement_result_word import generate
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     project = db.session.get(Project, result.project_id)
     try:
         buf, filename = generate(result, project)
@@ -322,9 +485,9 @@ def _price_query(result):
 @bp.route("/<int:rid>/price-attachments", methods=["GET"])
 @login_required
 def list_price_attachments(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     rows = db.session.execute(_price_query(result)).scalars().all()
     return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
 
@@ -332,9 +495,9 @@ def list_price_attachments(rid):
 @bp.route("/<int:rid>/price-attachments", methods=["POST"])
 @login_required
 def upload_price_attachment(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     if result.status == "已确认":
         return jsonify({"ok": False, "error": "已确认，如需修改请先撤回"}), 400
 
@@ -369,7 +532,7 @@ def upload_price_attachment(rid):
 
 def _get_price_att(rid, aid):
     result = db.session.get(ProcurementResult, rid)
-    if not result:
+    if not result or not _scope_ok(result.project_id):
         return None, None
     att = db.session.get(ProcurementDocAttachment, aid)
     if (not att or att.project_id != result.project_id
@@ -400,7 +563,8 @@ def preview_price_attachment(rid, aid):
     path = os.path.join(_price_attach_dir(result.project_id), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
-    return send_file(path, as_attachment=False, download_name=att.original_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name)
 
 
 @bp.route("/<int:rid>/price-attachments/<int:aid>", methods=["DELETE"])
@@ -459,9 +623,9 @@ def _result_has_winner(result) -> bool:
 @bp.route("/<int:rid>/award-notice", methods=["GET"])
 @login_required
 def list_award_notice(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     rows = db.session.execute(_award_query(result)).scalars().all()
     return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
 
@@ -469,9 +633,9 @@ def list_award_notice(rid):
 @bp.route("/<int:rid>/award-notice", methods=["POST"])
 @login_required
 def upload_award_notice(rid):
-    result = db.session.get(ProcurementResult, rid)
-    if not result:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    result, err = _scoped_result(rid)
+    if err:
+        return err
     if result.status != "已确认":
         return jsonify({"ok": False, "error": "采购结果经办人确认后方可上传中标通知书"}), 400
     if not _result_has_winner(result):
@@ -510,7 +674,7 @@ def upload_award_notice(rid):
 
 def _get_award_att(rid, aid):
     result = db.session.get(ProcurementResult, rid)
-    if not result:
+    if not result or not _scope_ok(result.project_id):
         return None, None
     att = db.session.get(ProcurementDocAttachment, aid)
     if (not att or att.project_id != result.project_id
@@ -541,7 +705,8 @@ def preview_award_notice(rid, aid):
     path = os.path.join(_price_attach_dir(result.project_id), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
-    return send_file(path, as_attachment=False, download_name=att.original_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name)
 
 
 @bp.route("/<int:rid>/award-notice/<int:aid>", methods=["DELETE"])

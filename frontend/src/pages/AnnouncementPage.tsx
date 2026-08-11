@@ -11,14 +11,15 @@ import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import {
   PlusOutlined, DownloadOutlined, EditOutlined, DeleteOutlined,
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
-  SaveOutlined, AppstoreOutlined, UploadOutlined, FileOutlined,
+  SaveOutlined, AppstoreOutlined, UploadOutlined, FileOutlined, StopOutlined,
   SearchOutlined, ClockCircleOutlined, CheckSquareOutlined, HourglassOutlined,
+  SortAscendingOutlined, SortDescendingOutlined,
 } from '@ant-design/icons'
 import axios from 'axios'
 import {
   getEligibleProjects, getAnnouncements, createAnnouncement, updateAnnouncement,
   deleteAnnouncement, generateAnnouncementWord, announcementWordUrl,
-  submitAnnouncement, confirmAnnouncement, revokeAnnouncement,
+  submitAnnouncement, confirmAnnouncement, revokeAnnouncement, rejectAnnouncement,
   listFiles, deleteFile, downloadFileUrl, previewFileUrl,
   QUALIFICATIONS_DEFAULT,
 } from '../services/announcement'
@@ -34,7 +35,8 @@ import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
 const { TextArea } = Input
 const { Text } = Typography
 
-type AnnTab = 'pending' | 'published' | 'opened'
+// 待确认排最左并默认选中——经办人一进来就看到该自己处理的
+type AnnTab = 'toconfirm' | 'rejected' | 'draft' | 'published' | 'opened'
 
 const ROUND_OPTIONS = [
   { value: 1, label: '第一次' },
@@ -387,13 +389,18 @@ export default function AnnouncementPage() {
   const [selectedProject, setSelectedProject] = useState<AnnProject | null>(null)
 
   // 搜索/筛选/标签
-  const [tab, setTab] = useState<AnnTab>('pending')
+  const [tab, setTab] = useState<AnnTab>('toconfirm')
   const [search, setSearch] = useState('')
   const [filterAgency, setFilterAgency] = useState<string | undefined>()
   const [filterYearAnn, setFilterYearAnn] = useState<string | undefined>()
   const [sortByAnn, setSortByAnn] = useState<'created' | 'number'>('created')
+  const [sortAscAnn, setSortAscAnn] = useState(false)   // 默认倒序（新的/编号大的在前）
   // 点项目名在线预览生成的公告 Word
   const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
+  // 新建时先攒着附件，保存时一并上传；驳回弹窗
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [rejectRow, setRejectRow] = useState<Announcement | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
 
   const isAgency = user?.role === 'agency'
   const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
@@ -427,7 +434,9 @@ export default function AnnouncementPage() {
   }, [regStart, regEnd])
 
   // ── 按标签分组 ────────────────────────────────────────────────
-  const pendingList = list.filter(a => ['草稿', '待确认'].includes(a.status))
+  const toConfirmList = list.filter(a => a.status === '待确认')
+  const rejectedList = list.filter(a => a.status === '已驳回')
+  const draftList = list.filter(a => a.status === '草稿')
   const publishedList = list.filter(a => a.status === '已确认' && !isDeadlinePassed(a.response_deadline))
   const openedList = list.filter(a => a.status === '已确认' && isDeadlinePassed(a.response_deadline))
 
@@ -451,16 +460,23 @@ export default function AnnouncementPage() {
       const matchYear = !filterYearAnn || y === filterYearAnn
       return matchSearch && matchAgency && matchYear
     })
-    return out.sort((a, b) => sortByAnn === 'number'
-      ? (a.project_number || '').localeCompare(b.project_number || '')
-      : (b.created_at || '').localeCompare(a.created_at || ''))
+    return out.sort((a, b) => {
+      const r = sortByAnn === 'number'
+        ? (a.project_number || '').localeCompare(b.project_number || '')
+        : (a.created_at || '').localeCompare(b.created_at || '')
+      return sortAscAnn ? r : -r
+    })
   }
 
-  const filteredPending = applyFilter(pendingList)
+  const filteredToConfirm = applyFilter(toConfirmList)
+  const filteredRejected = applyFilter(rejectedList)
+  const filteredDraft = applyFilter(draftList)
   const filteredPublished = applyFilter(publishedList)
   const filteredOpened = applyFilter(openedList)
 
-  const currentData = tab === 'pending' ? filteredPending
+  const currentData = tab === 'toconfirm' ? filteredToConfirm
+    : tab === 'rejected' ? filteredRejected
+    : tab === 'draft' ? filteredDraft
     : tab === 'published' ? filteredPublished
     : filteredOpened
 
@@ -526,7 +542,25 @@ export default function AnnouncementPage() {
     message.success(`已套用模板「${tpl.template_name}」`)
   }
 
-  const handleSave = async () => {
+  // 新建时暂存的附件：保存后自动上传，省掉"先存草稿才能传附件"那一步
+  const uploadPendingAnn = async (annId: number) => {
+    let ok = 0
+    for (const f of pendingFiles) {
+      const fd = new FormData()
+      fd.append('file', f)
+      try {
+        await axios.post(`/api/announcements/${annId}/files`, fd, {
+          withCredentials: true,
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        ok += 1
+      } catch { message.error(`附件「${f.name}」上传失败`) }
+    }
+    return ok
+  }
+
+  /** 一步完成：保存（新建则创建）→ 传附件 →（可选）提交确认。 */
+  const handleSave = async (thenSubmit = false) => {
     try { await form.validateFields() } catch { return }
     const values = form.getFieldsValue()
     // 日历控件返回 dayjs，统一转回中文串存库（无空格，确保各处开标时间可正确抓取）
@@ -538,12 +572,21 @@ export default function AnnouncementPage() {
     }
     setLoading(true)
     try {
+      let annId: number
       if (editId) {
         await updateAnnouncement(editId, payload)
-        message.success('已保存')
+        annId = editId
       } else {
-        await createAnnouncement(payload)
-        message.success('已创建草稿')
+        const res = await createAnnouncement(payload)
+        annId = res.data.data.id
+      }
+      const uploaded = pendingFiles.length ? await uploadPendingAnn(annId) : 0
+      setPendingFiles([])
+      if (thenSubmit) {
+        await submitAnnouncement(annId)
+        message.success(`已提交确认${uploaded ? `（含 ${uploaded} 个附件）` : ''}，等待采购人确认发布`)
+      } else {
+        message.success(`已保存${uploaded ? `，附件 ${uploaded} 个已上传` : ''}`)
       }
       setDrawerOpen(false)
       load()
@@ -551,6 +594,19 @@ export default function AnnouncementPage() {
       message.error(err.response?.data?.error || '操作失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleReject = async () => {
+    if (!rejectRow) return
+    if (!rejectReason.trim()) { message.warning('请填写驳回原因'); return }
+    try {
+      await rejectAnnouncement(rejectRow.id, rejectReason.trim())
+      message.success('已驳回')
+      setRejectRow(null); setRejectReason('')
+      load()
+    } catch (err: any) {
+      message.error(err.response?.data?.error || '驳回失败')
     }
   }
 
@@ -639,9 +695,19 @@ export default function AnnouncementPage() {
     } else {
       fields.push({ label: '编制人', value: record.created_by })
     }
+    if (record.status === '已驳回' && record.reject_reason) {
+      fields.push({
+        label: `驳回原因${(record.reject_count || 0) > 1 ? `（第${record.reject_count}次）` : ''}`,
+        value: <Text type="danger">{record.reject_reason}</Text>,
+      })
+    }
+    const editable = ['toconfirm', 'rejected', 'draft'].includes(tab)
     return {
       key: record.id,
-      accent: isOpened ? '#9aa0a6' : record.status === '已确认' ? '#34a853' : record.status === '待确认' ? '#f9ab00' : '#1a73e8',
+      accent: isOpened ? '#9aa0a6'
+        : record.status === '已确认' ? '#34a853'
+        : record.status === '待确认' ? '#f9ab00'
+        : record.status === '已驳回' ? '#d93025' : '#1a73e8',
       title: record.project_name,
       onTitleClick: () => setDocPreview({ open: true, url: announcementWordUrl(record.id), name: `${record.project_name}-公告.docx` }),
       subtitle: record.project_number,
@@ -652,12 +718,14 @@ export default function AnnouncementPage() {
       actions: (
         <>
           <Button size="small" type="primary" ghost icon={<DownloadOutlined />} onClick={() => handleGenerate(record)}>Word</Button>
-          {tab === 'pending' && (
+          {editable && (
             <>
               <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-              {isAgency && record.status === '草稿' && (
+              {isAgency && ['草稿', '已驳回'].includes(record.status) && (
                 <Popconfirm title="提交后由采购人确认发布，确认提交？" onConfirm={() => handleSubmit(record.id)}>
-                  <Button size="small" icon={<SendOutlined />} type="primary" ghost>提交</Button>
+                  <Button size="small" icon={<SendOutlined />} type="primary" ghost>
+                    {record.status === '已驳回' ? '修改后重新提交' : '提交'}
+                  </Button>
                 </Popconfirm>
               )}
               {canConfirm && record.status === '草稿' && (
@@ -666,9 +734,13 @@ export default function AnnouncementPage() {
                 </Popconfirm>
               )}
               {canConfirm && record.status === '待确认' && (
-                <Popconfirm title="确认发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认？" onConfirm={() => handleConfirm(record.id)}>
-                  <Button size="small" icon={<CheckCircleOutlined />} type="primary">确认发布</Button>
-                </Popconfirm>
+                <>
+                  <Popconfirm title="确认发布后将在登录页面公开挂网，同时自动同步开标时间到项目，确认？" onConfirm={() => handleConfirm(record.id)}>
+                    <Button size="small" icon={<CheckCircleOutlined />} type="primary">确认发布</Button>
+                  </Popconfirm>
+                  <Button size="small" danger icon={<StopOutlined />}
+                    onClick={() => { setRejectRow(record); setRejectReason('') }}>驳回</Button>
+                </>
               )}
               <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
                 <Button size="small" danger icon={<DeleteOutlined />} />
@@ -747,10 +819,14 @@ export default function AnnouncementPage() {
             { value: 'number', label: '按项目编号' },
           ]}
         />
+        <Button
+          icon={sortAscAnn ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+          onClick={() => setSortAscAnn(v => !v)}
+        >
+          {sortAscAnn ? '正序' : '倒序'}
+        </Button>
         <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
-          {tab === 'pending' ? `待挂网 ${filteredPending.length} 条`
-            : tab === 'published' ? `挂网进行中 ${filteredPublished.length} 条`
-            : `已开标 ${filteredOpened.length} 条`}
+          {`当前 ${currentData.length} 条`}
         </Text>
       </div>
 
@@ -760,14 +836,40 @@ export default function AnnouncementPage() {
         onChange={(k) => setTab(k as AnnTab)}
         items={[
           {
-            key: 'pending',
+            key: 'toconfirm',
             label: (
               <span>
                 <HourglassOutlined style={{ marginRight: 4 }} />
-                待挂网
-                {pendingList.length > 0 && (
-                  <Badge count={pendingList.length} size="small"
+                待确认
+                {toConfirmList.length > 0 && (
+                  <Badge count={toConfirmList.length} size="small"
                     style={{ marginLeft: 6, backgroundColor: '#faad14' }} />
+                )}
+              </span>
+            ),
+          },
+          {
+            key: 'rejected',
+            label: (
+              <span>
+                <StopOutlined style={{ marginRight: 4 }} />
+                已驳回
+                {rejectedList.length > 0 && (
+                  <Badge count={rejectedList.length} size="small"
+                    style={{ marginLeft: 6, backgroundColor: '#d93025' }} />
+                )}
+              </span>
+            ),
+          },
+          {
+            key: 'draft',
+            label: (
+              <span>
+                <SaveOutlined style={{ marginRight: 4 }} />
+                草稿
+                {draftList.length > 0 && (
+                  <Badge count={draftList.length} size="small"
+                    style={{ marginLeft: 6, backgroundColor: '#9aa0a6' }} />
                 )}
               </span>
             ),
@@ -802,12 +904,26 @@ export default function AnnouncementPage() {
       />
 
       {/* ── 说明提示 ─────────────────────────────────────────────── */}
-      {tab === 'pending' && (
+      {tab === 'toconfirm' && (
+        <Alert
+          type="warning" showIcon
+          message={isAgency
+            ? '已提交给采购人、等待确认发布的公告。若被驳回会移到「已驳回」页签并附上原因。'
+            : '待确认：代理机构已提交、等你拍板的公告。可「确认发布」挂网，也可「驳回」并写明要改什么。'}
+          style={{ marginBottom: 12 }}
+        />
+      )}
+      {tab === 'rejected' && (
+        <Alert
+          type="error" showIcon
+          message="已驳回：采购人打回修改的公告，卡片上直接显示驳回原因。代理机构改完点「修改后重新提交」即可再次送审，全过程记入审批过程记录并随项目归档。"
+          style={{ marginBottom: 12 }}
+        />
+      )}
+      {tab === 'draft' && (
         <Alert
           type="info" showIcon
-          message={isAgency
-            ? '代理机构可编制公告草稿并提交；经采购人确认后正式挂网。'
-            : '待挂网：草稿状态或已提交待采购人确认发布的公告。点击「确认发布」后将在登录页面公开展示。'}
+          message="草稿：尚未提交的公告。新建时可直接选附件，点「保存并提交确认」一步完成编制、传附件、送审。"
           style={{ marginBottom: 12 }}
         />
       )}
@@ -836,8 +952,12 @@ export default function AnnouncementPage() {
         width={700}
         footer={
           <Space>
-            <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={handleSave}>
-              保存草稿
+            <Button type="primary" icon={<SendOutlined />} loading={loading}
+              onClick={() => handleSave(true)}>
+              保存并提交确认
+            </Button>
+            <Button icon={<SaveOutlined />} loading={loading} onClick={() => handleSave(false)}>
+              仅保存{editId ? '' : '草稿'}
             </Button>
             <Button onClick={() => setDrawerOpen(false)}>取消</Button>
           </Space>
@@ -979,11 +1099,62 @@ export default function AnnouncementPage() {
             </>
           )}
           {!editId && (
-            <Alert type="info" showIcon style={{ marginTop: 8 }}
-              message="保存草稿后，在「编辑」中可上传采购需求、报名表等附件文件。" />
+            <>
+              <Divider plain>采购文件附件</Divider>
+              <Form.Item
+                label="选择附件"
+                extra="现在选、保存时自动上传——不必先存草稿再回来传。生成 Word 时附件名自动列于文档末尾"
+              >
+                <Upload
+                  multiple showUploadList={false}
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.zip,.rar"
+                  beforeUpload={(file) => {
+                    setPendingFiles(prev => [...prev, file as unknown as File])
+                    return false
+                  }}
+                >
+                  <Button icon={<UploadOutlined />}>选择附件</Button>
+                </Upload>
+                {pendingFiles.length > 0 && (
+                  <List
+                    size="small" style={{ marginTop: 8 }}
+                    dataSource={pendingFiles}
+                    renderItem={(f, i) => (
+                      <List.Item actions={[
+                        <Button key="rm" type="link" size="small" danger
+                          onClick={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))}>移除</Button>,
+                      ]}>
+                        <FileOutlined style={{ marginRight: 6 }} />{f.name}
+                        <Text type="secondary" style={{ marginLeft: 8 }}>{formatSize(f.size)}</Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </Form.Item>
+            </>
           )}
         </Form>
       </Drawer>
+
+      {/* ── 驳回弹窗 ─────────────────────────────────────────────── */}
+      <Modal
+        open={!!rejectRow}
+        title={`驳回采购公告 — ${rejectRow?.project_name || ''}`}
+        okText="确认驳回"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onOk={handleReject}
+        onCancel={() => { setRejectRow(null); setRejectReason('') }}
+      >
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+          message="驳回后公告退回代理机构修改，改完重新提交需再次确认。同一份公告可反复驳回，每次的原因都会记入审批过程记录，归档时随项目一并留存。" />
+        <Input.TextArea
+          rows={4} maxLength={500} showCount
+          placeholder="请写明需要修改的具体内容，例如：资格要求第六项与采购文件不一致；报名截止时间少于法定天数"
+          value={rejectReason}
+          onChange={e => setRejectReason(e.target.value)}
+        />
+      </Modal>
 
       {/* ── 代理机构模板管理 Drawer ────────────────────────────────── */}
       <TemplateMgrDrawer

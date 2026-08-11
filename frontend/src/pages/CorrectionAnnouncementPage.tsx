@@ -12,6 +12,7 @@ import axios from 'axios'
 import {
   getAnnouncements, getEligibleProjects, createAnnouncement, updateAnnouncement,
   deleteAnnouncement, submitAnnouncement, confirmAnnouncement, revokeAnnouncement,
+  rejectAnnouncement,
   generateAnnouncementWord, listFiles, deleteFile, downloadFileUrl,
   type Announcement, type AnnProject, type AnnAttachment,
 } from '../services/announcement'
@@ -34,7 +35,8 @@ export default function CorrectionAnnouncementPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<Announcement[]>([])
   const [keyword, setKeyword] = useState('')
-  const [activeTab, setActiveTab] = useState<'all' | '草稿' | '待确认' | '已确认'>('all')
+  // 待确认排最左并默认选中——经办人打开就直接看到该自己处理的
+  const [activeTab, setActiveTab] = useState<'all' | '草稿' | '待确认' | '已确认' | '已驳回'>('待确认')
 
   // 编辑弹窗
   const [editOpen, setEditOpen] = useState(false)
@@ -42,6 +44,11 @@ export default function CorrectionAnnouncementPage() {
   const [projects, setProjects] = useState<AnnProject[]>([])
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
+  // 新建时先把附件放在手里，保存草稿后一并上传——这样代理机构只按一次按钮
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  // 驳回弹窗
+  const [rejectRow, setRejectRow] = useState<Announcement | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
   const inAttachment = Form.useWatch('corr_in_attachment', form)
   const correctBidTime = Form.useWatch('correct_bid_time', form)
 
@@ -80,6 +87,7 @@ export default function CorrectionAnnouncementPage() {
   const openCreate = async () => {
     setEditing(null)
     setFiles([])
+    setPendingFiles([])
     form.resetFields()
     form.setFieldsValue({
       scopes: ['采购公告'],
@@ -98,6 +106,7 @@ export default function CorrectionAnnouncementPage() {
 
   const openEdit = (r: Announcement) => {
     setEditing(r)
+    setPendingFiles([])
     let items: CorrItem[] = []
     try { items = JSON.parse(r.corr_items_json || '[]') } catch { items = [] }
     if (!items.length) items = [{ item: '', before: '', after: '' }]
@@ -117,7 +126,28 @@ export default function CorrectionAnnouncementPage() {
     setEditOpen(true)
   }
 
-  const handleSave = async () => {
+  // 把暂存的附件挨个传上去，返回成功件数
+  const uploadPending = async (annId: number) => {
+    let ok = 0
+    for (const f of pendingFiles) {
+      const fd = new FormData()
+      fd.append('file', f)
+      try {
+        await axios.post(`/api/announcements/${annId}/files`, fd, {
+          withCredentials: true,
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        ok += 1
+      } catch {
+        message.error(`附件「${f.name}」上传失败`)
+      }
+    }
+    return ok
+  }
+
+  /** 一次性完成：保存（新建则创建）→ 传附件 →（可选）提交确认。
+   *  原来要分「保存草稿 / 上传附件 / 回列表点提交」三步，这里合成一步。 */
+  const handleSave = async (thenSubmit = false) => {
     const v = await form.validateFields()
     const payload = {
       ann_type: 'correction',
@@ -143,20 +173,35 @@ export default function CorrectionAnnouncementPage() {
     }
     setSaving(true)
     try {
+      let annId: number
       if (editing) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await updateAnnouncement(editing.id, payload as any)
-        message.success('已保存')
+        annId = editing.id
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const res = await createAnnouncement(payload as any)
-        message.success('已保存草稿，可继续上传附件')
-        setEditing(res.data.data)   // 留在弹窗里，便于上传附件
-        load()
-        setSaving(false)
-        return
+        annId = res.data.data.id
       }
-      setEditOpen(false)
+      const uploaded = pendingFiles.length ? await uploadPending(annId) : 0
+      setPendingFiles([])
+      if (thenSubmit) {
+        await submitAnnouncement(annId)
+        message.success(`已提交确认${uploaded ? `（含 ${uploaded} 个附件）` : ''}，等待经办人确认发布`)
+        setEditOpen(false)
+      } else {
+        message.success(`已保存${uploaded ? `，附件 ${uploaded} 个已上传` : ''}`)
+        if (editing) setEditOpen(false)
+        else {
+          // 新建后留在弹窗，便于继续补附件；此后按"编辑"逻辑走
+          const fresh = await getAnnouncements('correction')
+          setRows(fresh.data.data || [])
+          const row = (fresh.data.data || []).find(r => r.id === annId)
+          if (row) { setEditing(row); loadFiles(annId) }
+          setSaving(false)
+          return
+        }
+      }
       load()
     } catch (err: unknown) {
       const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -217,7 +262,22 @@ export default function CorrectionAnnouncementPage() {
   const STATUS_META: Record<string, { text: string; color: string; accent: string }> = {
     '已确认': { text: '已发布', color: 'green', accent: '#34a853' },
     '待确认': { text: '待确认', color: 'orange', accent: '#f9ab00' },
+    '已驳回': { text: '已驳回', color: 'red', accent: '#d93025' },
     '草稿': { text: '草稿', color: 'default', accent: '#9aa0a6' },
+  }
+
+  const doReject = async () => {
+    if (!rejectRow) return
+    if (!rejectReason.trim()) { message.warning('请填写驳回原因'); return }
+    try {
+      await rejectAnnouncement(rejectRow.id, rejectReason.trim())
+      message.success('已驳回')
+      setRejectRow(null); setRejectReason('')
+      load()
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '驳回失败')
+    }
   }
   const corrToCard = (r: Announcement): RecordCardData => {
     const meta = STATUS_META[r.status || '草稿'] || STATUS_META['草稿']
@@ -233,19 +293,32 @@ export default function CorrectionAnnouncementPage() {
         : undefined,
       fields: [
         { label: '发布时间', value: r.confirmed_at ? r.confirmed_at.replace('T', ' ') : '' },
+        ...(r.status === '已驳回' && r.reject_reason
+          ? [{
+            label: `驳回原因${(r.reject_count || 0) > 1 ? `（第${r.reject_count}次）` : ''}`,
+            value: <Text type="danger">{r.reject_reason}</Text>,
+          }]
+          : []),
       ],
       actions: (
         <>
           {r.status !== '已确认' && <Button size="small" onClick={() => openEdit(r)}>编辑</Button>}
           <Button size="small" icon={<FileWordOutlined />} onClick={() => downloadWord(r)}>Word</Button>
-          {r.status === '草稿' && (
-            <Button size="small" type="primary" ghost onClick={() => runAction(() => submitAnnouncement(r.id))}>提交确认</Button>
+          {(r.status === '草稿' || r.status === '已驳回') && (
+            <Button size="small" type="primary" ghost onClick={() => runAction(() => submitAnnouncement(r.id))}>
+              {r.status === '已驳回' ? '修改后重新提交' : '提交确认'}
+            </Button>
           )}
           {r.status === '待确认' && canConfirm && (
-            <Popconfirm title="确认并发布该更正公告？发布后将在公告首页公开展示。" okText="发布" cancelText="取消"
-              onConfirm={() => runAction(() => confirmAnnouncement(r.id))}>
-              <Button size="small" type="primary">确认发布</Button>
-            </Popconfirm>
+            <>
+              <Popconfirm title="确认并发布该更正公告？发布后将在公告首页公开展示。" okText="发布" cancelText="取消"
+                onConfirm={() => runAction(() => confirmAnnouncement(r.id))}>
+                <Button size="small" type="primary">确认发布</Button>
+              </Popconfirm>
+              <Button size="small" danger onClick={() => { setRejectRow(r); setRejectReason('') }}>
+                驳回
+              </Button>
+            </>
           )}
           {r.status === '已确认' && canConfirm && (
             <Popconfirm title="撤回该更正公告？将从公告首页下架并恢复为草稿。" okText="撤回" cancelText="取消"
@@ -294,10 +367,11 @@ export default function CorrectionAnnouncementPage() {
           activeKey={activeTab}
           onChange={k => setActiveTab(k as typeof activeTab)}
           items={[
-            { key: 'all',  label: `全部 (${rows.length})` },
-            { key: '草稿',  label: `草稿 (${tabCount('草稿')})` },
             { key: '待确认', label: `待确认 (${tabCount('待确认')})` },
+            { key: '已驳回', label: `已驳回 (${tabCount('已驳回')})` },
+            { key: '草稿',  label: `草稿 (${tabCount('草稿')})` },
             { key: '已确认', label: `已发布 (${tabCount('已确认')})` },
+            { key: 'all',  label: `全部 (${rows.length})` },
           ]}
         />
 
@@ -309,8 +383,15 @@ export default function CorrectionAnnouncementPage() {
         title={editing ? `编辑更正公告 — ${editing.project_name || ''}（第${cnOrdinal(editing.corr_seq || 1)}次）` : '新建更正公告'}
         open={editOpen}
         onCancel={() => setEditOpen(false)}
-        onOk={handleSave}
-        okText={editing ? '保存' : '保存草稿'}
+        footer={[
+          <Button key="cancel" onClick={() => setEditOpen(false)}>取消</Button>,
+          <Button key="save" loading={saving} onClick={() => handleSave(false)}>
+            仅保存{editing ? '' : '草稿'}
+          </Button>,
+          <Button key="submit" type="primary" loading={saving} onClick={() => handleSave(true)}>
+            保存并提交确认
+          </Button>,
+        ]}
         confirmLoading={saving}
         width={760}
         destroyOnHidden
@@ -424,7 +505,7 @@ export default function CorrectionAnnouncementPage() {
           </Space>
         </Form>
 
-        {/* 附件：保存草稿后可上传 */}
+        {/* 附件：新建时先暂存，保存时一并上传；编辑时直接上传 */}
         <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
           <Space align="center">
             <Text strong><PaperClipOutlined /> 公告附件</Text>
@@ -434,9 +515,33 @@ export default function CorrectionAnnouncementPage() {
                 <Button size="small" icon={<UploadOutlined />} loading={uploading}>上传附件</Button>
               </Upload>
             ) : (
-              <Text type="secondary">（先保存草稿后即可上传）</Text>
+              <Upload
+                multiple showUploadList={false}
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.zip,.rar"
+                beforeUpload={(file) => {
+                  setPendingFiles(prev => [...prev, file as unknown as File])
+                  return false      // 拦下来自己传，避免"先存草稿才能传"
+                }}
+              >
+                <Button size="small" icon={<UploadOutlined />}>选择附件</Button>
+              </Upload>
+            )}
+            {!editing && pendingFiles.length > 0 && (
+              <Text type="secondary">已选 {pendingFiles.length} 个，保存时自动上传</Text>
             )}
           </Space>
+          {!editing && pendingFiles.length > 0 && (
+            <List
+              size="small" style={{ marginTop: 8 }}
+              dataSource={pendingFiles}
+              renderItem={(f, i) => (
+                <List.Item actions={[
+                  <Button key="rm" type="link" size="small" danger
+                    onClick={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))}>移除</Button>,
+                ]}>{f.name}</List.Item>
+              )}
+            />
+          )}
           {editing && (
             <List
               size="small" style={{ marginTop: 8 }}
@@ -462,9 +567,29 @@ export default function CorrectionAnnouncementPage() {
           )}
         </div>
         {isAgency && (
-          <Alert type="warning" showIcon style={{ marginTop: 12 }}
-            message="保存后请点击列表中的「提交确认」，经办人确认后才会挂网发布。" />
+          <Alert type="info" showIcon style={{ marginTop: 12 }}
+            message="点「保存并提交确认」即可一次完成：保存内容、上传附件、提交给经办人，不必再回列表操作。" />
         )}
+      </Modal>
+
+      {/* 驳回弹窗：必须写明原因，代理机构据此修改 */}
+      <Modal
+        open={!!rejectRow}
+        title={`驳回更正公告 — ${rejectRow?.project_name || ''}`}
+        okText="确认驳回"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onOk={doReject}
+        onCancel={() => { setRejectRow(null); setRejectReason('') }}
+      >
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+          message="驳回后公告退回代理机构修改，修改完成再次提交需重新确认。驳回原因会完整记入审批过程记录，归档时随项目一并留存。" />
+        <Input.TextArea
+          rows={4} maxLength={500} showCount
+          placeholder="请写明需要修改的具体内容，例如：更正后的开标时间与采购文件不一致，请核对第三章 3.2 条"
+          value={rejectReason}
+          onChange={e => setRejectReason(e.target.value)}
+        />
       </Modal>
     </Card>
   )

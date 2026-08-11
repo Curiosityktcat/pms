@@ -39,6 +39,17 @@ def _today():
     return datetime.date.today().isoformat()
 
 
+def _scoped_letter(lid):
+    """取询/议价函并做归属校验（officer 本人经办 / agency 本机构 / 助理·负责人·管理员）。
+    返回 (letter, error)；error 非空时应直接 return。"""
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return None, (jsonify({"ok": False, "error": "函件不存在"}), 404)
+    if not can_view_project(db.session.get(Project, letter.project_id)):
+        return None, (jsonify({"ok": False, "error": "无权访问该询/议价评审"}), 403)
+    return letter, None
+
+
 def _round_no(letter: InquiryLetter) -> int:
     """该函件是同项目的第几轮邀请。
 
@@ -124,7 +135,7 @@ def list_reviews():
     for l in letters:
         rv = reviews.get(l.id)
         # 待评审 = 已发出（进行中）；已评审 = 评审记录已完成
-        if l.status == "草稿" and not rv:
+        if l.status == "待办" and not rv:
             continue
         proj = db.session.get(Project, l.project_id)
         # 数据级隔离：经办人只看本人项目、代理只看本机构（与项目列表口径一致）
@@ -195,15 +206,15 @@ def _build_review(letter):
 @bp.route("/api/inquiries/<int:lid>/review", methods=["GET"])
 @login_required
 def get_review(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
 
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
     if not review:
-        if letter.status == "草稿":
+        if letter.status == "待办":
             return jsonify({"ok": False, "error": "函件尚未发出，不能评审"}), 400
         if not _deadline_passed(letter):
             # 截止前不自动开启：须经办人「提前开启评审」（见 /review/early-open）
@@ -223,10 +234,10 @@ def early_open_review(lid):
     if session.get("role") != "officer":
         return jsonify({"ok": False, "error": "仅经办人可确认提前开启评审"}), 403
 
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
-    if letter.status == "草稿":
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
+    if letter.status == "待办":
         return jsonify({"ok": False, "error": "函件尚未发出，不能评审"}), 400
 
     review = db.session.execute(
@@ -279,7 +290,9 @@ def _apply_supplier_rows(lid, rows):
 @bp.route("/api/inquiries/<int:lid>/review", methods=["PUT"])
 @login_required
 def save_review(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
@@ -306,7 +319,9 @@ def save_review(lid):
 @bp.route("/api/inquiries/<int:lid>/review/complete", methods=["POST"])
 @login_required
 def complete_review(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
@@ -373,7 +388,9 @@ def complete_review(lid):
 @bp.route("/api/inquiries/<int:lid>/review/reopen", methods=["POST"])
 @login_required
 def reopen_review(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
@@ -407,13 +424,15 @@ def reopen_review(lid):
 
 
 # ─────────────────────────────────────────────────────────────────
-# 废标后一键开下一轮（复制本轮函件为新草稿）
+# 废标后一键开下一轮（复制本轮函件为新的待办件）
 # ─────────────────────────────────────────────────────────────────
 
 @bp.route("/api/inquiries/<int:lid>/next-round", methods=["POST"])
 @login_required
 def next_round(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
@@ -438,7 +457,7 @@ def next_round(lid):
         detail       = letter.detail,
         requirements = letter.requirements,
         deadline     = "",
-        status       = "草稿",
+        status       = "待办",
         notes        = letter.notes,
         created_by   = session.get("display_name", ""),
         created_at   = now,
@@ -487,7 +506,7 @@ def next_round(lid):
 
     db.session.commit()
     return jsonify({"ok": True,
-                    "message": f"已开启第{new_round}轮（草稿），请到「7. 询/议价函」中调整供应商并发出邀请",
+                    "message": f"已开启第{new_round}轮（待办），请到「7. 询/议价函」中调整供应商并发出邀请",
                     "data": new_letter.to_dict()})
 
 
@@ -499,7 +518,9 @@ def next_round(lid):
 @bp.route("/api/inquiries/<int:lid>/convert-to-negotiation", methods=["POST"])
 @login_required
 def convert_to_negotiation(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()
@@ -628,6 +649,9 @@ def convert_to_negotiation(lid):
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>/files", methods=["GET"])
 @login_required
 def list_supplier_files(lid, sid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     rows = db.session.execute(
         db.select(InquirySupplierFile).filter_by(inquiry_id=lid, supplier_id=sid)
         .order_by(InquirySupplierFile.id)
@@ -638,6 +662,9 @@ def list_supplier_files(lid, sid):
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>/files", methods=["POST"])
 @login_required
 def upload_supplier_file(lid, sid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     sup = db.session.get(InquirySupplier, sid)
     if not sup or sup.inquiry_id != lid:
         return jsonify({"ok": False, "error": "供应商不存在"}), 404
@@ -678,6 +705,9 @@ def _supplier_file(lid, fid):
 @bp.route("/api/inquiries/<int:lid>/supplier-files/<int:fid>", methods=["DELETE"])
 @login_required
 def delete_supplier_file(lid, fid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     rec, path = _supplier_file(lid, fid)
     if not rec:
         return jsonify({"ok": False, "error": "文件不存在"}), 404
@@ -694,6 +724,9 @@ def delete_supplier_file(lid, fid):
 @bp.route("/api/inquiries/<int:lid>/supplier-files/<int:fid>/download", methods=["GET"])
 @login_required
 def download_supplier_file(lid, fid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     rec, path = _supplier_file(lid, fid)
     if not rec:
         return jsonify({"ok": False, "error": "文件不存在"}), 404
@@ -705,12 +738,16 @@ def download_supplier_file(lid, fid):
 @bp.route("/api/inquiries/<int:lid>/supplier-files/<int:fid>/preview", methods=["GET"])
 @login_required
 def preview_supplier_file(lid, fid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     rec, path = _supplier_file(lid, fid)
     if not rec:
         return jsonify({"ok": False, "error": "文件不存在"}), 404
     if not path:
         return jsonify({"ok": False, "error": "文件已丢失"}), 404
-    return send_file(path, as_attachment=False, download_name=rec.filename)
+    from services.office_convert import send_preview
+    return send_preview(path, rec.filename)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -724,9 +761,9 @@ def fetch_replies_into_review(lid):
     回信附件（pdf/word/图片等）自动存为该供应商的响应文件（按文件名去重）。
     匹配规则与 7. 询/议价函的「拉取邮箱回复」一致：
     主题含供应商全称 或 发件地址=供应商邮箱；主题含项目名=确信本项目。"""
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     sups = _suppliers(lid)
     if not sups:
         return jsonify({"ok": False, "error": "该函件没有供应商"}), 400
@@ -829,7 +866,9 @@ def fetch_replies_into_review(lid):
 @bp.route("/api/inquiries/<int:lid>/review/excel", methods=["GET"])
 @login_required
 def review_excel(lid):
-    letter = db.session.get(InquiryLetter, lid)
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     review = db.session.execute(
         db.select(InquiryReview).filter_by(inquiry_id=lid)
     ).scalar_one_or_none()

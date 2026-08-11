@@ -11,7 +11,7 @@ export interface InquiryLetter {
   detail: string         // 项目细则和限价
   requirements: string   // 相关要求
   deadline: string
-  status: '草稿' | '进行中' | '已完成'
+  status: '待办' | '进行中' | '已完成'   // 函件三态（原「草稿」按业务口径改叫「待办」）
   notes: string
   created_by: string
   created_at: string
@@ -186,6 +186,10 @@ export const attachFromTemplate = (inquiryId: number, templateIds: number[]) =>
 
 // ── Template Library API ────────────────────────────────────────
 
+// 模板预览/下载（后端 2026-08-04 新增；此前模板只能靠文件名猜内容）
+export const templatePreviewUrl = (id: number) => `/api/inquiry-templates/${id}/preview`
+export const templateDownloadUrl = (id: number) => `/api/inquiry-templates/${id}/download`
+
 export const listTemplates = () =>
   api.get<{ ok: boolean; data: InquiryTemplate[] }>('/inquiry-templates')
 
@@ -330,7 +334,7 @@ export const startNextRound = (inquiryId: number) =>
     `/inquiries/${inquiryId}/next-round`,
   )
 
-// 询价废标后同轮转院内议价（第二轮起）：保留废标记录，另建同轮次议价函草稿
+// 询价废标后同轮转院内议价（第二轮起）：保留废标记录，另建同轮次议价函（待办态）
 export const convertToNegotiation = (inquiryId: number) =>
   api.post<{ ok: boolean; message: string; data: InquiryLetter }>(
     `/inquiries/${inquiryId}/convert-to-negotiation`,

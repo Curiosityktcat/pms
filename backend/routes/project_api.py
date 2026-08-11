@@ -90,12 +90,21 @@ def _attach_round_info(rows):
         .group_by(Package.project_id)
     ).all())
     stages = stage_map(ids)
+    # 已成功推送 rd-web 合同审签的项目（任一份合同有流水号即算）
+    from models.contract import Contract as _Contract
+    contract_rdweb_ids = {row[0] for row in db.session.execute(
+        db.select(_Contract.project_id)
+        .where(_Contract.project_id.in_(ids))
+        .where(_Contract.rdweb_serial_no != "")
+    ).all()}
     for r in rows:
         st = stages.get(r["id"], {})
         r["package_count"] = pkg_counts.get(r["id"], 0)
         r["current_round"] = st.get("current_round", 0)
         r["current_stage"] = st.get("current_stage", "")
         r["pending_contract"] = st.get("pending_contract", 0)
+        r["contract_rdweb_submitted"] = r["id"] in contract_rdweb_ids
+        r["agency_rdweb_submitted"] = bool(r.get("agency_rdweb_serial_no"))
 
 
 @bp.route("", methods=["POST"])
@@ -143,6 +152,10 @@ def create_project():
                         import datetime as _dt2
                         dist.updated_at = _dt2.datetime.now().isoformat(timespec="seconds")
                         db.session.commit()
+                        # 注意：分发附件不再自动复制成 5.1 采购需求附件。
+                        # 项目池里混有医院内部文件，全量带入会连同内部文件一起打包给代理机构；
+                        # 改由经办人在「5.1 采购需求确认」按需从项目池挑选（见
+                        # procurement_doc_api 的 pool-attachments / pool-attachments/import）。
                 except Exception:
                     pass
         return jsonify({"ok": True, "message": msg, "data": p.to_dict()}), 201

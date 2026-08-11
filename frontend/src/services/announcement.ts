@@ -39,9 +39,33 @@ export interface Announcement {
   corr_items_json: string     // [{item,before,after}]
   corr_in_attachment: number  // 1=内容较多详见附件
   corr_seq: number            // 第几次更正
-  status: string
+  // 6.2 调研公告
+  survey_content?: string
+  survey_qualification?: string
+  survey_quote_req?: string
+  survey_materials?: string
+  survey_deadline?: string
+  survey_submit_way?: string
+  survey_note?: string
+  // 6.4 单一来源公示（法定必备内容，财政部令第74号第38条）
+  ss_goods_desc?: string
+  ss_reason?: string
+  ss_supplier_name?: string
+  ss_supplier_addr?: string
+  ss_experts_json?: string
+  ss_publicity_start?: string
+  ss_publicity_end?: string
+  ss_objection_dept?: string
+  ss_objection_contact?: string
+  ss_objection_phone?: string
+  ss_objection_addr?: string
+  status: string              // 草稿|待确认|已确认|已驳回
   confirmed_by: string
   confirmed_at: string
+  reject_reason?: string
+  reject_count?: number
+  rejected_by?: string
+  rejected_at?: string
   created_at: string
   created_by: string
 }
@@ -125,6 +149,11 @@ export function confirmAnnouncement(id: number) {
 }
 export function revokeAnnouncement(id: number) {
   return axios.post<{ ok: boolean; message: string; data: Announcement }>(`/api/announcements/${id}/revoke`)
+}
+/** 驳回：打回代理机构修改，必须写明原因（记入审批过程记录，归档留存） */
+export function rejectAnnouncement(id: number, reason: string) {
+  return axios.post<{ ok: boolean; message: string; data: Announcement }>(
+    `/api/announcements/${id}/reject`, { reason })
 }
 export function generateAnnouncementWord(id: number) {
   return axios.post(`/api/announcements/${id}/generate`, {}, { responseType: 'blob' })

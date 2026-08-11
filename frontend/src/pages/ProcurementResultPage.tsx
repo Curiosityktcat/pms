@@ -23,6 +23,7 @@ import {
   Popconfirm,
   Alert,
   Modal,
+  Tooltip,
 } from 'antd'
 import {
   PlusOutlined,
@@ -38,6 +39,9 @@ import {
   DownloadOutlined,
   EyeOutlined,
   FileDoneOutlined,
+  StopOutlined,
+  AuditOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
@@ -49,6 +53,9 @@ import {
   submitResult,
   confirmResult,
   revokeResult,
+  rejectResult,
+  notConfirmResult,
+  recheckResult,
   resultWordUrl,
   listPriceAttachments,
   uploadPriceAttachmentUrl,
@@ -150,7 +157,14 @@ export default function ProcurementResultPage() {
   const [results, setResults] = useState<ProcurementResult[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
-  const [tabStatus, setTabStatus] = useState<'草稿' | '待确认' | '已确认'>('草稿')
+  // 待确认排最左并默认选中
+  const [tabStatus, setTabStatus] = useState<'待确认' | '已驳回' | '不确认' | '草稿' | '已确认'>('待确认')
+  // 驳回 / 不确认 / 复核 弹窗
+  const [rejectModal, setRejectModal] = useState<{ open: boolean; row?: ProcurementResult; mode: 'reject' | 'not_confirm' }>({ open: false, mode: 'reject' })
+  const [rejectReason, setRejectReason] = useState('')
+  const [recheckRow, setRecheckRow] = useState<ProcurementResult | null>(null)
+  const [recheckHandling, setRecheckHandling] = useState<string>('维持原结果')
+  const [recheckNote, setRecheckNote] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -161,6 +175,8 @@ export default function ProcurementResultPage() {
   const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
   // 中标通知书管理弹窗（已确认结果）
   const [awardModal, setAwardModal] = useState<{ open: boolean; result?: ProcurementResult }>({ open: false })
+  // 代理上传的单价附件/报价单：确认阶段经办人要能看（原来只在草稿编辑抽屉里，经办人根本进不去）
+  const [attachModal, setAttachModal] = useState<{ open: boolean; result?: ProcurementResult }>({ open: false })
   // 代理机构或采购人方可上传中标通知书
   const canUploadAward = isAgency || canConfirm
   const [form] = Form.useForm()
@@ -306,8 +322,9 @@ export default function ProcurementResultPage() {
     setPackages((prev) => prev.filter((_, i) => i !== idx))
   }
 
-  // ─── 保存 ────────────────────────────────────────────────────────────────────
-  const handleSave = async () => {
+  // ─── 保存 / 保存并提交 ────────────────────────────────────────────────────────
+  // thenSubmit=true：填好必填项后一步「自动保存 + 提交给经办人」，避免代理漏掉单独提交
+  const handleSave = async (thenSubmit = false) => {
     let values: Record<string, unknown>
     try {
       values = await form.validateFields()
@@ -317,17 +334,24 @@ export default function ProcurementResultPage() {
     setSaving(true)
     try {
       const payload = { ...values, packages }
+      let rid = editingId
       if (editingId) {
         await updateResult(editingId, payload as Partial<ProcurementResult>)
-        message.success('保存成功')
       } else {
-        await createResult(payload as Partial<ProcurementResult> & { packages: ResultPackage[] })
-        message.success('新建成功')
+        const res = await createResult(payload as Partial<ProcurementResult> & { packages: ResultPackage[] })
+        rid = (res.data as { data?: { id?: number } })?.data?.id ?? null
+      }
+      if (thenSubmit && rid) {
+        await submitResult(rid)
+        message.success('已保存并提交，等待经办人确认')
+      } else {
+        message.success(editingId ? '保存成功' : '新建成功')
       }
       setDrawerOpen(false)
       loadResults()
-    } catch {
-      message.error('保存失败')
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || (thenSubmit ? '提交失败' : '保存失败'))
     } finally {
       setSaving(false)
     }
@@ -368,6 +392,47 @@ export default function ProcurementResultPage() {
         }
       },
     })
+  }
+
+  // ─── 驳回 / 不确认 ──────────────────────────────────────────────────────────
+  // 驳回：确认函本身写错了，打回代理机构改；
+  // 不确认：评审委员会的结果采购人不认可——评审已结束改不了，只能让代理复核后
+  //         给出处置（维持/废标/部分废标/顺延）再推回来确认。两者性质不同，分开做。
+  const handleRejectOrNotConfirm = async () => {
+    const row = rejectModal.row
+    if (!row) return
+    const reason = rejectReason.trim()
+    if (!reason) {
+      message.warning(rejectModal.mode === 'reject' ? '请填写驳回原因' : '请写明不确认该采购结果的原由')
+      return
+    }
+    try {
+      const res = rejectModal.mode === 'reject'
+        ? await rejectResult(row.id, reason)
+        : await notConfirmResult(row.id, reason)
+      message.success(res.data.message || '已处理')
+      setRejectModal({ open: false, mode: 'reject' })
+      setRejectReason('')
+      loadResults()
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '操作失败')
+    }
+  }
+
+  // ─── 代理机构复核后重新推送 ─────────────────────────────────────────────────
+  const handleRecheck = async () => {
+    if (!recheckRow) return
+    if (!recheckNote.trim()) { message.warning('请填写复核说明'); return }
+    try {
+      const res = await recheckResult(recheckRow.id, recheckHandling, recheckNote.trim())
+      message.success(res.data.message || '已重新推送')
+      setRecheckRow(null); setRecheckNote('')
+      loadResults()
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '复核提交失败')
+    }
   }
 
   // ─── 撤回 ────────────────────────────────────────────────────────────────────
@@ -425,6 +490,18 @@ export default function ProcurementResultPage() {
         { label: '代理', value: r.agency_name },
         { label: '结果', value: packagesSummary(r.packages) },
         { label: '签章', value: r.confirm_date },
+        ...(r.status === '已驳回' && r.reject_reason
+          ? [{ label: `驳回原因${(r.reject_count || 0) > 1 ? `（第${r.reject_count}次）` : ''}`,
+               value: <Typography.Text type="danger">{r.reject_reason}</Typography.Text> }]
+          : []),
+        ...(r.status === '不确认' && r.not_confirm_reason
+          ? [{ label: `不确认原由（${r.not_confirmed_by || ''}）`,
+               value: <Typography.Text type="danger">{r.not_confirm_reason}</Typography.Text> }]
+          : []),
+        ...(r.recheck_handling && r.status !== '不确认'
+          ? [{ label: '复核处置',
+               value: <span><Tag color="purple">{r.recheck_handling}</Tag>{r.recheck_note}</span> }]
+          : []),
       ],
       actions: (
         <>
@@ -434,10 +511,37 @@ export default function ProcurementResultPage() {
           {r.status === '草稿' && (
             <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleSubmit(r)}>提交</Button>
           )}
+          {/* 确认前要能核对代理上传的报价单/单价附件，所以各状态都给入口 */}
+          <Button size="small" icon={<PaperClipOutlined />} onClick={() => setAttachModal({ open: true, result: r })}>附件</Button>
           {r.status === '待确认' && canConfirm && (
             <>
               <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleConfirm(r)}>确认</Button>
+              {/* 驳回=单据编制有误，打回改；不确认=不认可评审委员会的结果本身 */}
+              <Tooltip title="确认函本身有误（供应商名称、金额、包号等），打回代理机构修改">
+                <Button size="small" danger ghost icon={<StopOutlined />}
+                  onClick={() => { setRejectModal({ open: true, row: r, mode: 'reject' }); setRejectReason('') }}>驳回</Button>
+              </Tooltip>
+              <Tooltip title="评审已结束但采购人不认可该采购结果，需写明原由，由代理机构复核后重新推送">
+                <Button size="small" danger icon={<ExclamationCircleOutlined />}
+                  onClick={() => { setRejectModal({ open: true, row: r, mode: 'not_confirm' }); setRejectReason('') }}>不确认此结果</Button>
+              </Tooltip>
               <Button size="small" icon={<RollbackOutlined />} onClick={() => handleRevoke(r)}>退回</Button>
+            </>
+          )}
+          {r.status === '已驳回' && (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+              <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />}
+                onClick={() => handleSubmit(r)}>修改后重新提交</Button>
+            </>
+          )}
+          {r.status === '不确认' && (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>修改结果内容</Button>
+              <Button size="small" type="primary" icon={<AuditOutlined />}
+                onClick={() => { setRecheckRow(r); setRecheckHandling('维持原结果'); setRecheckNote('') }}>
+                复核并重新推送
+              </Button>
             </>
           )}
           {r.status === '待确认' && isAgency && (
@@ -473,10 +577,12 @@ export default function ProcurementResultPage() {
       >
         <Tabs
           activeKey={tabStatus}
-          onChange={(k) => setTabStatus(k as '草稿' | '待确认' | '已确认')}
+          onChange={(k) => setTabStatus(k as typeof tabStatus)}
           items={[
-            { key: '草稿', label: `草稿 (${results.filter((r) => r.status === '草稿').length})` },
             { key: '待确认', label: `待确认 (${results.filter((r) => r.status === '待确认').length})` },
+            { key: '已驳回', label: `已驳回 (${results.filter((r) => r.status === '已驳回').length})` },
+            { key: '不确认', label: `不确认待复核 (${results.filter((r) => r.status === '不确认').length})` },
+            { key: '草稿', label: `草稿 (${results.filter((r) => r.status === '草稿').length})` },
             { key: '已确认', label: `已确认 (${results.filter((r) => r.status === '已确认').length})` },
           ]}
           style={{ marginBottom: 12 }}
@@ -498,12 +604,19 @@ export default function ProcurementResultPage() {
           <Space>
             <Button onClick={() => setDrawerOpen(false)}>取消</Button>
             <Button
-              type="primary"
               icon={<SaveOutlined />}
               loading={saving}
-              onClick={handleSave}
+              onClick={() => handleSave(false)}
             >
               保存（草稿）
+            </Button>
+            <Button
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              loading={saving}
+              onClick={() => handleSave(true)}
+            >
+              保存并提交
             </Button>
           </Space>
         }
@@ -649,6 +762,86 @@ export default function ProcurementResultPage() {
       >
         {awardModal.result && (
           <AwardNotice resultId={awardModal.result.id} canUpload={canUploadAward} />
+        )}
+      </Modal>
+
+      {/* ── 驳回 / 不确认 ─────────────────────────────────────────────── */}
+      <Modal
+        open={rejectModal.open}
+        title={rejectModal.mode === 'reject' ? '驳回采购结果确认函' : '不确认本次采购结果'}
+        okText={rejectModal.mode === 'reject' ? '确认驳回' : '确认不予确认'}
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onOk={handleRejectOrNotConfirm}
+        onCancel={() => { setRejectModal({ open: false, mode: 'reject' }); setRejectReason('') }}
+        width={620}
+      >
+        <Alert
+          type={rejectModal.mode === 'reject' ? 'warning' : 'error'}
+          showIcon style={{ marginBottom: 12 }}
+          message={rejectModal.mode === 'reject'
+            ? '驳回 = 确认函本身填错了（供应商名称、金额、包号等），退回代理机构修改后重新提交。评审结果本身不变。'
+            : '不确认 = 评审委员会已完成评审，但采购人不认可该采购结果。评审已结束、结果无法直接修改，因此需写明不认可的原由，由代理机构复核后给出处置（维持原结果 / 废标 / 部分废标 / 顺延候选人）并重新推送确认。'}
+        />
+        <Input.TextArea
+          rows={5} maxLength={1000} showCount
+          placeholder={rejectModal.mode === 'reject'
+            ? '例如：包二成交供应商名称与评审报告不一致，请核对后修改'
+            : '例如：成交供应商所投产品的注册证适用范围与采购需求第3.2条不符，我方不认可该评审结果，请复核'}
+          value={rejectReason}
+          onChange={e => setRejectReason(e.target.value)}
+        />
+      </Modal>
+
+      {/* ── 代理机构复核后重新推送 ─────────────────────────────────────── */}
+      <Modal
+        open={!!recheckRow}
+        title="复核采购结果并重新推送确认"
+        okText="提交复核结论并重新推送"
+        cancelText="取消"
+        onOk={handleRecheck}
+        onCancel={() => { setRecheckRow(null); setRecheckNote('') }}
+        width={640}
+      >
+        {recheckRow?.not_confirm_reason && (
+          <Alert type="error" showIcon style={{ marginBottom: 12 }}
+            message={`采购人不确认的原由（${recheckRow.not_confirmed_by || ''}）`}
+            description={recheckRow.not_confirm_reason} />
+        )}
+        <div style={{ marginBottom: 8 }}>
+          <Typography.Text strong>复核处置结论</Typography.Text>
+        </div>
+        <Radio.Group
+          value={recheckHandling}
+          onChange={e => setRecheckHandling(e.target.value)}
+          style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}
+        >
+          <Radio value="维持原结果">维持原结果 —— 复核后认为评审合法有效，结果不变</Radio>
+          <Radio value="废标">废标 —— 本轮全部包废标，系统将在确认后自动开启下一次采购</Radio>
+          <Radio value="部分废标">部分废标 —— 仅部分包废标（如包一废、包二不废），请先在「修改结果内容」中把对应包改为废标</Radio>
+          <Radio value="顺延候选人">顺延候选人 —— 由排名第二的候选人成交，请先在「修改结果内容」中改成交供应商</Radio>
+        </Radio.Group>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="选择「部分废标」或「顺延候选人」时，请先关闭本窗口，点「修改结果内容」把分包结果改好，再回来提交复核结论。" />
+        <Input.TextArea
+          rows={4} maxLength={1000} showCount
+          placeholder="复核说明：写明复核经过与依据，例如：经复核，成交产品注册证适用范围涵盖采购需求第3.2条所列项目，评审结论无误，建议维持原结果"
+          value={recheckNote}
+          onChange={e => setRecheckNote(e.target.value)}
+        />
+      </Modal>
+
+      {/* ─── 单价附件/报价单：确认阶段经办人核对代理上传的材料 ──────────────── */}
+      <Modal
+        title={`附件（单价表 / 报价单） — ${attachModal.result ? (projectMap[attachModal.result.project_id]?.name || `项目#${attachModal.result.project_id}`) : ''}`}
+        open={attachModal.open}
+        onCancel={() => setAttachModal({ open: false })}
+        footer={null}
+        width={680}
+        destroyOnClose
+      >
+        {attachModal.result && (
+          <PriceAttachments resultId={attachModal.result.id} locked={attachModal.result.status === '已确认'} />
         )}
       </Modal>
     </div>

@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react'
-import { Button, Tag, Card, App, Tooltip, Alert, Popconfirm, Modal, Input, Tabs } from 'antd'
-import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Button, Tag, Card, App, Tooltip, Alert, Popconfirm, Modal, Input, Tabs,
+  Select, Space, Segmented,
+} from 'antd'
+import RecordCards, { RecordCard, useIsMobile, type RecordCardData } from '../components/RecordCards'
 import {
   FileDoneOutlined, CheckCircleOutlined, StopOutlined,
-  ClockCircleOutlined,
+  ClockCircleOutlined, CalendarOutlined, BarsOutlined,
+  LeftOutlined, RightOutlined,
 } from '@ant-design/icons'
 import { getBidList, markCanOpen, proposeBidFail, confirmBidFail, revokeBidFail } from '../services/bid'
 import type { Project } from '../services/project'
@@ -23,17 +27,20 @@ interface BidProject extends Project {
   can_open_confirmed_by?: string
 }
 
+// 中文/ISO 开标时间串 → Date（解析不出返回 null）
+function parseBidTime(bidTime: string): Date | null {
+  if (!bidTime) return null
+  const m = bidTime.match(/(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2})?[：:]?(\d{2})?/)
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0))
+  const d = new Date(bidTime)
+  return isNaN(d.getTime()) ? null : d
+}
+
 // 解析中文日期时间，判断开标时间是否临近/已过
 function getBidTimeStatus(bidTime: string): { color: string; tip: string } {
   if (!bidTime) return { color: '#ccc', tip: '未设置开标时间' }
-  const m = bidTime.match(/(\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2})[：:](\d{2})/)
-  let d: Date
-  if (m) {
-    d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])
-  } else {
-    d = new Date(bidTime)
-    if (isNaN(d.getTime())) return { color: '#1677ff', tip: bidTime }
-  }
+  const d = parseBidTime(bidTime)
+  if (!d) return { color: '#1677ff', tip: bidTime }
   const diff = d.getTime() - Date.now()
   if (diff < 0)        return { color: '#aaa',    tip: '已过开标时间' }
   if (diff < 86400000) return { color: '#ff4d4f', tip: '24小时内开标' }
@@ -41,12 +48,34 @@ function getBidTimeStatus(bidTime: string): { color: string; tip: string } {
   return { color: '#52c41a', tip: '开标时间正常' }
 }
 
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const VIEW_KEY = 'pms_bid_view'
+
+const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+
 export default function BidManagePage() {
   const [projects, setProjects] = useState<BidProject[]>([])
   const [loading, setLoading] = useState(true)
   const { user } = useAuth()
   const { message } = App.useApp()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
+
+  // 筛选 / 搜索 / 视图
+  const [officerFilter, setOfficerFilter] = useState<string>()
+  const [agencyFilter, setAgencyFilter] = useState<string>()
+  const [keyword, setKeyword] = useState('')
+  const [view, setView] = useState<'list' | 'calendar'>(
+    () => (localStorage.getItem(VIEW_KEY) === 'calendar' ? 'calendar' : 'list'),
+  )
+  const [weekOffset, setWeekOffset] = useState(0)          // 0=本周，-1 上周，+1 下周
+  // 已开标页签独立记周次：已开标的项目基本都在过去，默认落在上一周更顺手
+  const [openedWeekOffset, setOpenedWeekOffset] = useState(-1)
+  const [dayDetail, setDayDetail] = useState<BidProject | null>(null)  // 日历里点开的项目
+  const switchView = (v: 'list' | 'calendar') => {
+    setView(v)
+    localStorage.setItem(VIEW_KEY, v)
+  }
 
   const isAgency = user?.role === 'agency'
   const isOfficer = user?.role === 'officer'
@@ -124,6 +153,7 @@ export default function BidManagePage() {
         ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>
         : <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[rn - 1]}次</Tag>,
       fields: [
+        { label: '经办人', value: row.officer || '—' },
         { label: '代理', value: row.agency_name },
         { label: '开标时间', value: deadline ? <span style={{ color: tcolor, fontWeight: 500 }}><ClockCircleOutlined style={{ marginRight: 4 }} />{deadline}</span> : '' },
       ],
@@ -171,8 +201,241 @@ export default function BidManagePage() {
     }
   }
 
-  const activeProjects = projects.filter(p => (p.bucket || 'active') === 'active')
-  const openedProjects = projects.filter(p => p.bucket === 'opened')
+  // ── 筛选项：经办人 / 代理公司，取自当前数据 ──────────────────────
+  const officerOptions = useMemo(
+    () => Array.from(new Set(projects.map(p => p.officer).filter(Boolean)))
+      .sort().map(v => ({ value: v as string, label: v as string })),
+    [projects],
+  )
+  const agencyOptions = useMemo(
+    () => Array.from(new Set(projects.map(p => p.agency_name).filter(Boolean)))
+      .sort().map(v => ({ value: v as string, label: v as string })),
+    [projects],
+  )
+
+  // 筛选 + 搜索 + 按开标时间升序（越早越靠前，无时间的排最后）
+  const applyFilter = (list: BidProject[]) => {
+    const kw = keyword.trim()
+    return list
+      .filter(p => !officerFilter || p.officer === officerFilter)
+      .filter(p => !agencyFilter || p.agency_name === agencyFilter)
+      .filter(p => !kw
+        || (p.name || '').includes(kw)
+        || (p.number || '').includes(kw)
+        || (p.officer || '').includes(kw)
+        || (p.agency_name || '').includes(kw))
+      .sort((a, b) => {
+        const ta = parseBidTime(a.ann_deadline || a.bid_time || '')?.getTime() ?? Infinity
+        const tb = parseBidTime(b.ann_deadline || b.bid_time || '')?.getTime() ?? Infinity
+        return ta - tb
+      })
+  }
+
+  const activeProjects = applyFilter(projects.filter(p => (p.bucket || 'active') === 'active'))
+  const openedProjects = applyFilter(projects.filter(p => p.bucket === 'opened'))
+  const filteredCount = activeProjects.length + openedProjects.length
+  const rawCount = projects.length
+
+  // ── 日历模式：真正的周视图，周一~周日 7 列横向排开 ────────────────
+  // 每个日格里一行一个项目，项目名称是主角（可换行看全），时间和状态做辅助信息。
+  // 按开标日分组。待开标与已开标各自分组，同一套日历渲染给两边用。
+  const groupByDay = (list: BidProject[]) => {
+    const m = new Map<string, BidProject[]>()
+    const noTime: BidProject[] = []
+    for (const p of list) {
+      const d = parseBidTime(p.ann_deadline || p.bid_time || '')
+      if (!d) { noTime.push(p); continue }
+      const k = dayKey(d)
+      const arr = m.get(k)
+      if (arr) arr.push(p)
+      else m.set(k, [p])
+    }
+    return { map: m, noTime }
+  }
+  const activeByDay = useMemo(() => groupByDay(activeProjects), [activeProjects])
+  const openedByDay = useMemo(() => groupByDay(openedProjects), [openedProjects])
+
+  // 某个 offset 对应那一周的周一
+  const weekStartOf = (offset: number) => {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    const dow = d.getDay()                       // 0=周日
+    d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1) + offset * 7)
+    return d
+  }
+  const daysOf = (start: Date) =>
+    Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start)
+      d.setDate(start.getDate() + i)
+      return d
+    })
+
+  const todayKey = dayKey(new Date())
+
+  /** 周视图日历。待开标与已开标共用，只是数据源与文案不同。 */
+  const renderCalendar = (
+    grouped: { map: Map<string, BidProject[]>; noTime: BidProject[] },
+    offset: number,
+    setOffset: (fn: (w: number) => number) => void,
+    resetOffset: () => void,
+    opts: { withActions: boolean; emptyWord: string },
+  ) => {
+    const weekStart = weekStartOf(offset)
+    const weekDays = daysOf(weekStart)
+    const keys = new Set(weekDays.map(dayKey))
+    let outsideCount = 0
+    for (const [k, arr] of grouped.map) if (!keys.has(k)) outsideCount += arr.length
+    return (
+    <>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Button icon={<LeftOutlined />} onClick={() => setOffset(w => w - 1)}>上一周</Button>
+        <Button onClick={resetOffset} type={offset === 0 ? 'primary' : 'default'}>本周</Button>
+        <Button onClick={() => setOffset(w => w + 1)}>下一周<RightOutlined /></Button>
+        <span style={{ fontWeight: 600, fontSize: 15, marginLeft: 6 }}>
+          {weekStart.getFullYear()}年{weekStart.getMonth() + 1}月{weekStart.getDate()}日
+          {' — '}
+          {weekDays[6].getMonth() + 1}月{weekDays[6].getDate()}日
+        </span>
+        {outsideCount > 0 && (
+          <Tag color="orange">本周以外还有 {outsideCount} 个{opts.emptyWord}项目，可翻周查看</Tag>
+        )}
+      </Space>
+
+      <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr' : 'repeat(7, minmax(150px, 1fr))',
+          gap: 8,
+          minWidth: isMobile ? undefined : 1100,
+        }}>
+          {weekDays.map(d => {
+            const k = dayKey(d)
+            const items = grouped.map.get(k) || []
+            const isToday = k === todayKey
+            const isWeekend = d.getDay() === 0 || d.getDay() === 6
+            if (isMobile && !items.length) return null      // 手机上不占地方
+            return (
+              <div key={k} style={{
+                border: isToday ? '2px solid #1a73e8' : '1px solid #d4d7dc',
+                borderRadius: 8,
+                background: isToday ? '#f0f6ff' : isWeekend ? '#fafafa' : '#fff',
+                minHeight: isMobile ? undefined : 150,
+                display: 'flex', flexDirection: 'column',
+              }}>
+                <div style={{
+                  padding: '6px 10px',
+                  borderBottom: '1px solid #e8eaed',
+                  background: isToday ? '#e3edff' : '#f5f6f8',
+                  borderRadius: '6px 6px 0 0',
+                  display: 'flex', alignItems: 'baseline', gap: 6,
+                }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: isToday ? '#1a73e8' : '#3c4043' }}>
+                    {WEEKDAYS[d.getDay()]}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#5f6368' }}>
+                    {d.getMonth() + 1}/{d.getDate()}
+                  </span>
+                  {isToday && <Tag color="blue" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>今天</Tag>}
+                  <span style={{ flex: 1 }} />
+                  {items.length > 0 && (
+                    <span style={{ fontSize: 11, color: '#5f6368', fontWeight: 600 }}>{items.length}</span>
+                  )}
+                </div>
+                <div style={{ padding: 6, display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                  {items.length === 0
+                    ? <div style={{ color: '#c0c4c9', fontSize: 12, textAlign: 'center', paddingTop: 16 }}>—</div>
+                    : items.map(p => {
+                      const st = canOpenInfo(p)
+                      const t = parseBidTime(p.ann_deadline || p.bid_time || '')
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => setDayDetail(p)}
+                          style={{
+                            border: '1px solid #e0e3e7',
+                            borderLeft: `3px solid ${ACCENT[st.color] || '#1a73e8'}`,
+                            borderRadius: 6, padding: '6px 8px', cursor: 'pointer',
+                            background: '#fff',
+                          }}
+                        >
+                          {/* 项目名称是主角：允许换行，最多三行，看得清 */}
+                          <div style={{
+                            fontSize: 13, fontWeight: 600, color: '#202124', lineHeight: 1.35,
+                            display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden', wordBreak: 'break-all',
+                          }}>
+                            {p.name}
+                          </div>
+                          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                            <Tag color={st.color} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                              {st.text}
+                            </Tag>
+                            {t && (
+                              <span style={{ fontSize: 11, color: '#d93025', fontWeight: 600 }}>
+                                {String(t.getHours()).padStart(2, '0')}:{String(t.getMinutes()).padStart(2, '0')}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#5f6368', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.number}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#5f6368', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.officer || '—'}｜{p.agency_name || '—'}
+                          </div>
+                        </div>
+                      )
+                    })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {grouped.noTime.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8, color: '#5f6368' }}>
+            未排期（未设置开标时间）· {grouped.noTime.length} 个
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {grouped.noTime.map(p => (
+              <RecordCard key={p.id} data={bidToCard(p, opts.withActions)} isMobile={isMobile} roomy={false} />
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+    )
+  }
+
+  const toolbar = (
+    <Space wrap style={{ marginBottom: 12 }}>
+      <Segmented
+        value={view}
+        onChange={v => switchView(v as 'list' | 'calendar')}
+        options={[
+          { label: '列表', value: 'list', icon: <BarsOutlined /> },
+          { label: '日历', value: 'calendar', icon: <CalendarOutlined /> },
+        ]}
+      />
+      <Select
+        allowClear showSearch placeholder="按经办人筛选" style={{ width: 170 }}
+        value={officerFilter} onChange={setOfficerFilter} options={officerOptions}
+      />
+      <Select
+        allowClear showSearch placeholder="按代理公司筛选" style={{ width: 210 }}
+        value={agencyFilter} onChange={setAgencyFilter} options={agencyOptions}
+      />
+      <Input.Search
+        allowClear placeholder="搜索项目名称 / 编号 / 经办人 / 代理"
+        style={{ width: 300 }}
+        onChange={e => setKeyword(e.target.value)}
+      />
+      {(officerFilter || agencyFilter || keyword.trim()) && (
+        <Tag color="blue">筛选后 {filteredCount} / 共 {rawCount}</Tag>
+      )}
+    </Space>
+  )
 
   // 待办「去处理」跳转：高亮该项目（默认即「进行中」页签，行 rowKey=项目id）
   useFocusTarget(!loading && projects.length > 0, (id) => flashRow(id))
@@ -182,6 +445,7 @@ export default function BidManagePage() {
       <div style={{ fontSize: 18, fontWeight: 600, color: '#2c3e50', marginBottom: 8 }}>
         开标管理
       </div>
+      {toolbar}
       <Tabs
         defaultActiveKey="active"
         items={[
@@ -192,14 +456,21 @@ export default function BidManagePage() {
               <>
                 <Alert
                   type="info" showIcon style={{ marginBottom: 16 }}
-                  message="显示已发布公告、本轮尚未判定开标结果的项目（不受开标时间限制，截止后仍可操作）。可开标单击即生效；标记后开标当天仍留在此处，开标时间过后次日移入「已开标」。流标需代理机构提交原因、经办人确认后才结束本轮并开启下一次采购。"
+                  message={view === 'calendar'
+                    ? '日历模式：按开标日期分框，同一天的项目归在一个大框里，框头显示星期与日期，越早的日期排在越前面。'
+                    : '列表模式：按开标时间升序排列，越早开标的排在越前面。可开标单击即生效；标记后开标当天仍留在此处，开标时间过后次日移入「已开标」。流标需代理机构提交原因、经办人确认后才结束本轮并开启下一次采购。'}
                 />
-                <RecordCards
-                  dataSource={activeProjects}
-                  loading={loading}
-                  emptyText="暂无正在挂网进行中的项目"
-                  toCard={(r) => bidToCard(r, true)}
-                />
+                {view === 'calendar'
+                  ? renderCalendar(activeByDay, weekOffset, setWeekOffset,
+                      () => setWeekOffset(0), { withActions: true, emptyWord: '待开标' })
+                  : (
+                    <RecordCards
+                      dataSource={activeProjects}
+                      loading={loading}
+                      emptyText="暂无正在挂网进行中的项目"
+                      toCard={(r) => bidToCard(r, true)}
+                    />
+                  )}
               </>
             ),
           },
@@ -210,19 +481,45 @@ export default function BidManagePage() {
               <>
                 <Alert
                   type="success" showIcon style={{ marginBottom: 16 }}
-                  message="已标记可开标且开标时间已过的项目（归档查看）。"
+                  message={view === 'calendar'
+                    ? '日历模式：按已开标日期排周视图。已开标的多在过去，默认停在上一周，用「上一周」继续往回翻。'
+                    : '已标记可开标且开标时间已过的项目（归档查看），按开标时间升序排列。'}
                 />
-                <RecordCards
-                  dataSource={openedProjects}
-                  loading={loading}
-                  emptyText="暂无已开标项目"
-                  toCard={(r) => bidToCard(r, false)}
-                />
+                {view === 'calendar'
+                  ? renderCalendar(openedByDay, openedWeekOffset, setOpenedWeekOffset,
+                      () => setOpenedWeekOffset(-1), { withActions: false, emptyWord: '已开标' })
+                  : (
+                    <RecordCards
+                      dataSource={openedProjects}
+                      loading={loading}
+                      emptyText="暂无已开标项目"
+                      toCard={(r) => bidToCard(r, false)}
+                    />
+                  )}
               </>
             ),
           },
         ]}
       />
+
+      {/* 日历里点一个项目 → 弹出完整卡片，操作按钮都在，不用切回列表 */}
+      <Modal
+        open={!!dayDetail}
+        title="开标项目"
+        footer={<Button onClick={() => setDayDetail(null)}>关闭</Button>}
+        onCancel={() => setDayDetail(null)}
+        width={720}
+        destroyOnHidden
+      >
+        {dayDetail && (
+          <RecordCard
+            data={bidToCard(
+              projects.find(p => p.id === dayDetail.id) || dayDetail, true)}
+            isMobile={isMobile}
+            roomy
+          />
+        )}
+      </Modal>
 
       <Modal
         open={!!failRow}

@@ -28,7 +28,22 @@ export interface ProcurementResult {
   packages: ResultPackage[]
   notes: string
   confirm_date: string
-  status: '草稿' | '待确认' | '已确认'
+  status: '草稿' | '待确认' | '已确认' | '已驳回' | '不确认'
+  // 驳回：确认函本身有误，打回代理机构改
+  reject_reason?: string
+  reject_count?: number
+  rejected_by?: string
+  rejected_at?: string
+  // 不确认：采购人不认可评审委员会作出的结果本身
+  not_confirm_reason?: string
+  not_confirm_count?: number
+  not_confirmed_by?: string
+  not_confirmed_at?: string
+  // 代理机构复核处置：维持原结果 | 废标 | 部分废标 | 顺延候选人
+  recheck_handling?: string
+  recheck_note?: string
+  recheck_by?: string
+  recheck_at?: string
   created_by: string
   created_at: string
   updated_at: string
@@ -56,6 +71,18 @@ export const confirmResult = (id: number) =>
 
 export const revokeResult = (id: number) =>
   api.post<{ ok: boolean; message: string }>(`/procurement-results/${id}/revoke`)
+
+/** 驳回：确认函本身有误，打回代理机构修改后重新提交 */
+export const rejectResult = (id: number, reason: string) =>
+  api.post<{ ok: boolean; message: string }>(`/procurement-results/${id}/reject`, { reason })
+
+/** 不确认本次采购结果：采购人不认可评审委员会的结果，须写明原由 */
+export const notConfirmResult = (id: number, reason: string) =>
+  api.post<{ ok: boolean; message: string }>(`/procurement-results/${id}/not-confirm`, { reason })
+
+/** 代理机构复核后重新推送：处置 = 维持原结果 | 废标 | 部分废标 | 顺延候选人 */
+export const recheckResult = (id: number, handling: string, note: string) =>
+  api.post<{ ok: boolean; message: string }>(`/procurement-results/${id}/recheck`, { handling, note })
 
 export const resultWordUrl = (id: number) => `/api/procurement-results/${id}/word`
 

@@ -2,20 +2,21 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Button, Drawer, Form, Input, Select, Radio, InputNumber,
   Card, Space, Tag, Tabs, App, Typography, Row, Col, Upload, Tooltip,
-  Divider, Modal, Descriptions,
+  Divider, Modal, Descriptions, Alert,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined,
   RollbackOutlined, SaveOutlined, UploadOutlined, DownloadOutlined,
   EyeOutlined, FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
-  FileImageOutlined, FileOutlined, PaperClipOutlined,
+  FileImageOutlined, FileOutlined, PaperClipOutlined, StopOutlined,
 } from '@ant-design/icons'
 import RecordCards from '../components/RecordCards'
 import HermesPanel, { type HermesField } from '../components/HermesPanel'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 import {
   listContracts, createContract, updateContract, deleteContract,
-  submitContract, revokeContract, contractFileUrl, contractFilePreviewUrl, uploadContractFile,
+  submitContract, revokeContract, rejectContract,
+  contractFileUrl, contractFilePreviewUrl, uploadContractFile,
   listAttachments, uploadAttachment, deleteAttachment,
   attachmentDownloadUrl, attachmentPreviewUrl,
   type Contract, type ContractAttachment,
@@ -215,10 +216,14 @@ export default function ContractPage() {
   const { user } = useAuth()
   // 确认合同（草案→合同上传）/撤回由采购人方完成，代理机构只能上传合同草案
   const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
+  const isAgency = user?.role === 'agency'
   const [contracts, setContracts] = useState<Contract[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
   const [tabStatus, setTabStatus] = useState<'合同草案' | '审核完成' | '合同上传'>('合同草案')
+  // 驳回弹窗（审核完成 → 打回合同草案）
+  const [rejectRow, setRejectRow] = useState<Contract | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
   // 点合同名/合同文件：在线预览盖章合同
   const [docPreview, setDocPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
   // 合同详情只读弹窗：审核完成/合同上传后仍可点项目名查看草案录入的全部内容
@@ -406,24 +411,31 @@ export default function ContractPage() {
     }
   }
 
-  // ── 保存草案 ──────────────────────────────────────────────────
-  const handleSaveDraft = async () => {
+  // ── 保存草案 / 保存并提交审核 ─────────────────────────────────
+  // thenSubmit=true：填好必填项后一步「自动保存 + 提交审核」，避免代理漏掉单独提交
+  const handleSaveDraft = async (thenSubmit = false) => {
     let values: Record<string, unknown>
     try { values = await draftForm.validateFields() } catch { return }
     setDraftSaving(true)
     try {
+      let cid = draftId
       if (draftId) {
         await updateContract(draftId, values as Partial<Contract>)
-        message.success('保存成功')
       } else {
-        await createContract(values as Partial<Contract>)
-        message.success('新建成功')
+        const res = await createContract(values as Partial<Contract>)
+        cid = (res.data as { data?: { id?: number } })?.data?.id ?? null
+      }
+      if (thenSubmit && cid) {
+        await submitContract(cid)
+        message.success('已保存并提交审核，合同草案 → 审核完成')
+      } else {
+        message.success(draftId ? '保存成功' : '新建成功')
       }
       setDraftOpen(false)
       loadContracts()
     } catch (err: unknown) {
       const errMsg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-      message.error(errMsg || '保存失败')
+      message.error(errMsg || (thenSubmit ? '提交失败' : '保存失败'))
     } finally { setDraftSaving(false) }
   }
 
@@ -497,6 +509,21 @@ export default function ContractPage() {
     })
   }
 
+  // ── 驳回：退回合同草案，必须写明原因（记入审批过程记录）──────
+  const handleReject = async () => {
+    if (!rejectRow) return
+    if (!rejectReason.trim()) { message.warning('请填写驳回原因'); return }
+    try {
+      const res = await rejectContract(rejectRow.id, rejectReason.trim())
+      message.success(res.data.message || '已驳回')
+      setRejectRow(null); setRejectReason('')
+      loadContracts()
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '驳回失败')
+    }
+  }
+
   // ── 删除 ─────────────────────────────────────────────────────
   const handleDelete = (record: Contract) => {
     modal.confirm({
@@ -551,11 +578,41 @@ export default function ContractPage() {
             ) : '待上传',
           },
         ]
+    // 推送审签的结果要看得见——否则推完不知道有没有成、到哪一步了
+    fields.push({
+      label: '审签推送',
+      value: r.rdweb_serial_no
+        ? (
+          <Space size={4} wrap>
+            <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
+              已推送
+            </Tag>
+            <Typography.Text copyable={{ text: r.rdweb_serial_no }} style={{ fontSize: 12 }}>
+              流水号 {r.rdweb_serial_no}
+            </Typography.Text>
+            {r.rdweb_submitted_at && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {r.rdweb_submitted_at.replace('T', ' ').slice(0, 16)}
+              </Typography.Text>
+            )}
+          </Space>
+        )
+        : <Typography.Text type="secondary" style={{ fontSize: 12 }}>未推送</Typography.Text>,
+    })
+    if (r.reject_reason && r.status === '合同草案') {
+      fields.push({
+        label: `驳回原因${(r.reject_count || 0) > 1 ? `（第${r.reject_count}次）` : ''}`,
+        value: <Typography.Text type="danger">{r.reject_reason}</Typography.Text>,
+      })
+    }
     const actions = isDraft ? (
       <>
         <Button size="small" icon={<EditOutlined />} onClick={() => openDraftEdit(r)}>编辑</Button>
-        {canConfirm && (
-          <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleSubmitDraft(r)}>提交审核</Button>
+        {/* 草案由代理机构拟并提交，经办人也可代提交 */}
+        {(canConfirm || isAgency) && (
+          <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleSubmitDraft(r)}>
+            {r.reject_reason ? '修改后重新提交' : '提交审核'}
+          </Button>
         )}
         <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)}>删除</Button>
       </>
@@ -569,7 +626,13 @@ export default function ContractPage() {
           </Button>
         </Upload>
         {canConfirm && r.status === '审核完成' && (
-          <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleFinalize(r)}>完成归档</Button>
+          <>
+            <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleFinalize(r)}>完成归档</Button>
+            <Tooltip title="合同内容有问题，退回合同草案并写明要改什么">
+              <Button size="small" danger ghost icon={<StopOutlined />}
+                onClick={() => { setRejectRow(r); setRejectReason('') }}>驳回</Button>
+            </Tooltip>
+          </>
         )}
         {canConfirm && (
           <Button size="small" icon={<RollbackOutlined />} onClick={() => handleRevoke(r)}>撤回</Button>
@@ -633,8 +696,11 @@ export default function ContractPage() {
         extra={
           <Space>
             <Button onClick={() => setDraftOpen(false)}>取消</Button>
-            <Button icon={<SaveOutlined />} loading={draftSaving} onClick={handleSaveDraft} type="primary">
+            <Button icon={<SaveOutlined />} loading={draftSaving} onClick={() => handleSaveDraft(false)}>
               保存草案
+            </Button>
+            <Button icon={<CheckCircleOutlined />} loading={draftSaving} onClick={() => handleSaveDraft(true)} type="primary">
+              保存并提交审核
             </Button>
           </Space>
         }
@@ -676,8 +742,11 @@ export default function ContractPage() {
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="supplier_legal_rep" label="法定代表人">
-                  <Input placeholder="法人姓名" />
+                {/* rd-web 合同审签单要求「乙方法定代表人」必填，空着推送会卡在提交页
+                    不动且看不出原因，所以在录入这一步就挡住 */}
+                <Form.Item name="supplier_legal_rep" label="法定代表人"
+                  rules={[{ required: true, message: '必填：rd-web 审签单要求乙方法定代表人' }]}>
+                  <Input placeholder="法人姓名（rd-web 审签必填）" />
                 </Form.Item>
               </Col>
             </Row>
@@ -688,8 +757,10 @@ export default function ContractPage() {
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="supplier_contact" label="联系方式">
-                  <Input placeholder="电话/传真" />
+                {/* 同上：rd-web 要求「乙方联系电话」必填 */}
+                <Form.Item name="supplier_contact" label="联系方式"
+                  rules={[{ required: true, message: '必填：rd-web 审签单要求乙方联系电话' }]}>
+                  <Input placeholder="电话/传真（rd-web 审签必填）" />
                 </Form.Item>
               </Col>
             </Row>
@@ -918,7 +989,8 @@ export default function ContractPage() {
             <HermesPanel taskType="procurement-contract" projectId={detailC.project_id}
               title={detailC.contract_name} fields={contractFields} contractId={detailC.id}
               directSubmitUrl={`/contracts/${detailC.id}/submit-to-rdweb`}
-              directStatusUrl={`/contracts/${detailC.id}/rdweb-status`} />
+              directStatusUrl={`/contracts/${detailC.id}/rdweb-status`}
+              autofillUrl={`/contracts/${detailC.id}/rdweb-autofill`} />
           </div>
         )}
         {detailC && (
@@ -958,6 +1030,26 @@ export default function ContractPage() {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* ── 驳回合同 ─────────────────────────────────────────────── */}
+      <Modal
+        open={!!rejectRow}
+        title={`驳回合同 — ${rejectRow?.contract_name || ''}`}
+        okText="确认驳回"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onOk={handleReject}
+        onCancel={() => { setRejectRow(null); setRejectReason('') }}
+      >
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+          message="驳回后合同退回「合同草案」，编制方改完重新提交审核。驳回原因会记入审批过程记录，归档时随项目一并留存。" />
+        <Input.TextArea
+          rows={4} maxLength={500} showCount
+          placeholder="请写明需要修改的具体内容，例如：合同金额与采购结果确认函不一致；服务期限未填写"
+          value={rejectReason}
+          onChange={e => setRejectReason(e.target.value)}
+        />
       </Modal>
     </Card>
   )

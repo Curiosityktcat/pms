@@ -244,18 +244,24 @@ def _derive_current_inquiry(out_rounds):
 
 def _inquiry_stage_map(inquiry_ids):
     """批量版（供 stage_map）：返回 {pid: {current_round,current_stage,pending_contract}}。"""
+    from types import SimpleNamespace as _NS
     letters_by = {}
-    for l in db.session.execute(
-        db.select(InquiryLetter).where(InquiryLetter.project_id.in_(inquiry_ids))
+    for row in db.session.execute(
+        db.select(InquiryLetter.project_id, InquiryLetter.id, InquiryLetter.status)
+        .where(InquiryLetter.project_id.in_(inquiry_ids))
         .order_by(InquiryLetter.id)
-    ).scalars().all():
-        letters_by.setdefault(l.project_id, []).append(l)
-    reviews_by_inq = {r.inquiry_id: r for r in db.session.execute(
-        db.select(InquiryReview).where(InquiryReview.project_id.in_(inquiry_ids))
-    ).scalars().all()}
-    signed_pids = {c.project_id for c in db.session.execute(
-        db.select(Contract).where(Contract.project_id.in_(inquiry_ids))
-    ).scalars().all() if c.status == "合同上传"}
+    ).all():
+        letters_by.setdefault(row.project_id, []).append(
+            _NS(id=row.id, status=row.status))
+    reviews_by_inq = {row.inquiry_id: _NS(status=row.status, result_type=row.result_type)
+                      for row in db.session.execute(
+        db.select(InquiryReview.inquiry_id, InquiryReview.status, InquiryReview.result_type)
+        .where(InquiryReview.project_id.in_(inquiry_ids))
+    ).all()}
+    signed_pids = {r.project_id for r in db.session.execute(
+        db.select(Contract.project_id).where(
+            Contract.project_id.in_(inquiry_ids), Contract.status == "合同上传")
+    ).all()}
 
     out = {}
     for pid in inquiry_ids:
@@ -267,7 +273,7 @@ def _inquiry_stage_map(inquiry_ids):
         rv = reviews_by_inq.get(latest.id)
         rn = len(letters)
         if not (rv and rv.status == "已完成"):
-            stage = "inquiry" if latest.status == "草稿" else "review"
+            stage = "inquiry" if latest.status == "待办" else "review"
         elif rv.result_type == "废标":
             stage = "round_failed"
         elif pid not in signed_pids:
@@ -311,36 +317,51 @@ def stage_map(project_ids):
         return {}
     from models.project import Project
 
-    projects = {p.id: p for p in db.session.execute(
-        db.select(Project).where(Project.id.in_(ids))
-    ).scalars().all()}
+    # 只取用得上的列：_stage_for 只看 p.id / p.method，不需要整个 Project 实体
+    from types import SimpleNamespace as _NS
+    projects = {row.id: _NS(id=row.id, method=row.method) for row in db.session.execute(
+        db.select(Project.id, Project.method).where(Project.id.in_(ids))
+    ).all()}
 
     latest = {}
-    for r in db.session.execute(
-        db.select(ProcurementRound).where(ProcurementRound.project_id.in_(ids))
+    for row in db.session.execute(
+        db.select(ProcurementRound.project_id, ProcurementRound.round_number,
+                  ProcurementRound.demand_confirmed, ProcurementRound.doc_confirmed,
+                  ProcurementRound.can_open_status, ProcurementRound.can_open)
+        .where(ProcurementRound.project_id.in_(ids))
         .order_by(ProcurementRound.round_number.asc())
-    ).scalars().all():
-        latest[r.project_id] = r   # 升序，最终留最大轮
+    ).all():
+        latest[row.project_id] = _NS(                  # 升序，最终留最大轮
+            project_id=row.project_id, round_number=row.round_number,
+            demand_confirmed=row.demand_confirmed, doc_confirmed=row.doc_confirmed,
+            can_open_status=row.can_open_status, can_open=row.can_open)
 
-    ann_ok = {(a.project_id, a.round_number or 1) for a in db.session.execute(
-        db.select(Announcement).where(
-            Announcement.project_id.in_(ids), Announcement.ann_type == "procurement")
-    ).scalars().all() if a.status == "已确认"}
+    # 状态过滤下推到 SQL：原来是全量拉出来再在 Python 里 if
+    ann_ok = {(r.project_id, r.round_number or 1) for r in db.session.execute(
+        db.select(Announcement.project_id, Announcement.round_number).where(
+            Announcement.project_id.in_(ids),
+            Announcement.ann_type == "procurement",
+            Announcement.status == "已确认")
+    ).all()}
 
     res_ok = {(r.project_id, r.round_number or 1) for r in db.session.execute(
-        db.select(ProcurementResult).where(ProcurementResult.project_id.in_(ids))
-    ).scalars().all() if r.status == "已确认"}
+        db.select(ProcurementResult.project_id, ProcurementResult.round_number).where(
+            ProcurementResult.project_id.in_(ids),
+            ProcurementResult.status == "已确认")
+    ).all()}
 
-    signed = {(c.project_id, str(c.package_no)) for c in db.session.execute(
-        db.select(Contract).where(Contract.project_id.in_(ids))
-    ).scalars().all() if c.status == "合同上传"}
+    signed = {(r.project_id, str(r.package_no)) for r in db.session.execute(
+        db.select(Contract.project_id, Contract.package_no).where(
+            Contract.project_id.in_(ids), Contract.status == "合同上传")
+    ).all()}
 
     pending = {}
-    for pk in db.session.execute(
-        db.select(Package).where(Package.project_id.in_(ids))
-    ).scalars().all():
-        if pk.status == "已中标" and (pk.project_id, str(pk.package_no)) not in signed:
-            pending[pk.project_id] = pending.get(pk.project_id, 0) + 1
+    for row in db.session.execute(
+        db.select(Package.project_id, Package.package_no).where(
+            Package.project_id.in_(ids), Package.status == "已中标")
+    ).all():
+        if (row.project_id, str(row.package_no)) not in signed:
+            pending[row.project_id] = pending.get(row.project_id, 0) + 1
 
     # 询/议价、紧急采购方式单独按 函件/评审 派生（不读 ProcurementRound）
     inquiry_ids = [pid for pid in ids

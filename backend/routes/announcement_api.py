@@ -10,6 +10,8 @@ from models.agency import Agency
 from models.announcement import Announcement, QUALIFICATIONS_DEFAULT
 from models.announcement_attachment import AnnouncementAttachment
 from services import announcement as svc
+from services import approval_log as alog
+from services.permission import is_admin_user
 from routes.utils import login_required
 
 bp = Blueprint("announcement", __name__, url_prefix="/api/announcements")
@@ -60,16 +62,36 @@ def _enrich(ann):
     return d
 
 
-def _can_edit(project_agency_code: str) -> bool:
+def _node_of(ann) -> str:
+    """公告类型 → 审批日志节点键（更正公告单独成节点，便于归档分开列）。"""
+    return "correction" if ann.ann_type == "correction" else "announcement"
+
+
+def _scope_ok(project) -> bool:
+    """当前用户是否有权访问该项目的公告。与项目列表口径一致：
+    agency 只看本机构、officer 只看本人经办、assistant/leader/admin 全部。"""
+    if not project:
+        return False
     role = session.get("role", "")
-    if role in ("officer", "assistant", "leader"):
-        return True
     if role == "agency":
-        return session.get("agency_code", "") == project_agency_code
-    return False
+        return (project.agency_code or "") == session.get("agency_code", "")
+    if role == "officer":
+        return (project.officer or "") == session.get("display_name", "")
+    return role in ("assistant", "leader") or is_admin_user(session.get("user", ""))
 
 
-def _can_confirm() -> bool:
+def _can_edit(project) -> bool:
+    """可编辑公告内容：采购人方（officer 限本人 / assistant / leader）或本机构代理。"""
+    if not _scope_ok(project):
+        return False
+    role = session.get("role", "")
+    return role in ("officer", "assistant", "leader", "agency")
+
+
+def _can_confirm(project) -> bool:
+    """确认/撤回公告仅限采购人方（officer 限本人经办 / assistant / leader）。"""
+    if not _scope_ok(project):
+        return False
     return session.get("role", "") in ("officer", "assistant", "leader")
 
 
@@ -96,6 +118,23 @@ def _apply_fields(ann: Announcement, data: dict):
         ann.corr_items_json = data.get("corr_items_json") or "[]"
     if "corr_in_attachment" in data:
         ann.corr_in_attachment = 1 if data.get("corr_in_attachment") else 0
+    # 调研公告（6.2）与单一来源公示（6.4）专用字段
+    for f in ("survey_content", "survey_qualification", "survey_quote_req",
+              "survey_materials", "survey_deadline", "survey_submit_way",
+              "survey_note", "ss_goods_desc", "ss_reason", "ss_supplier_name",
+              "ss_supplier_addr", "ss_publicity_start", "ss_publicity_end",
+              "ss_objection_dept", "ss_objection_contact", "ss_objection_phone",
+              "ss_objection_addr"):
+        if f in data:
+            v = (data.get(f) or "").strip()
+            # 前端把非法日期 format() 出来会是字面量 "Invalid Date"，
+            # 存进去用户就会看到「公示期 Invalid Date 至 Invalid Date」。
+            # 这类值一律当空处理，不让脏数据落库。
+            if f.startswith("ss_publicity") and "Invalid" in v:
+                v = ""
+            setattr(ann, f, v)
+    if "ss_experts_json" in data:
+        ann.ss_experts_json = data.get("ss_experts_json") or "[]"
 
 
 def _sync_project_round(project):
@@ -215,6 +254,12 @@ def _generate_word_buf(project, ann, agency_name):
     if ann.ann_type == "correction":
         from services import correction_word as corr_svc
         return corr_svc.generate(project, ann, agency_name), corr_svc.get_filename(project, ann)
+    if ann.ann_type == "survey":
+        from services.survey_ss_word import build_survey
+        return build_survey(ann, project)
+    if ann.ann_type == "single_source":
+        from services.survey_ss_word import build_single_source
+        return build_single_source(ann, project)
     return svc.generate(project, ann, agency_name), svc.get_filename(project, ann)
 
 
@@ -327,14 +372,13 @@ def list_announcements():
         .order_by(Announcement.id.desc())
     ).scalars().all()
 
-    role = session.get("role", "")
-    my_agency = session.get("agency_code", "")
+    # 隔离：agency 只看本机构、officer 只看本人经办、assistant/leader/admin 全部
     result = []
     for a in rows:
-        d = _enrich(a)
-        if role == "agency" and d.get("project_agency_code") != my_agency:
+        project = db.session.get(Project, a.project_id)
+        if not _scope_ok(project):
             continue
-        result.append(d)
+        result.append(_enrich(a))
     return jsonify({"ok": True, "data": result})
 
 
@@ -351,7 +395,7 @@ def create_announcement():
         return jsonify({"ok": False, "error": "项目不存在或尚未正式立项"}), 400
     if not project.agency_code:
         return jsonify({"ok": False, "error": "该项目未走代理机构，无法生成采购公告"}), 400
-    if not _can_edit(project.agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足，只能编制本机构负责的项目公告"}), 403
     # 采购公告仅限院内竞选/单一来源项目，且须在采购文件经办人确认后方可编制
     if data.get("ann_type", "procurement") == "procurement":
@@ -448,10 +492,10 @@ def get_announcement(aid):
     ann = db.session.get(Announcement, aid)
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
-    d = _enrich(ann)
-    if session.get("role") == "agency" and d.get("project_agency_code") != session.get("agency_code", ""):
+    project = db.session.get(Project, ann.project_id)
+    if not _scope_ok(project):
         return jsonify({"ok": False, "error": "无权查看"}), 403
-    return jsonify({"ok": True, "data": d})
+    return jsonify({"ok": True, "data": _enrich(ann)})
 
 
 # ── 更新 ──────────────────────────────────────────────────────────
@@ -462,10 +506,9 @@ def update_announcement(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    agency_code = project.agency_code if project else ""
-    if not _can_edit(agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足"}), 403
-    if ann.status == "已确认" and not _can_confirm():
+    if ann.status == "已确认" and not _can_confirm(project):
         return jsonify({"ok": False, "error": "公告已确认，如需修改请联系经办人"}), 403
 
     data = request.get_json(force=True) or {}
@@ -485,10 +528,9 @@ def delete_announcement(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    agency_code = project.agency_code if project else ""
-    if not _can_edit(agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足"}), 403
-    if ann.status == "已确认" and not _can_confirm():
+    if ann.status == "已确认" and not _can_confirm(project):
         return jsonify({"ok": False, "error": "已确认的公告无法删除，请联系经办人"}), 403
 
     # 同时删除附件文件
@@ -513,34 +555,68 @@ def submit_announcement(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    agency_code = project.agency_code if project else ""
-    if not _can_edit(agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足"}), 403
     if ann.status == "已确认":
         return jsonify({"ok": False, "error": "公告已经确认，无需重复提交"}), 400
+    # 被驳回后再提交，记为「修改后重新提交」，与首次提交区分，归档时能看出改了几轮
+    was_rejected = ann.status == "已驳回"
     ann.status = "待确认"
+    alog.log(ann.project_id, _node_of(ann), "resubmit" if was_rejected else "submit",
+             round_number=ann.round_number or 1, target_id=ann.id)
     db.session.commit()
     return jsonify({"ok": True, "message": "已提交，等待经办人确认", "data": _enrich(ann)})
+
+
+# ── 驳回（经办人打回代理机构修改）────────────────────────────────
+@bp.route("/<int:aid>/reject", methods=["POST"])
+@login_required
+def reject_announcement(aid):
+    ann = db.session.get(Announcement, aid)
+    if not ann:
+        return jsonify({"ok": False, "error": "公告不存在"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not _can_confirm(project):
+        return jsonify({"ok": False, "error": "仅本项目经办人或负责人可驳回"}), 403
+    if ann.status == "已确认":
+        return jsonify({"ok": False, "error": "公告已发布，如需修改请先撤回"}), 400
+    reason = ((request.get_json(silent=True) or {}).get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "请填写驳回原因"}), 400
+
+    ann.status = "已驳回"
+    ann.reject_reason = reason
+    ann.reject_count = int(ann.reject_count or 0) + 1
+    ann.rejected_by = session.get("display_name", "")
+    ann.rejected_at = datetime.datetime.now().isoformat(timespec="seconds")
+    alog.log(ann.project_id, _node_of(ann), "reject",
+             round_number=ann.round_number or 1, target_id=ann.id, reason=reason)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "message": f"已驳回（第{ann.reject_count}次），代理机构可修改后重新提交",
+                    "data": _enrich(ann)})
 
 
 # ── 确认/发布 ─────────────────────────────────────────────────────
 @bp.route("/<int:aid>/confirm", methods=["POST"])
 @login_required
 def confirm_announcement(aid):
-    if not _can_confirm():
-        return jsonify({"ok": False, "error": "仅项目经办人或负责人可确认发布"}), 403
     ann = db.session.get(Announcement, aid)
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not _can_confirm(project):
+        return jsonify({"ok": False, "error": "仅本项目经办人或负责人可确认发布"}), 403
     if ann.status == "已确认":
         return jsonify({"ok": False, "error": "公告已经发布"}), 400
-    project = db.session.get(Project, ann.project_id)
     if ann.ann_type == "procurement" and project and not project.doc_confirmed:
         return jsonify({"ok": False, "error": "采购文件尚未确认，无法挂网发布"}), 400
     now = datetime.datetime.now().isoformat(timespec="seconds")
     ann.status = "已确认"
     ann.confirmed_by = session.get("display_name", "")
     ann.confirmed_at = now
+    alog.log(ann.project_id, _node_of(ann), "confirm",
+             round_number=ann.round_number or 1, target_id=ann.id)
 
     synced_msg = ""
     if ann.ann_type == "correction" and ann.response_deadline:
@@ -576,14 +652,17 @@ def confirm_announcement(aid):
 @bp.route("/<int:aid>/revoke", methods=["POST"])
 @login_required
 def revoke_announcement(aid):
-    if not _can_confirm():
-        return jsonify({"ok": False, "error": "仅项目经办人或负责人可撤回确认"}), 403
     ann = db.session.get(Announcement, aid)
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
+    project = db.session.get(Project, ann.project_id)
+    if not _can_confirm(project):
+        return jsonify({"ok": False, "error": "仅本项目经办人或负责人可撤回确认"}), 403
     ann.status = "草稿"
     ann.confirmed_by = ""
     ann.confirmed_at = ""
+    alog.log(ann.project_id, _node_of(ann), "revoke",
+             round_number=ann.round_number or 1, target_id=ann.id)
     db.session.commit()
     return jsonify({"ok": True, "message": "已撤回，恢复为草稿", "data": _enrich(ann)})
 
@@ -596,8 +675,8 @@ def generate_word(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    if not project:
-        return jsonify({"ok": False, "error": "关联项目不存在"}), 400
+    if not _scope_ok(project):
+        return jsonify({"ok": False, "error": "无权访问"}), 403
     if not project.agency_code:
         return jsonify({"ok": False, "error": "项目未关联代理机构"}), 400
 
@@ -622,8 +701,8 @@ def preview_word(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    if not project:
-        return jsonify({"ok": False, "error": "关联项目不存在"}), 400
+    if not _scope_ok(project):
+        return jsonify({"ok": False, "error": "无权访问"}), 403
     if not project.agency_code:
         return jsonify({"ok": False, "error": "项目未关联代理机构"}), 400
 
@@ -667,10 +746,9 @@ def upload_file(aid):
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
     project = db.session.get(Project, ann.project_id)
-    agency_code = project.agency_code if project else ""
-    if not _can_edit(agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足"}), 403
-    if ann.status == "已确认" and not _can_confirm():
+    if ann.status == "已确认" and not _can_confirm(project):
         return jsonify({"ok": False, "error": "公告已确认，无法上传附件"}), 403
 
     f = request.files.get("file")
@@ -708,6 +786,8 @@ def list_files(aid):
     ann = db.session.get(Announcement, aid)
     if not ann:
         return jsonify({"ok": False, "error": "公告不存在"}), 404
+    if not _scope_ok(db.session.get(Project, ann.project_id)):
+        return jsonify({"ok": False, "error": "无权访问"}), 403
     rows = db.session.execute(
         db.select(AnnouncementAttachment)
         .where(AnnouncementAttachment.announcement_id == aid)
@@ -723,6 +803,9 @@ def download_file(aid, fid):
     att = db.session.get(AnnouncementAttachment, fid)
     if not att or att.announcement_id != aid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
+    ann = db.session.get(Announcement, aid)
+    if not _scope_ok(db.session.get(Project, ann.project_id) if ann else None):
+        return jsonify({"ok": False, "error": "无权访问"}), 403
     path = os.path.join(_file_dir(aid), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
@@ -736,10 +819,14 @@ def preview_file(aid, fid):
     att = db.session.get(AnnouncementAttachment, fid)
     if not att or att.announcement_id != aid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
+    ann = db.session.get(Announcement, aid)
+    if not _scope_ok(db.session.get(Project, ann.project_id) if ann else None):
+        return jsonify({"ok": False, "error": "无权访问"}), 403
     path = os.path.join(_file_dir(aid), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
-    return send_file(path, as_attachment=False, download_name=att.original_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name)
 
 
 # 删除附件
@@ -751,8 +838,7 @@ def delete_file(aid, fid):
         return jsonify({"ok": False, "error": "附件不存在"}), 404
     ann = db.session.get(Announcement, aid)
     project = db.session.get(Project, ann.project_id) if ann else None
-    agency_code = project.agency_code if project else ""
-    if not _can_edit(agency_code):
+    if not _can_edit(project):
         return jsonify({"ok": False, "error": "权限不足"}), 403
     _delete_file(att)
     db.session.delete(att)
@@ -815,6 +901,18 @@ def eligible_projects():
                     continue
             rows.append(p)
             _seen.add(p.id)
+    elif ann_type in ("survey", "single_source"):
+        # 调研公告发生在采购需求论证阶段，单一来源公示发生在确定方式之后、
+        # 采购文件确认之前——两者都**不能**要求「采购文件已确认」，
+        # 否则下拉永远是空的。这里只要求项目本身有效。
+        q = (db.select(Project)
+             .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
+             .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None))))
+        if ann_type == "single_source":
+            # 单一来源公示只对单一来源类项目有意义
+            q = q.where(db.or_(Project.method.like("%单一来源%"),
+                               Project.method.like("%单一%")))
+        rows = db.session.execute(q.order_by(Project.id.desc())).scalars().all()
     else:
         rows = db.session.execute(
             db.select(Project)

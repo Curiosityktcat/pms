@@ -7,6 +7,14 @@ export interface Contract {
   contract_name: string
   package_no: string
   status: '合同草案' | '审核完成' | '合同上传'
+  // rd-web 合同审签推送结果：有流水号即表示推送成功
+  rdweb_serial_no?: string
+  rdweb_submitted_at?: string
+  // 驳回：退回合同草案时挂上原因，编制方直接看到要改什么
+  reject_reason?: string
+  reject_count?: number
+  rejected_by?: string
+  rejected_at?: string
   supplier_name: string
   supplier_address: string
   supplier_contact: string
@@ -49,6 +57,10 @@ export const submitContract = (id: number) =>
 
 export const revokeContract = (id: number) =>
   api.post<{ ok: boolean; message: string }>(`/contracts/${id}/revoke`)
+
+/** 驳回：退回合同草案，必须写明原因（记入审批过程记录，归档留存） */
+export const rejectContract = (id: number, reason: string) =>
+  api.post<{ ok: boolean; message: string }>(`/contracts/${id}/reject`, { reason })
 
 export const contractFileUrl = (id: number) => `/api/contracts/${id}/file`
 export const contractFilePreviewUrl = (id: number) => `/api/contracts/${id}/file/preview`
