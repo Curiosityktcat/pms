@@ -9,14 +9,15 @@ import {
   EyeOutlined,
 } from '@ant-design/icons'
 import {
-  listDir, uploadFiles, downloadFile, previewUrl, mkdir, deletePath, joinPath, parentPath,
+  listDir, uploadEntries, downloadFile, downloadFileNative, downloadFolderNative,
+  previewUrl, mkdir, deletePath, joinPath, parentPath, NATIVE_DOWNLOAD_BYTES,
   type FileEntry, type TransferStat,
 } from '../services/filebox'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 
 const { Title, Text } = Typography
 
-interface Picked { uid: string; name: string; file: File }
+interface Picked { uid: string; name: string; file: File; relpath: string }
 
 function fmtSize(n: number | null) {
   if (n == null) return '—'
@@ -84,7 +85,7 @@ export default function FileBoxPage() {
     if (!picked.length) { message.warning('请先选择文件'); return }
     setUploading(true); setUpStat(null)
     try {
-      const res = await uploadFiles(cwd, picked.map(p => p.file), setUpStat)
+      const res = await uploadEntries(cwd, picked.map(p => ({ file: p.file, relpath: p.relpath })), setUpStat)
       message.success(res.data.message || '上传成功')
       setPicked([]); load(cwd)
     } catch (err: unknown) {
@@ -93,13 +94,26 @@ export default function FileBoxPage() {
     } finally { setUploading(false); setUpStat(null) }
   }
 
-  const doDownload = async (name: string) => {
+  const doDownload = async (name: string, size: number | null) => {
+    // 大文件不走 blob：整份读进标签页内存会卡死/OOM，交给浏览器下载器落盘
+    if ((size ?? 0) > NATIVE_DOWNLOAD_BYTES) {
+      downloadFileNative(joinPath(cwd, name))
+      message.info('大文件已交给浏览器下载，请看浏览器的下载列表')
+      return
+    }
     setDl({ name, stat: null })
     try {
       await downloadFile(joinPath(cwd, name), name, (s) => setDl({ name, stat: s }))
     } catch {
       message.error('下载失败')
     } finally { setDl(null) }
+  }
+
+  // 文件夹打包体积事先未知（可能上 GB），一律走浏览器下载器；
+  // 后端要先打完 zip 才有第一个字节，浏览器会显示为「等待中」，属正常。
+  const doDownloadFolder = (name: string) => {
+    downloadFolderNative(joinPath(cwd, name))
+    message.info('正在服务器打包 zip，打包完成后浏览器会自动开始下载')
   }
 
   const openPreview = (name: string) =>
@@ -157,7 +171,11 @@ export default function FileBoxPage() {
           {r.type === 'file' && (
             <Button size="small" type="primary" ghost icon={<DownloadOutlined />}
               loading={dl?.name === r.name} disabled={!!dl}
-              onClick={() => doDownload(r.name)}>下载</Button>
+              onClick={() => doDownload(r.name, r.size)}>下载</Button>
+          )}
+          {r.type === 'dir' && (
+            <Button size="small" type="primary" ghost icon={<DownloadOutlined />}
+              onClick={() => doDownloadFolder(r.name)}>下载(zip)</Button>
           )}
           <Popconfirm
             title={r.type === 'dir' ? `删除文件夹「${r.name}」及其全部内容？` : `删除「${r.name}」？`}
@@ -187,10 +205,19 @@ export default function FileBoxPage() {
           <Upload multiple showUploadList={false}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             beforeUpload={(file: any) => {
-              setPicked(prev => [...prev, { uid: file.uid, name: file.name, file }])
+              setPicked(prev => [...prev, { uid: file.uid, name: file.name, file, relpath: file.name }])
               return false
             }}>
             <Button icon={<UploadOutlined />}>选择文件</Button>
+          </Upload>
+          <Upload multiple directory showUploadList={false}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            beforeUpload={(file: any) => {
+              const rel = file.webkitRelativePath || file.originFileObj?.webkitRelativePath || file.name
+              setPicked(prev => [...prev, { uid: file.uid, name: rel, file, relpath: rel }])
+              return false
+            }}>
+            <Button icon={<FolderOpenOutlined />}>选择文件夹</Button>
           </Upload>
         </Space>
 
@@ -206,12 +233,13 @@ export default function FileBoxPage() {
           <Space direction="vertical" style={{ width: '100%' }}>
             <Space wrap>
               <Text type="secondary">待上传到「{cwd || '根目录'}」：</Text>
-              {picked.map(p => (
+              {picked.slice(0, 12).map(p => (
                 <Tag key={p.uid} closable
                   onClose={() => setPicked(prev => prev.filter(x => x.uid !== p.uid))}>
                   {p.name}
                 </Tag>
               ))}
+              {picked.length > 12 && <Text type="secondary">…等共 {picked.length} 项</Text>}
             </Space>
             {uploading && <TransferBar label="上传中" stat={upStat} />}
             <Space>

@@ -4,6 +4,7 @@ from models import db
 from models.project import Project
 from models.agency import Agency
 from services.numbering import decide, gen_number, M_SOLE, M_JINGJI
+from services import project_number as pnum
 
 STATUSES = ["立项", "委托代理", "编制中", "审核中", "已发公告", "报名中", "开标", "已定标", "合同签订", "已归档"]
 
@@ -26,6 +27,24 @@ def get_agency_detail(code):
         "agency_phone":     a.phone     if a else "",
         "agency_address":   a.address   if a else "",
     }
+
+
+_EMPTY_AGENCY = {"agency_name": "", "agency_legal_rep": "",
+                 "agency_phone": "", "agency_address": ""}
+
+
+def _agency_map():
+    """一次性把全部代理机构读成 {code: 详情字典}。
+
+    代理机构总共十几家，而项目有几百个——逐项目查是 N+1（profile 显示占了
+    /api/projects 近 7 成耗时）。这里一次查完，循环里查字典即可。"""
+    rows = db.session.execute(
+        db.select(Agency.code, Agency.name, Agency.legal_rep,
+                  Agency.phone, Agency.address)).all()
+    return {r.code: {"agency_name": r.name or r.code,
+                     "agency_legal_rep": r.legal_rep or "",
+                     "agency_phone": r.phone or "",
+                     "agency_address": r.address or ""} for r in rows}
 
 
 def list_projects(role, agency_code=None, officer=None, show_deleted=False):
@@ -59,11 +78,23 @@ def list_projects(role, agency_code=None, officer=None, show_deleted=False):
         )
 
     rows = db.session.execute(stmt).scalars().all()
+    _agencies = _agency_map()   # 循环外一次查完，避免 N+1
     result = []
     for p in rows:
         d = p.to_dict()
-        d.update(get_agency_detail(p.agency_code))
+        # 原来这里逐项目 get_agency_detail(code) → N+1；现在查内存字典
+        if p.agency_code:
+            d.update(_agencies.get(p.agency_code)
+                     or {**_EMPTY_AGENCY, "agency_name": p.agency_code})
+        else:
+            d.update(_EMPTY_AGENCY)
         result.append(d)
+
+    # 按编号里的年月倒序（新的在前）。不能再按 id 排——历史项目是后补进系统的，
+    # id 完全不反映实际发生顺序（2024 年的项目 id 反而比 2026 年的大）。
+    # 草稿仍然置顶，编号读不出时间的沉到最后。
+    result.sort(key=lambda d: (int(d.get("is_draft") or 0),
+                               pnum.sort_key(d.get("number"))), reverse=True)
     return result
 
 

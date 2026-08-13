@@ -12,7 +12,7 @@ from flask import Blueprint, request, session, jsonify, send_file
 from models import db
 from models.doc_form import DocForm
 from models.project import Project
-from routes.utils import login_required
+from routes.utils import login_required, can_view_project
 from services import doc_templates as T
 
 bp = Blueprint("doc_form", __name__, url_prefix="/api/doc-forms")
@@ -20,6 +20,11 @@ bp = Blueprint("doc_form", __name__, url_prefix="/api/doc-forms")
 
 def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _proj_ok(project_id):
+    """按项目归属校验（officer 本人 / agency 本机构 / 助理·负责人·管理员全部）。"""
+    return can_view_project(db.session.get(Project, project_id))
 
 
 @bp.route("/template/<key>", methods=["GET"])
@@ -40,6 +45,8 @@ def status_map(key):
     ).scalars().all()
     out = {}
     for r in rows:
+        if not _proj_ok(r.project_id):   # 隔离：只标注本人可见项目的状态
+            continue
         try:
             data = json.loads(r.data or "{}")
         except Exception:
@@ -72,6 +79,8 @@ def _get_or_create(project_id, key):
 def get_form(project_id, key):
     if not T.get_template(key):
         return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not _proj_ok(project_id):
+        return jsonify({"ok": False, "error": "无权访问该项目表单"}), 403
     row, _ = _get_or_create(project_id, key)
     d = row.to_dict()
     proj = db.session.get(Project, project_id)
@@ -86,6 +95,8 @@ def get_form(project_id, key):
 def save_form(project_id, key):
     if not T.get_template(key):
         return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not _proj_ok(project_id):
+        return jsonify({"ok": False, "error": "无权修改该项目表单"}), 403
     row, _ = _get_or_create(project_id, key)
     body = request.get_json(force=True) or {}
     if "data" in body and isinstance(body["data"], dict):
@@ -105,6 +116,8 @@ def save_form(project_id, key):
 def export_word(project_id, key):
     if not T.get_template(key):
         return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not _proj_ok(project_id):
+        return jsonify({"ok": False, "error": "无权访问该项目表单"}), 403
     row, _ = _get_or_create(project_id, key)
     data = row.to_dict()["data"]
     buf = T.generate_word(key, data)

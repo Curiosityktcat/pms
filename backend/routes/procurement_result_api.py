@@ -13,6 +13,7 @@ from models.procurement_round import ProcurementRound
 from models.round_package import RoundPackage
 from services import approval_log as alog
 from routes.utils import login_required
+from services import upload_relay
 
 bp = Blueprint("procurement_result", __name__, url_prefix="/api/procurement-results")
 
@@ -542,7 +543,7 @@ def upload_price_attachment(rid):
     if result.status == "已确认":
         return jsonify({"ok": False, "error": "已确认，如需修改请先撤回"}), 400
 
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
     _, ext = os.path.splitext(f.filename.lower())
@@ -684,7 +685,7 @@ def upload_award_notice(rid):
     if not _can_upload_award(result):
         return jsonify({"ok": False, "error": "仅本项目代理机构或采购人方可上传中标通知书"}), 403
 
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
     _, ext = os.path.splitext(f.filename.lower())

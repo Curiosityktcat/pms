@@ -15,11 +15,27 @@ import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 
-const LETTER_ACCESSORS: ListFilterAccessors<InquiryLetter> = {
-  searchText: l => [l.title, l.project_name, l.project_number],
-  createdAt: l => l.created_at,
-  number: l => l.project_number,
-  method: l => l.type,
+// 新建函件时暂存的供应商行（还没有函件 id，先存本地）
+type DraftSupplier = { key: number; supplier_name: string; contact_name: string; contact_phone: string; email: string }
+
+// 立项方式 → 函件类型（待办卡片进建函抽屉时预选）
+const TYPE_OF_METHOD: Record<string, string> = {
+  院内询价: '询价', 院内议价: '议价', 医用耗材紧急采购: '紧急采购',
+}
+
+// 「待办」页签里混着两种事项：①还没建函的项目（虚拟卡片）②已建但还没发出的函件。
+// 经办人要的是"我还有哪几件事没办"，不是"系统里有哪几封函"。
+type TodoProject = { __todo: true; project: Project }
+type ListRow = InquiryLetter | TodoProject
+const isTodo = (r: ListRow): r is TodoProject => (r as TodoProject).__todo === true
+
+const ROW_ACCESSORS: ListFilterAccessors<ListRow> = {
+  searchText: r => isTodo(r)
+    ? [r.project.display_name || r.project.name, r.project.number]
+    : [r.title, r.project_name, r.project_number],
+  createdAt: r => isTodo(r) ? r.project.created_at : r.created_at,
+  number: r => isTodo(r) ? (r.project.number || '') : r.project_number,
+  method: r => isTodo(r) ? (TYPE_OF_METHOD[r.project.method] || '') : r.type,
 }
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
@@ -30,7 +46,7 @@ import {
   sendAllToSuppliers, getReplies,
   listAttachments, uploadAttachment, deleteAttachment, attachFromTemplate,
   attachmentDownloadUrl, attachmentPreviewUrl,
-  listTemplates, uploadTemplate, updateTemplate, deleteTemplate,
+  listTemplates, uploadTemplate, updateTemplate, deleteTemplate, templatePreviewUrl,
   type InquiryLetter, type InquirySupplier, type InquiryAttachment, type InquiryTemplate,
   type RepliesData,
 } from '../services/inquiry'
@@ -55,7 +71,7 @@ function addWorkingDays(start: dayjs.Dayjs, days: number): dayjs.Dayjs {
 
 // ── 状态颜色 ──────────────────────────────────────────────────
 const statusColor: Record<string, string> = {
-  草稿: 'orange',
+  待办: 'orange',
   进行中: 'blue',
   已完成: 'green',
 }
@@ -341,7 +357,7 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
       />
 
       {/* 添加供应商按钮 */}
-      {letterStatus === '草稿' || letterStatus === '进行中' ? (
+      {letterStatus === '待办' || letterStatus === '进行中' ? (
         <div style={{ marginTop: 8 }}>
           {!addVisible ? (
             <Button icon={<PlusOutlined />} size="small" onClick={() => setAddVisible(true)}>
@@ -420,9 +436,17 @@ function SupplierPanel({ inquiryId, letterStatus, letterType, onSupplierChange }
 // ── 附件管理子组件（含模板库）──────────────────────────────────────
 interface AttachmentPanelProps {
   inquiryId: number | null
+  /** 草稿模式：函件还没建出来（新建抽屉），附件与模板勾选先存在父组件里，保存时一并提交。
+   *  给了这个就走草稿模式；不给就是老的编辑模式（直接读写函件的附件）。 */
+  draft?: {
+    files: File[]
+    onFilesChange: (f: File[]) => void
+    tmplIds: number[]
+    onTmplIdsChange: (ids: number[]) => void
+  }
 }
 
-function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
+function AttachmentPanel({ inquiryId, draft }: AttachmentPanelProps) {
   const { message, modal } = App.useApp()
   const [attachments, setAttachments] = useState<InquiryAttachment[]>([])
   const [uploading, setUploading] = useState(false)
@@ -433,7 +457,14 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
   const [tmplModalOpen, setTmplModalOpen] = useState(false)
   const [templates, setTemplates] = useState<InquiryTemplate[]>([])
   const [_tmplLoading, setTmplLoading] = useState(false)
-  const [selectedTmplIds, setSelectedTmplIds] = useState<number[]>([])
+  const [_selTmplIds, _setSelTmplIds] = useState<number[]>([])
+  // 草稿模式下勾选状态存在父组件（保存时要用），编辑模式下用本地 state
+  const selectedTmplIds = draft ? draft.tmplIds : _selTmplIds
+  const setSelectedTmplIds = (upd: number[] | ((p: number[]) => number[])) => {
+    const next = typeof upd === 'function' ? (upd as (p: number[]) => number[])(selectedTmplIds) : upd
+    if (draft) draft.onTmplIdsChange(next)
+    else _setSelTmplIds(next)
+  }
   const [addingTmpl, setAddingTmpl] = useState(false)
   // 上传模板
   const tmplFileInputRef = useRef<HTMLInputElement>(null)
@@ -451,6 +482,8 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
   }, [inquiryId])
 
   useEffect(() => { load() }, [load])
+  // 草稿模式：进来就拉一次模板库，好在卡片上显示已勾模板的文件名
+  useEffect(() => { if (draft) loadTemplates() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTemplates = async () => {
     setTmplLoading(true)
@@ -462,7 +495,7 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
   }
 
   const openTmplModal = () => {
-    setSelectedTmplIds([])
+    if (!draft) setSelectedTmplIds([])   // 草稿模式保留已勾的，免得重开弹窗白勾一次
     setTmplDesc('')
     loadTemplates()
     setTmplModalOpen(true)
@@ -471,7 +504,14 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
   // ── 本函件附件上传 ────────────────────────────────────────────
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !inquiryId) return
+    if (!file) return
+    if (draft) {                       // 草稿模式：函件还没建，先存本地，保存时一并上传
+      draft.onFilesChange([...draft.files, file])
+      message.success(`「${file.name}」已加入，保存函件时一起上传`)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    if (!inquiryId) return
     setUploading(true)
     try {
       await uploadAttachment(inquiryId, file)
@@ -559,10 +599,51 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
     } finally { setAddingTmpl(false) }
   }
 
+  // 草稿模式下"已附加"的就是本地暂存的文件
+  const draftList = draft ? draft.files : []
+
   return (
     <div>
+      {draft && draftList.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          {draftList.map((f, i) => (
+            <div key={`${f.name}-${i}`} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+              border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 6,
+            }}>
+              <PaperClipOutlined style={{ color: '#1677ff', flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13 }}>{f.name}</span>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>待保存</Tag>
+              <Button size="small" type="text" danger icon={<DeleteOutlined />}
+                onClick={() => draft.onFilesChange(draft.files.filter((_, x) => x !== i))} />
+            </div>
+          ))}
+        </div>
+      )}
+      {draft && draft.tmplIds.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          {templates.filter(t => draft.tmplIds.includes(t.id)).map(t => (
+            <Tag key={t.id} color="purple" closable style={{ marginBottom: 4 }}
+              onClose={() => draft.onTmplIdsChange(draft.tmplIds.filter(x => x !== t.id))}>
+              {t.filename}（模板·待保存）
+            </Tag>
+          ))}
+          {templates.length === 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              已选 {draft.tmplIds.length} 个模板，保存函件时一起添加
+            </Text>
+          )}
+        </div>
+      )}
+
       {/* 已附加文件列表 */}
-      {attachments.length === 0 ? (
+      {draft ? (
+        draftList.length === 0 && draft.tmplIds.length === 0 ? (
+          <div style={{ color: '#bbb', fontSize: 12, marginBottom: 8 }}>
+            暂无附件，发邮件时仅附带 Word 函件正文
+          </div>
+        ) : null
+      ) : attachments.length === 0 ? (
         <div style={{ color: '#bbb', fontSize: 12, marginBottom: 8 }}>
           暂无附件，发邮件时仅附带 Word 函件正文
         </div>
@@ -668,6 +749,13 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
                 添加所选（{selectedTmplIds.length}）到本函件
               </Button>
             </Space>
+          ) : draft ? (
+            <Space>
+              <Button onClick={() => setTmplModalOpen(false)}>关闭</Button>
+              <Button type="primary" onClick={() => setTmplModalOpen(false)}>
+                选好了（{selectedTmplIds.length}）· 保存函件时一起添加
+              </Button>
+            </Space>
           ) : (
             <Button onClick={() => setTmplModalOpen(false)}>关闭</Button>
           )
@@ -714,7 +802,11 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
         ) : (
           <div>
             <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-              {inquiryId ? '勾选要添加到本函件的模板，然后点击「添加所选」' : '（以下为模板库概览）'}
+              {inquiryId
+                ? '勾选要添加到本函件的模板，然后点击「添加所选」'
+                : draft
+                  ? '勾选要用的模板，保存函件时会自动添加进去'
+                  : '（以下为模板库概览）'}
             </div>
             {templates.map(tmpl => (
               <div
@@ -725,17 +817,17 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
                   background: selectedTmplIds.includes(tmpl.id) ? '#eff6ff' : '#fff',
                   border: `1px solid ${selectedTmplIds.includes(tmpl.id) ? '#bbd4ff' : '#f0f0f0'}`,
                   borderRadius: 6, marginBottom: 6,
-                  cursor: inquiryId ? 'pointer' : 'default',
+                  cursor: (inquiryId || draft) ? 'pointer' : 'default',
                   transition: 'background .15s',
                 }}
                 onClick={() => {
-                  if (!inquiryId) return
+                  if (!inquiryId && !draft) return
                   setSelectedTmplIds(prev =>
                     prev.includes(tmpl.id) ? prev.filter(i => i !== tmpl.id) : [...prev, tmpl.id]
                   )
                 }}
               >
-                {inquiryId && (
+                {(inquiryId || draft) && (
                   <Checkbox
                     checked={selectedTmplIds.includes(tmpl.id)}
                     style={{ marginTop: 2 }}
@@ -783,6 +875,14 @@ function AttachmentPanel({ inquiryId }: AttachmentPanelProps) {
                   </Text>
                 </div>
                 <Button
+                  size="small" type="text" icon={<EyeOutlined />}
+                  style={{ flexShrink: 0 }}
+                  onClick={e => {
+                    e.stopPropagation()
+                    setPreview({ open: true, url: templatePreviewUrl(tmpl.id), name: tmpl.filename })
+                  }}
+                />
+                <Button
                   size="small" type="text" danger icon={<DeleteOutlined />}
                   style={{ flexShrink: 0 }}
                   onClick={e => { e.stopPropagation(); handleDeleteTmpl(tmpl) }}
@@ -807,11 +907,15 @@ export default function InquiryPage() {
   const [letters, setLetters] = useState<InquiryLetter[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
-  const [tabStatus, setTabStatus] = useState<'草稿' | '进行中' | '已完成'>('草稿')
+  const [tabStatus, setTabStatus] = useState<'待办' | '进行中' | '已完成'>('待办')
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editId, setEditId]         = useState<number | null>(null)
+  // 新建态的暂存：这两块原本要等函件 id 才能操作，现在先存本地，保存时一并提交
+  const [draftSuppliers, setDraftSuppliers] = useState<DraftSupplier[]>([])
+  const [draftFiles, setDraftFiles]         = useState<File[]>([])
+  const [draftTmplIds, setDraftTmplIds]     = useState<number[]>([])   // 新建时勾的模板
   const [saving, setSaving]         = useState(false)
   const [form] = Form.useForm()
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
@@ -835,8 +939,6 @@ export default function InquiryPage() {
 
   const projectMap = Object.fromEntries(projects.map(p => [p.id, p]))
   const tabLetters = letters.filter(l => l.status === tabStatus)
-  const listFilter = useProjectListFilter(tabLetters, LETTER_ACCESSORS)
-  const filtered   = listFilter.filtered
 
   // 可立询/议价函的项目：方式∈院内询价/议价/紧急采购，且未处于进行中的采购轮次
   // （无轮次=尚未开始 或 本轮已废标=待开下一轮 才可；已进轮次未废标的排除）
@@ -846,13 +948,37 @@ export default function InquiryPage() {
     p.id === selectedProject?.id,   // 编辑时保留当前记录的项目，避免下拉里消失
   )
 
+  // 待建函的项目＝可立函 且 名下没有未完成的函件（含废标后待开下一轮的情况）
+  const todoProjects: TodoProject[] = projects
+    .filter(p =>
+      ['院内询价', '院内议价', '医用耗材紧急采购'].includes(p.method) &&
+      // 已归档/已定标的是办完的历史项目（多为历史导入、本就没有函件），不是待办
+      p.status === '立项' &&
+      ((p.current_round ?? 0) === 0 || p.current_stage === 'round_failed') &&
+      !letters.some(l => l.project_id === p.id && l.status !== '已完成'))
+    .map(p => ({ __todo: true as const, project: p }))
+
+  const tabRows: ListRow[] = tabStatus === '待办'
+    ? [...todoProjects, ...tabLetters]
+    : tabLetters
+  const listFilter = useProjectListFilter(tabRows, ROW_ACCESSORS)
+  const filtered   = listFilter.filtered
+
   // ── 打开新建 ──────────────────────────────────────────────────
-  const openCreate = () => {
+  const openCreate = (preset?: Project) => {
     setEditId(null)
     setSelectedProject(null)
+    setDraftSuppliers([])
+    setDraftFiles([])
+    setDraftTmplIds([])
     form.resetFields()
-    form.setFieldsValue({ type: '询价' })
+    form.setFieldsValue({ type: preset ? (TYPE_OF_METHOD[preset.method] || '询价') : '询价' })
     setDrawerOpen(true)
+    // 从待办卡片进来：项目已经定了，直接预选并把标题/细则/截止日期一起带出（同手选流程）
+    if (preset) {
+      form.setFieldsValue({ project_id: preset.id })
+      setTimeout(() => handleProjectChange(preset.id), 0)
+    }
   }
 
   // ── 打开编辑 ──────────────────────────────────────────────────
@@ -902,7 +1028,7 @@ export default function InquiryPage() {
     }
   }
 
-  // ── 保存草稿 ──────────────────────────────────────────────────
+  // ── 保存（存为待办件）──────────────────────────────────────────
   const handleSave = async () => {
     let values: Record<string, unknown>
     try { values = await form.validateFields() } catch { return }
@@ -918,8 +1044,44 @@ export default function InquiryPage() {
         await updateInquiry(editId, values as Partial<InquiryLetter>)
         message.success('保存成功')
       } else {
-        await createInquiry({ ...values, created_by: user?.display_name } as Partial<InquiryLetter>)
-        message.success('新建成功')
+        const res = await createInquiry({ ...values, created_by: user?.display_name } as Partial<InquiryLetter>)
+        const newId = res.data.data.id
+        // 一步到位：把新建时录的供应商与附件补提交上去（失败只提示、不回滚函件本身）
+        const rows = draftSuppliers.filter(d => (d.supplier_name || '').trim())
+        let okSup = 0, okFile = 0
+        for (const d of rows) {
+          try {
+            await addSupplier(newId, {
+              supplier_name: d.supplier_name.trim(),
+              contact_name: d.contact_name.trim(),
+              contact_phone: d.contact_phone.trim(),
+              email: d.email.trim(),
+            })
+            okSup += 1
+          } catch { /* 单条失败不影响其余 */ }
+        }
+        for (const f of draftFiles) {
+          try { await uploadAttachment(newId, f); okFile += 1 } catch { /* 同上 */ }
+        }
+        // 模板库勾选的，建函后一次挂上（后端会复制成本函件的附件副本）
+        let okTmpl = 0
+        if (draftTmplIds.length) {
+          try { await attachFromTemplate(newId, draftTmplIds); okTmpl = draftTmplIds.length } catch { /* 同上 */ }
+        }
+        const miss = (rows.length - okSup) + (draftFiles.length - okFile)
+          + (draftTmplIds.length - okTmpl)
+        message[miss ? 'warning' : 'success'](
+          `已建函${okSup ? `，供应商 ${okSup} 家` : ''}${okFile ? `，附件 ${okFile} 个` : ''}` +
+          `${okTmpl ? `，模板 ${okTmpl} 个` : ''}` +
+          (miss ? `（有 ${miss} 项没提交上去，请在下方检查）` : ''))
+        // 留在抽屉里转为编辑态：可以接着一键发送，不用再去列表里翻这封函
+        setEditId(newId)
+        setDraftSuppliers([])
+        setDraftFiles([])
+        setDraftTmplIds([])
+        await load()
+        setSaving(false)
+        return
       }
       setDrawerOpen(false)
       load()
@@ -988,7 +1150,7 @@ export default function InquiryPage() {
   }
 
   // ── 表格列 ───────────────────────────────────────────────────
-  const ACCENT_BY_STATUS: Record<string, string> = { 已完成: '#34a853', 进行中: '#1a73e8', 草稿: '#9aa0a6' }
+  const ACCENT_BY_STATUS: Record<string, string> = { 已完成: '#34a853', 进行中: '#1a73e8', 待办: '#f9ab00' }
   const letterToCard = (r: InquiryLetter): RecordCardData => ({
     key: r.id,
     accent: ACCENT_BY_STATUS[r.status] || '#1a73e8',
@@ -1053,30 +1215,65 @@ export default function InquiryPage() {
             评审记录
           </Button>
         )}
-        {r.status === '草稿' && (
+        {r.status === '待办' && (
           <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r)} />
         )}
       </>
     ),
   })
 
-  // 统计各状态数量
-  const countOf = (s: string) => letters.filter(l => l.status === s).length
+  // 待建函项目的卡片：一眼看出"这个项目还没发函"，按钮直接进建函抽屉
+  const todoToCard = (t: TodoProject): RecordCardData => {
+    const p = t.project
+    const type = TYPE_OF_METHOD[p.method] || '询价'
+    return {
+      key: `todo-${p.id}`,
+      accent: '#f9ab00',
+      title: p.display_name || p.name,
+      subtitle: p.number || '—',
+      statusText: '待建函',
+      statusColor: 'orange',
+      tags: (
+        <Space size={4}>
+          <Tag color={type === '询价' ? 'blue' : type === '紧急采购' ? 'red' : 'orange'}
+            style={{ marginInlineEnd: 0 }}>{type}</Tag>
+          <Tag style={{ marginInlineEnd: 0 }}>{p.method}</Tag>
+        </Space>
+      ),
+      fields: [
+        { label: '立项', value: p.created_at ? p.created_at.replace('T', ' ').slice(0, 16) : '' },
+        { label: '金额', value: p.amount ? `${p.amount} 元` : '按单价据实结算' },
+        { label: '经办人', value: p.officer || '' },
+      ],
+      actions: (
+        <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate(p)}>
+          建{type}函
+        </Button>
+      ),
+    }
+  }
+
+  const rowToCard = (r: ListRow): RecordCardData =>
+    isTodo(r) ? todoToCard(r) : letterToCard(r)
+
+  // 统计各状态数量（待办＝待建函的项目 + 已建但没发出的函件）
+  const countOf = (s: string) =>
+    letters.filter(l => l.status === s).length + (s === '待办' ? todoProjects.length : 0)
 
   return (
     <Card
       title={<span style={{ fontWeight: 700, fontSize: 16 }}>询/议价函、紧急采购管理</span>}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
           新建函件
         </Button>
       }
     >
       <Tabs
         activeKey={tabStatus}
-        onChange={k => setTabStatus(k as '草稿' | '进行中' | '已完成')}
+        onChange={k => setTabStatus(k as '待办' | '进行中' | '已完成')}
         items={[
-          { key: '草稿',  label: <span>草稿 <Tag color="orange">{countOf('草稿')}</Tag></span> },
+          { key: '待办',  label: <span>待办 <Tag color="orange">{countOf('待办')}</Tag></span> },
           { key: '进行中', label: <span>进行中 <Tag color="blue">{countOf('进行中')}</Tag></span> },
           { key: '已完成', label: <span>已完成 <Tag color="green">{countOf('已完成')}</Tag></span> },
         ]}
@@ -1085,7 +1282,9 @@ export default function InquiryPage() {
       <div style={{ marginBottom: 12 }}>
         <ProjectListToolbar f={listFilter} placeholder="搜索函件标题 / 项目名称 / 编号" />
       </div>
-      <RecordCards dataSource={filtered} loading={loading} emptyText="暂无函件" toCard={letterToCard} />
+      <RecordCards dataSource={filtered} loading={loading}
+        emptyText={tabStatus === '待办' ? '没有待办事项（立了项还没建函的项目会自动出现在这里）' : '暂无函件'}
+        toCard={rowToCard} />
 
       {/* ══ 新建/编辑 Drawer ═══════════════════════════════════════ */}
       <Drawer
@@ -1298,7 +1497,7 @@ export default function InquiryPage() {
 
               <SupplierPanel
                 inquiryId={editId}
-                letterStatus={letters.find(l => l.id === editId)?.status || '草稿'}
+                letterStatus={letters.find(l => l.id === editId)?.status || '待办'}
                 letterType={form.getFieldValue('type') || '询价'}
                 onSupplierChange={load}
               />
@@ -1331,11 +1530,91 @@ export default function InquiryPage() {
             </Card>
           )}
 
-          {/* 新建时的提示 */}
+          {/* ── 新建态：供应商 + 附件（暂存，保存时一并提交）── */}
           {!editId && (
-            <div style={{ textAlign: 'center', color: '#aaa', fontSize: 12, paddingBottom: 8 }}>
-              保存后可在「编辑」中管理供应商并发送邮件
-            </div>
+            <>
+              <Card
+                title={
+                  <Space>
+                    <span>供应商</span>
+                    <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                      现在填好，保存时一起建；也可以先留空、建完再补
+                    </Text>
+                  </Space>
+                }
+                size="small"
+                style={{ marginBottom: 16 }}
+                extra={
+                  <Button size="small" icon={<PlusOutlined />}
+                    onClick={() => setDraftSuppliers(rows => [...rows, {
+                      key: Date.now() + rows.length,
+                      supplier_name: '', contact_name: '', contact_phone: '', email: '',
+                    }])}>
+                    添加供应商
+                  </Button>
+                }
+              >
+                {draftSuppliers.length === 0 ? (
+                  <div style={{ color: '#aaa', fontSize: 12 }}>
+                    还没添加供应商。询价需 3 家及以上，议价 1-2 家，紧急采购 1 家及以上。
+                  </div>
+                ) : (
+                  <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                    {draftSuppliers.map((d, idx) => (
+                      <Space.Compact key={d.key} style={{ width: '100%' }}>
+                        <Input style={{ width: '32%' }} placeholder="供应商名称"
+                          value={d.supplier_name}
+                          onChange={e => setDraftSuppliers(rows =>
+                            rows.map((r, i) => i === idx ? { ...r, supplier_name: e.target.value } : r))} />
+                        <Input style={{ width: '16%' }} placeholder="联系人"
+                          value={d.contact_name}
+                          onChange={e => setDraftSuppliers(rows =>
+                            rows.map((r, i) => i === idx ? { ...r, contact_name: e.target.value } : r))} />
+                        <Input style={{ width: '20%' }} placeholder="电话"
+                          value={d.contact_phone}
+                          onChange={e => setDraftSuppliers(rows =>
+                            rows.map((r, i) => i === idx ? { ...r, contact_phone: e.target.value } : r))} />
+                        <Input style={{ width: '26%' }} placeholder="邮箱（发邀请函用）"
+                          value={d.email}
+                          onChange={e => setDraftSuppliers(rows =>
+                            rows.map((r, i) => i === idx ? { ...r, email: e.target.value } : r))} />
+                        <Button danger icon={<DeleteOutlined />}
+                          onClick={() => setDraftSuppliers(rows => rows.filter((_, i) => i !== idx))} />
+                      </Space.Compact>
+                    ))}
+                  </Space>
+                )}
+              </Card>
+
+              <Card
+                title={
+                  <Space>
+                    <PaperClipOutlined />
+                    <span>邮件附件</span>
+                    <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                      发邀请函时自动带上
+                    </Text>
+                  </Space>
+                }
+                size="small"
+                style={{ marginBottom: 16 }}
+              >
+                {/* 与编辑态同一个面板：上传/预览/删除模板、改说明、勾选，能力完全一致 */}
+                <AttachmentPanel
+                  inquiryId={null}
+                  draft={{
+                    files: draftFiles,
+                    onFilesChange: setDraftFiles,
+                    tmplIds: draftTmplIds,
+                    onTmplIdsChange: setDraftTmplIds,
+                  }}
+                />
+              </Card>
+
+              <div style={{ textAlign: 'center', color: '#aaa', fontSize: 12, paddingBottom: 8 }}>
+                保存后本抽屉会转为编辑态，可直接一键发送邀请函
+              </div>
+            </>
           )}
         </Form>
       </Drawer>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
   Card, Form, Select, Button, Descriptions, App, Typography, Empty,
   Tag, Alert, Input, Tabs, Popconfirm, Badge,
@@ -7,6 +7,7 @@ import {
   DownloadOutlined, FileWordOutlined, ArrowLeftOutlined,
   CheckCircleOutlined, DeleteOutlined, ReloadOutlined,
 } from '@ant-design/icons'
+import axios from 'axios'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import { getBidOpenProjects } from '../services/project'
 import type { Project } from '../services/project'
@@ -43,6 +44,17 @@ function formatDate(s: string) {
   return s ? s.replace('T', ' ').substring(0, 16) : '—'
 }
 
+/** 待出具授权函的一条任务：一个项目的某一轮开标对应一份授权函 */
+interface PendingAuthTask {
+  project_id: number
+  number: string
+  name: string
+  round_number: number
+  round_cn: string
+  officer: string
+  bid_time: string
+}
+
 export default function AuthLetterPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [supervisors, setSupervisors] = useState<Person[]>([])
@@ -52,6 +64,15 @@ export default function AuthLetterPage() {
   const [loading, setLoading] = useState(false)
   const [recordsLoading, setRecordsLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<TabKey>('pending')
+  // 待出具授权函的任务卡片：挂网并确认可开标后自动出现，出完即消失
+  const [pendingTasks, setPendingTasks] = useState<PendingAuthTask[]>([])
+  const loadPendingTasks = useCallback(async () => {
+    try {
+      const r = await axios.get<{ ok: boolean; data: PendingAuthTask[] }>(
+        '/api/auth-letter/pending', { withCredentials: true })
+      setPendingTasks(r.data.data || [])
+    } catch { /* 不影响主流程 */ }
+  }, [])
   const [form] = Form.useForm()
   const { message } = App.useApp()
   const [searchParams] = useSearchParams()
@@ -91,7 +112,11 @@ export default function AuthLetterPage() {
         const p = agencyProjects.find(x => x.id === pid)
         if (p) {
           setSelectedProject(p)
-          const roundNum = roundFromQuery ? parseInt(roundFromQuery) : 1
+          // 没带 round 参数时用项目当前轮次，不能一律当第 1 轮——
+          // 记错轮次会让「待出具授权函」的待办永远消不掉
+          const roundNum = roundFromQuery
+            ? parseInt(roundFromQuery)
+            : (p.current_round || 1)
           const bidTime = bidTimeFromQuery
             ? decodeURIComponent(bidTimeFromQuery)
             : (p.bid_time || '')
@@ -122,11 +147,33 @@ export default function AuthLetterPage() {
   }
 
   useEffect(() => { loadRecords() }, [])
+  useEffect(() => { loadPendingTasks() }, [loadPendingTasks])
+
+  /** 可选项目 = 开标期项目 ∪ 待出具授权函的项目。
+   *  后者一定是合法目标（后端已判定「已确认可开标且本轮未出授权函」），
+   *  但可能已不在 /projects/bid-open 的窗口内——不并进来的话，
+   *  点了卡片下拉框只会显示一个裸 id。 */
+  const selectableProjects: Project[] = (() => {
+    const m = new Map<number, Project>()
+    projects.forEach(p => m.set(p.id, p))
+    pendingTasks.forEach(t => {
+      if (!m.has(t.project_id)) {
+        m.set(t.project_id, {
+          id: t.project_id, name: t.name, number: t.number,
+          bid_time: t.bid_time, officer: t.officer,
+        } as Project)
+      }
+    })
+    return Array.from(m.values())
+  })()
 
   const handleProjectChange = (id: number) => {
-    const p = projects.find(x => x.id === id) || null
+    const p = selectableProjects.find(x => x.id === id) || null
     setSelectedProject(p)
     form.setFieldValue('bid_time_override', p?.bid_time || '')
+    // 轮次跟着项目走。手选项目时原来不动轮次，留在默认的 1，
+    // 于是第二轮的授权函被记成第一轮，待办一直挂着。
+    form.setFieldValue('round_number', p?.current_round || 1)
   }
 
   const handleGenerate = async () => {
@@ -180,6 +227,7 @@ export default function AuthLetterPage() {
         representative_names: reps.map(r => r.name).join('、'),
       })
       await loadRecords()
+      await loadPendingTasks()   // 出完这一轮，卡片就该消失
       message.success('授权函记录已保存')
       setActiveTab('done')  // 自动切换到已授权标签
 
@@ -345,6 +393,56 @@ export default function AuthLetterPage() {
       {/* ══ 待授权 Tab ══════════════════════════════════════════════ */}
       {activeTab === 'pending' && (
         <>
+          {/* 任务卡片：挂网并确认可开标后自动出现，点一下带着项目和轮次进入生成 */}
+          {pendingTasks.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                待出具授权函（{pendingTasks.length}）
+                <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8, fontWeight: 400 }}>
+                  一次开标一份；项目重招后新一轮要重新出，所以带了「第几次」
+                </Typography.Text>
+              </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                gap: 10,
+              }}>
+                {pendingTasks.map(t => (
+                  <div
+                    key={`${t.project_id}-${t.round_number}`}
+                    onClick={() => {
+                      const hit = projects.find(p => p.id === t.project_id)
+                        || ({ id: t.project_id, name: t.name, number: t.number,
+                              bid_time: t.bid_time, officer: t.officer } as Project)
+                      setSelectedProject(hit)
+                      form.setFieldsValue({
+                        project_id: t.project_id,
+                        round_number: t.round_number,
+                        bid_time_override: t.bid_time || undefined,
+                      })
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
+                    style={{
+                      border: '1px solid #d4d7dc', borderLeft: '4px solid #f9ab00',
+                      borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
+                      background: '#fff',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <Tag color={t.round_number > 1 ? 'orange' : 'blue'} style={{ marginInlineEnd: 0 }}>
+                        {t.round_cn}开标
+                      </Tag>
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>{t.number}</Typography.Text>
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{t.name}</div>
+                    <div style={{ fontSize: 11, color: '#5f6368', marginTop: 4 }}>
+                      开标时间：{t.bid_time || '未设置'}　经办人：{t.officer || '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {fromBid && selectedProject && (
             <Alert
               type="success" showIcon style={{ marginBottom: 16 }}
@@ -371,7 +469,7 @@ export default function AuthLetterPage() {
                   (opt?.label as string || '').toLowerCase().includes(input.toLowerCase())
                 }
                 onChange={handleProjectChange}
-                options={projects.map(p => {
+                options={selectableProjects.map(p => {
                   const hasDone = doneProjectIds.has(`${p.id}-1`) ||
                     Array.from(doneProjectIds).some(k => k.startsWith(`${p.id}-`))
                   return {

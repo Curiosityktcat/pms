@@ -2,6 +2,17 @@
 from docx.oxml.ns import qn
 
 
+def set_default_fonts(doc, east_asia="仿宋_GB2312", latin="Times New Roman"):
+    """把文档 Normal 样式默认字体设为公文体：中文仿宋、西文 Times New Roman。
+
+    对从零生成（Document()）的文档调用一次即可，正文 run 不再逐个设字体；
+    个别标题仍可按需覆盖（如黑体）。"""
+    style = doc.styles["Normal"]
+    style.font.name = latin           # 设 ascii/hAnsi，并确保 rPr/rFonts 存在
+    style.element.rPr.rFonts.set(qn("w:eastAsia"), east_asia)
+    return doc
+
+
 def _remove_highlight_in(element):
     """删除某 XML 元素下所有 run 级高亮（<w:highlight>，模板里多为黄色占位印记）。"""
     if element is None:

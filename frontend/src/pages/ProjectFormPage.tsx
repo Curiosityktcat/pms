@@ -120,6 +120,11 @@ export default function ProjectFormPage() {
       method: DIST_METHOD_MAP[d.method] || undefined,
       agency_code: d.agency_code || undefined,
       sole_use_agency: d.method === '院内单一来源采购' ? 'yes' : undefined,
+      // 审签表里本来就有的三项，立项时一并带过来（原来漏了，每次都要手工重填）
+      demand_dept: d.demand_dept || undefined,
+      manage_dept: d.manage_dept || undefined,
+      // 池里的「项目所属分类」取值就是 货物/服务/工程，与立项的采购项目分类同一套
+      category: ['货物', '服务', '工程'].includes(d.form_type) ? d.form_type : undefined,
     })
   }
 

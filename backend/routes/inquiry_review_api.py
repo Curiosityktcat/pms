@@ -21,6 +21,7 @@ from models.inquiry_supplier import InquirySupplier
 from models.inquiry_review import InquiryReview, InquirySupplierFile
 from models.project import Project
 from routes.utils import login_required, can_view_project
+from services import upload_relay
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -672,7 +673,7 @@ def upload_supplier_file(lid, sid):
         return jsonify({"ok": False, "error": "供应商不存在"}), 404
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
-    f = request.files["file"]
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
     ext = os.path.splitext(f.filename)[1].lower()

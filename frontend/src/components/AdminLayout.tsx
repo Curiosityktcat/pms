@@ -58,6 +58,12 @@ export default function AdminLayout() {
           onClick: () => navigate('/admin/model'),
         },
         {
+          key: 'api',
+          icon: <KeyOutlined />,
+          label: 'API 管理',
+          onClick: () => navigate('/admin/api'),
+        },
+        {
           key: 'usage',
           icon: <BarChartOutlined />,
           label: 'Token 用量',

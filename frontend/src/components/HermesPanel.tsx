@@ -27,7 +27,7 @@ interface DirectStatus { running: boolean; ok: boolean | null; serial_no: string
 
 export default function HermesPanel({
   taskType, projectId, title, fields, contractId,
-  directSubmitUrl, directStatusUrl,
+  directSubmitUrl, directStatusUrl, autofillUrl,
 }: {
   taskType: string
   projectId?: number | null
@@ -37,6 +37,8 @@ export default function HermesPanel({
   /** 若传入，绕过 Hermes 直接调用 Playwright 接口 */
   directSubmitUrl?: string
   directStatusUrl?: string
+  /** 若传入，显示「AI 识别附件填写」按钮（读取合同附件抽取字段） */
+  autofillUrl?: string
 }) {
   const { message } = App.useApp()
   const [vals, setVals] = useState<Record<string, string>>(
@@ -44,7 +46,33 @@ export default function HermesPanel({
   const [task, setTask] = useState<HermesTask | null>(null)
   const [directStatus, setDirectStatus] = useState<DirectStatus | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // AI 识别附件填写：后端读合同附件 → LLM 抽取 → 覆盖可编辑字段（空值不覆盖）
+  const autofill = async () => {
+    if (!autofillUrl) return
+    setAiLoading(true)
+    try {
+      const r = await api.post<{ ok: boolean; data: Record<string, string>
+        filled: number; source?: string; error?: string }>(
+        autofillUrl, {}, { timeout: 300000 })
+      if (!r.data.ok) throw new Error(r.data.error || '识别失败')
+      const got = r.data.data
+      const editable = new Set(fields.filter(f => !f.readOnly).map(f => f.label))
+      setVals(v => {
+        const next = { ...v }
+        for (const [k, val] of Object.entries(got)) {
+          if (editable.has(k) && val) next[k] = val
+        }
+        return next
+      })
+      message.success(`已从「${r.data.source || '合同附件'}」识别并填写，请核对后提交`)
+    } catch (e) {
+      const err = e as { response?: { data?: { error?: string } }; message?: string }
+      message.error(err.response?.data?.error || err.message || 'AI 识别失败')
+    } finally { setAiLoading(false) }
+  }
 
   // 外部 fields 变化（项目数据加载完）时重置预填值
   useEffect(() => {
@@ -114,9 +142,23 @@ export default function HermesPanel({
         message.success('已提交给 Hermes，正在自动填报 rd-web…')
       }
     } catch (e) {
-      const err = e as { response?: { data?: { error?: string } } }
-      message.error(err.response?.data?.error || '提交失败')
-      if (directSubmitUrl) setDirectStatus(null)
+      const err = e as { response?: { data?: { error?: string; missing?: string[] } } }
+      const d = err.response?.data
+      // 必填项没填齐时后端会直接挡下（不启动浏览器），把缺哪几项醒目地列出来，
+      // 而不是让人等两分钟再收到一句「可能存在校验错误」
+      if (d?.missing?.length) {
+        message.error({
+          content: `还差 ${d.missing.length} 个必填项：${d.missing.join('、')}。补全后再推送。`,
+          duration: 8,
+        })
+        setDirectStatus({
+          running: false, ok: false, serial_no: '',
+          msg: `未推送——以下 rd-web 必填项为空：${d.missing.join('、')}`,
+        })
+      } else {
+        message.error(d?.error || '提交失败')
+        if (directSubmitUrl) setDirectStatus(null)
+      }
     } finally { setSubmitting(false) }
   }
 
@@ -147,6 +189,12 @@ export default function HermesPanel({
       </div>
 
       <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+        {autofillUrl && (
+          <Button icon={<RobotOutlined />} loading={aiLoading}
+            disabled={!!isRunning} onClick={autofill}>
+            AI 识别附件填写
+          </Button>
+        )}
         <Button type="primary" icon={<SendOutlined />} loading={submitting || !!isRunning}
           disabled={!!isRunning} onClick={submit}>
           {isDirect ? '提交到 rd-web 审签' : '提交，让 Hermes 填报'}

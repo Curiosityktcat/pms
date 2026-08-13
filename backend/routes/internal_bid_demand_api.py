@@ -5,12 +5,39 @@ from models import db
 from models.internal_bid_demand import InternalBidDemand
 from models.project import Project
 from routes.utils import login_required
+from services.permission import is_admin_user
 
 bp = Blueprint("internal_bid_demand", __name__, url_prefix="/api/internal-bid-demands")
 
 
 def _now():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _scope_ok(demand) -> bool:
+    """院内招标需求归属：本人起草(created_by) 或关联项目归本人经办；
+    助理/负责人/管理员全部；代理机构不可见（院内文件）。"""
+    role = session.get("role", "")
+    if role in ("assistant", "leader") or is_admin_user(session.get("user", "")):
+        return True
+    if role == "agency":
+        return False
+    me = session.get("display_name", "")
+    if (demand.created_by or "") == me:
+        return True
+    if demand.project_id:
+        p = db.session.get(Project, demand.project_id)
+        return bool(p) and (p.officer or "") == me
+    return False
+
+
+def _scoped(did):
+    demand = db.session.get(InternalBidDemand, did)
+    if not demand:
+        return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if not _scope_ok(demand):
+        return None, (jsonify({"ok": False, "error": "无权访问该院内招标需求"}), 403)
+    return demand, None
 
 
 def _enrich(d: InternalBidDemand):
@@ -39,6 +66,7 @@ def list_demands():
         q = q.where(InternalBidDemand.status == status_filter)
 
     rows = db.session.execute(q).scalars().all()
+    rows = [r for r in rows if _scope_ok(r)]   # 隔离：只看本人起草/本人项目的
     return jsonify({"ok": True, "data": [_enrich(r) for r in rows]})
 
 
@@ -69,9 +97,9 @@ def create_demand():
 @bp.route("/<int:did>", methods=["GET"])
 @login_required
 def get_demand(did):
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     return jsonify({"ok": True, "data": _enrich(demand)})
 
 
@@ -79,9 +107,9 @@ def get_demand(did):
 @bp.route("/<int:did>", methods=["PUT"])
 @login_required
 def update_demand(did):
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     if demand.status == "定稿":
         return jsonify({"ok": False, "error": "定稿状态不可修改，请先撤回"}), 400
 
@@ -99,9 +127,9 @@ def update_demand(did):
 @bp.route("/<int:did>", methods=["DELETE"])
 @login_required
 def delete_demand(did):
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     if demand.status != "初稿":
         return jsonify({"ok": False, "error": "只有初稿状态可以删除"}), 400
     db.session.delete(demand)
@@ -113,9 +141,9 @@ def delete_demand(did):
 @bp.route("/<int:did>/finalize", methods=["POST"])
 @login_required
 def finalize_demand(did):
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     if demand.status != "初稿":
         return jsonify({"ok": False, "error": "只有初稿状态可以定稿"}), 400
     demand.status = "定稿"
@@ -128,9 +156,9 @@ def finalize_demand(did):
 @bp.route("/<int:did>/revoke", methods=["POST"])
 @login_required
 def revoke_demand(did):
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     if demand.status != "定稿":
         return jsonify({"ok": False, "error": "只有定稿状态可以撤回"}), 400
     demand.status = "初稿"
@@ -144,9 +172,9 @@ def revoke_demand(did):
 @login_required
 def generate_word(did):
     from services.internal_bid_demand_word import generate
-    demand = db.session.get(InternalBidDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, err = _scoped(did)
+    if err:
+        return err
     project = db.session.get(Project, demand.project_id) if demand.project_id else None
     try:
         buf, filename = generate(demand, project)

@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card, Segmented } from 'antd'
+import { Button, Tag, Popconfirm, Tabs, Input, Select, App, Card, Segmented, Modal, InputNumber, Alert, Space, Typography } from 'antd'
 import {
   PlusOutlined, SearchOutlined, RollbackOutlined,
-  SortAscendingOutlined, SortDescendingOutlined,
+  SortAscendingOutlined, SortDescendingOutlined, AppstoreOutlined,
 } from '@ant-design/icons'
 import WebAnnPanel from '../components/WebAnnPanel'
 import { getWebAnnCounts } from '../services/webAnnouncement'
 import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useNavigate } from 'react-router-dom'
 import { getProjects, deleteProject, restoreProject } from '../services/project'
+import { setPackageCount } from '../services/procurementDoc'
 import ProjectProgressModal from '../components/ProjectProgressModal'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import type { Project } from '../services/project'
@@ -28,6 +29,10 @@ export default function ProjectFlowPage() {
   const [sortBy, setSortBy] = useState<'created' | 'number'>('created')
   const [sortAsc, setSortAsc] = useState(false)   // 默认倒序（新的/编号大的在前）
   const [progressId, setProgressId] = useState<number | null>(null)
+  // 分包设置：项目全流程都可改（后端把关：有包已中标/签约、或本轮采购结果已确认才拒）
+  const [pkgProject, setPkgProject] = useState<Project | null>(null)
+  const [pkgCount, setPkgCount] = useState(1)
+  const [pkgSaving, setPkgSaving] = useState(false)
   // 官网公告条数一次性取回，避免每张卡片各发一次请求
   const [annCounts, setAnnCounts] = useState<Record<string, number>>({})
   const [annProject, setAnnProject] = useState<Project | null>(null)
@@ -55,6 +60,29 @@ export default function ProjectFlowPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  const openPkgSetting = (p: Project) => {
+    setPkgCount(p.package_count || 1)
+    setPkgProject(p)
+  }
+
+  const handlePkgOk = async () => {
+    if (!pkgProject) return
+    setPkgSaving(true)
+    try {
+      const res = await setPackageCount(pkgProject.id, pkgCount)
+      const warn = (res.data as { data?: { warn?: string } })?.data?.warn
+      message.success('已设置为 ' + pkgCount + ' 个包')
+      if (warn) message.warning(warn, 6)
+      setPkgProject(null)
+      load()
+    } catch (err: unknown) {
+      const m = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(m || '设置失败')
+    } finally {
+      setPkgSaving(false)
+    }
+  }
 
   const handleDelete = async (id: number) => {
     try {
@@ -108,6 +136,8 @@ export default function ProjectFlowPage() {
   const filteredDeleted = applyFilter(deleted)
 
   const canEdit = user?.role === 'officer'
+  // 分包设置：采购人方（经办人/助理/负责人）可用，代理机构不可（后端同口径）
+  const canSetPkg = ['officer', 'assistant', 'leader'].includes(user?.role || '')
   const canCreate = user?.role === 'officer'
 
 
@@ -161,6 +191,11 @@ export default function ProjectFlowPage() {
             <>
               <Button size="small" disabled={p.is_draft} onClick={() => setProgressId(p.id)}>进展</Button>
               <Button size="small" type="primary" ghost onClick={() => navigate(`/project/${p.id}`)}>编辑</Button>
+              {canSetPkg && !p.is_draft && !!p.agency_code && (
+                <Button size="small" icon={<AppstoreOutlined />} onClick={() => openPkgSetting(p)}>
+                  分包{p.package_count ? `(${p.package_count})` : ''}
+                </Button>
+              )}
               <Popconfirm title="删除后可在「已删除」中恢复" onConfirm={() => handleDelete(p.id)} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 <Button size="small" danger>删除</Button>
               </Popconfirm>
@@ -169,6 +204,11 @@ export default function ProjectFlowPage() {
             <>
               <Button size="small" disabled={p.is_draft} onClick={() => setProgressId(p.id)}>进展</Button>
               <Button size="small" type="primary" ghost onClick={() => navigate(`/project/${p.id}`)}>查看</Button>
+              {canSetPkg && !p.is_draft && !!p.agency_code && (
+                <Button size="small" icon={<AppstoreOutlined />} onClick={() => openPkgSetting(p)}>
+                  分包{p.package_count ? `(${p.package_count})` : ''}
+                </Button>
+              )}
             </>
           ),
     }
@@ -253,6 +293,30 @@ export default function ProjectFlowPage() {
         emptyText={tab === 'deleted' ? '没有已删除的项目' : '暂无项目'}
         toCard={projectToCard}
       />
+
+      <Modal
+        title={`分包设置 — ${pkgProject?.name || ''}`}
+        open={!!pkgProject}
+        onCancel={() => setPkgProject(null)}
+        onOk={handlePkgOk}
+        okText="保存"
+        confirmLoading={pkgSaving}
+        destroyOnHidden
+        width={480}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="包一旦有中标/签约，或本轮采购结果已确认，就不能再改。未中标前（含已流标进入下一轮）可以调整，新增的包会自动补挂到各轮次。"
+        />
+        <Space>
+          <AppstoreOutlined />
+          <span>包数量：</span>
+          <InputNumber min={1} max={50} value={pkgCount} onChange={v => setPkgCount(Number(v) || 1)} />
+          <Typography.Text type="secondary">个（不分包填 1）</Typography.Text>
+        </Space>
+      </Modal>
 
       <ProjectProgressModal
         projectId={progressId}

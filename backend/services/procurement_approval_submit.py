@@ -55,19 +55,48 @@ def _login_if_needed(pg, ctx, loginuser, password, state_path):
         raise RuntimeError("rd-web 提示「登录太频繁」，请稍后重试")
 
 
-def _nav_to_approval(pg):
-    """点击左侧「采购项目审批流程」菜单，返回对应 frame。"""
-    clicked = pg.evaluate("""() => {
-        const el = [...document.querySelectorAll('*')].find(e =>
-            (e.innerText||'').trim() === '采购项目审批流程'
-            && e.getBoundingClientRect().width > 0);
-        if (el) { el.click(); return true; }
-        return false;
-    }""")
-    if not clicked:
-        raise RuntimeError("未找到「采购项目审批流程」菜单")
-    pg.wait_for_timeout(4000)
-    return _wait_frame(pg)
+_CLICK_APPROVAL = """() => {
+    const el = [...document.querySelectorAll('*')].find(e =>
+        (e.innerText||'').trim() === '采购项目审批流程'
+        && e.getBoundingClientRect().width > 0);
+    if (el) { el.click(); return true; }
+    return false;
+}"""
+
+
+def _nav_to_approval(pg, timeout_s=20):
+    """点进「采购项目审批流程」，返回对应 frame。
+
+    原来只在首页试一次就放弃，两个坑：
+      ① 菜单渲染可能晚于页面加载，一击即弃会误报「未找到」
+      ② 这个表单是否出现在首页取决于个人有没有把它设为常用应用——
+         没设的账号（如郑跃俊）首页根本没有，必须展开「采购部」分组才有
+    """
+    for _ in range(timeout_s):
+        if pg.evaluate(_CLICK_APPROVAL):
+            pg.wait_for_timeout(4000)
+            return _wait_frame(pg)
+        pg.wait_for_timeout(1000)
+
+    for group in ("采购部", "应用"):
+        try:
+            el = pg.query_selector(f"text={group}")
+            if not el:
+                continue
+            el.click()
+            pg.wait_for_timeout(2500)
+            for _ in range(8):
+                if pg.evaluate(_CLICK_APPROVAL):
+                    pg.wait_for_timeout(4000)
+                    return _wait_frame(pg)
+                pg.wait_for_timeout(1000)
+        except Exception:
+            continue
+
+    head = pg.evaluate("()=>document.body.innerText")[:120].replace("\n", " ")
+    raise RuntimeError(
+        f"未找到「采购项目审批流程」菜单（首页与采购部分组都没有）。"
+        f"请确认该 rd-web 账号有此表单权限。页面开头：{head}")
 
 
 def _open_form(fr, pg):
@@ -140,12 +169,23 @@ def _select_material_type(fr, pg, option_text):
 
 
 def _fill_officer(fr, pg, officer):
-    """填写采购部经办人：展开部门树 → 点 selectPersonBtn → 确定。"""
-    visible = _visible_forvalue_inputs(fr)
-    if not visible:
-        raise RuntimeError("未找到可见的经办人输入框")
-    officer_inp = visible[0]
-    officer_inp.click(timeout=5000)
+    """填写采购部经办人：点开人员选择框 → 展开部门树 → 点 selectPersonBtn → 确定。
+
+    这里原来点的是 forvalue[0]（普通文本输入框），**根本不是人员选择框的触发器**，
+    所以弹框永远不出来、卡在等待「输入查找的姓名」超时——这就是「采购项目审批填报
+    一次都没成功过」的真因。实测触发器是 input[ng-model="showNames"]，
+    点它主页面才会弹出人员选择框（与文件头注释里那句 "经办人 showNames 人员弹窗" 一致）。
+    """
+    trigger = fr.locator('input[ng-model="showNames"]')
+    if not trigger.count():
+        # 兜底：万一表单改版没有 showNames，再退回按可见 forvalue 试
+        visible = _visible_forvalue_inputs(fr)
+        if not visible:
+            raise RuntimeError("未找到人员选择框触发器（showNames 与 forvalue 都没有）")
+        trigger = visible[0]
+    else:
+        trigger = trigger.first
+    trigger.click(timeout=5000)
     pg.wait_for_timeout(1500)
 
     pg.locator('input[placeholder="输入查找的姓名"]').wait_for(state="visible", timeout=8000)
@@ -223,10 +263,23 @@ def _upload_attachments(fr, pg, attachments):
         if not os.path.exists(file_path):
             raise RuntimeError(f"附件文件不存在: {file_path}")
 
-        # 点「添加附件」
-        add_btn = fr.locator("[class*='item-customer-add']")
-        if not add_btn.count() or not add_btn.first.is_visible(timeout=2000):
-            add_btn = fr.get_by_text("添加附件").first
+        # 点「添加附件」。
+        # 坑：用 [class*='item-customer-add'] 做模糊匹配会同时命中两个按钮——
+        #   <button class="item-customer-add">添加附件</button>
+        #   <button class="item-customer-add-table">+ 添加</button>
+        # Playwright 严格模式下直接报 strict mode violation，附件根本传不上去。
+        # 所以这里用精确类名，并按可见性挑第一个；再退回按文字找。
+        add_btn = None
+        for sel in ("button.item-customer-add",
+                    "[class='item-customer-add']"):
+            loc = fr.locator(sel)
+            if loc.count():
+                add_btn = loc.first
+                break
+        if add_btn is None:
+            # 按文字兜底：只认「添加附件」，不要匹配到「+ 添加」
+            loc = fr.get_by_role("button", name="添加附件", exact=True)
+            add_btn = loc.first if loc.count() else fr.get_by_text("添加附件", exact=True).first
         add_btn.click(timeout=5000)
         pg.wait_for_timeout(2000)
 
@@ -356,7 +409,7 @@ def _submit(fr, pg):
 
 # ── 主入口 ───────────────────────────────────────────────────────────────
 
-def submit_approval(
+def _submit_approval_once(
     manage_dept: str,
     project_name_text: str,    # 填入「项目名称」的文字
     material_type: str,        # 项目资料名称下拉选项（含此文字即可）
@@ -371,31 +424,20 @@ def submit_approval(
     attachments: 列表，每项 {"path": 文件绝对路径, "name": 展示文件名}
     返回：{"ok": bool, "serial_no": str, "msg": str, "detail": dict}
     """
-    from playwright.sync_api import sync_playwright
+    from services import rdweb_session
 
     detail = {}
     attachments = attachments or []
-    state_path = _state_path(loginuser)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome", headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        ctx_kwargs = {
-            "user_agent": UA,
-            "viewport": {"width": 1920, "height": 1080},
-            "accept_downloads": True,
-        }
-        if os.path.exists(state_path):
-            ctx_kwargs["storage_state"] = state_path
-
-        ctx = browser.new_context(**ctx_kwargs)
-        pg  = ctx.new_page()
-
+    # 复用常驻会话，避免每次提交都登录一次被站点限流。
+    # 仍不使用 storage_state（人员弹框令牌只在真实登录时注入内存），
+    # 这里保活的是活着的浏览器本身。
+    sess = rdweb_session.session_for(loginuser)
+    with sess.lock:
         try:
-            # 1. 登录
-            _login_if_needed(pg, ctx, loginuser, password, state_path)
+            pg, reused = sess.acquire(password, _login_if_needed, home_url=LOGIN_URL)
+            detail["session_reused"] = reused
+            detail["login_count"] = sess.login_count
 
             # 2. 导航到采购项目审批流程
             fr = _nav_to_approval(pg)
@@ -433,8 +475,7 @@ def submit_approval(
             result = _submit(fr, pg)
             detail["submit"] = result
 
-            ctx.storage_state(path=state_path)
-            browser.close()
+            # 不关浏览器，留给下次复用
             return {
                 "ok":        result["ok"],
                 "serial_no": result.get("serial_no", ""),
@@ -443,9 +484,41 @@ def submit_approval(
             }
 
         except Exception as e:
+            # 会话可能已坏，丢掉下次重新登录，避免一直失败
             try:
-                ctx.storage_state(path=state_path)
-                browser.close()
+                sess.invalidate()
             except Exception:
                 pass
             return {"ok": False, "msg": str(e), "serial_no": "", "detail": detail}
+
+
+_SESSION_BROKEN = (
+    "部门树为空",
+    "人员选择框中未找到",
+    "未找到「采购项目审批流程」菜单",
+    "超时：未加载到采购项目审批 frame",
+)
+
+
+def submit_approval(*args, **kwargs):
+    """对外入口：复用常驻会话；因登录态问题失败时丢弃会话重登再试一次。
+
+    与合同审签同一套路——常驻会话省登录，但会话会失效，
+    失效的表现就是人员弹框空树/找不到菜单，自动重登一次而不是让人手动重来。
+    """
+    loginuser = kwargs.get("loginuser") or ""
+    res = _submit_approval_once(*args, **kwargs)
+    if res.get("ok"):
+        return res
+    msg = str(res.get("msg", ""))
+    if not any(k in msg for k in _SESSION_BROKEN):
+        return res
+    try:
+        from services import rdweb_session
+        rdweb_session.session_for(loginuser).invalidate()
+    except Exception:
+        pass
+    res2 = _submit_approval_once(*args, **kwargs)
+    res2.setdefault("detail", {})["retried_after_relogin"] = True
+    res2["detail"]["first_error"] = msg[:200]
+    return res2

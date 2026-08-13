@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import axios from 'axios'
 import {
   Button,
   Drawer,
@@ -45,6 +44,7 @@ import {
 } from '@ant-design/icons'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+import { smartUploadAbs } from '../services/upload'
 import {
   listResults,
   createResult,
@@ -1045,13 +1045,8 @@ function PriceAttachments({ resultId, locked }: { resultId: number; locked: bool
   const customUpload = async (options: UploadRequestOption) => {
     const { file, onSuccess, onError } = options
     setUploading(true)
-    const formData = new FormData()
-    formData.append('file', file as Blob)
     try {
-      const res = await axios.post(uploadPriceAttachmentUrl(resultId), formData, {
-        withCredentials: true,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      const res = await smartUploadAbs(uploadPriceAttachmentUrl(resultId), file as File)
       onSuccess?.(res.data)
       message.success('上传成功')
       load()
@@ -1165,13 +1160,8 @@ function AwardNotice({ resultId, canUpload }: { resultId: number; canUpload: boo
   const customUpload = async (options: UploadRequestOption) => {
     const { file, onSuccess, onError } = options
     setUploading(true)
-    const formData = new FormData()
-    formData.append('file', file as Blob)
     try {
-      const res = await axios.post(uploadAwardNoticeUrl(resultId), formData, {
-        withCredentials: true,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      const res = await smartUploadAbs(uploadAwardNoticeUrl(resultId), file as File)
       onSuccess?.(res.data)
       message.success('上传成功')
       load()

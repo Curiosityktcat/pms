@@ -40,8 +40,9 @@ export interface Distribution {
   attachments: DistAttachment[]
 }
 
-export const listDistributions = () =>
-  api.get<{ ok: boolean; data: Distribution[] }>('/distributions')
+// scope='pool' → 只返回经办人本人账号抓的（source='rd-经办人抓取'），用于 4.0 项目池
+export const listDistributions = (scope?: 'pool') =>
+  api.get<{ ok: boolean; data: Distribution[] }>('/distributions' + (scope ? `?scope=${scope}` : ''))
 
 export const createDistribution = (data: Partial<Distribution>) =>
   api.post<{ ok: boolean; data: Distribution }>('/distributions', data)
@@ -54,6 +55,16 @@ export const deleteDistribution = (id: number) =>
 
 export const reassignAgency = (id: number, agency_code?: string) =>
   api.post<{ ok: boolean; data: Distribution }>(`/distributions/${id}/reassign-agency`, { agency_code })
+
+// 对账：把池内条目关联到已在 4.1 单独立项的项目；或标记为不立项
+export const linkDistProject = (id: number, project_id: number) =>
+  api.post<{ ok: boolean; message: string }>(`/distributions/${id}/link-project`, { project_id })
+
+export const cancelDistProject = (id: number) =>
+  api.post<{ ok: boolean; message: string }>(`/distributions/${id}/link-project`, { cancel: true })
+
+export const unlinkDistProject = (id: number) =>
+  api.post<{ ok: boolean; message: string }>(`/distributions/${id}/unlink-project`)
 
 export const uploadDistAttachment = (did: number, file: File) => {
   const fd = new FormData()
@@ -81,6 +92,13 @@ export const scrapeRdweb = () =>
 
 export const scrapeStatus = () =>
   api.get<{ ok: boolean; data: { running: boolean; last_msg: string } }>('/distributions/scrape-status')
+
+// 抓取「分发给我(经办人本人)的待处理审签表」——用本人 rd-web 账号，只进 4.0 项目池
+export const scrapeMine = () =>
+  api.post<{ ok: boolean; message?: string; error?: string }>('/distributions/scrape-mine')
+
+export const scrapeMineStatus = () =>
+  api.get<{ ok: boolean; data: { running: boolean; last_msg: string } }>('/distributions/scrape-mine-status')
 
 // ── rd-web 办理动作（接收/驳回/撤回，后端 Playwright RPA，异步）──
 export const rdwebAction = (

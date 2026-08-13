@@ -25,6 +25,14 @@ class Contract(db.Model):
     file_name          = db.Column(db.String(300), default="")   # 上传文件原始名称
     file_saved_name    = db.Column(db.String(300), default="")   # 上传文件保存名称
     notes              = db.Column(db.Text, default="")
+    # ── rd-web 合同审签提交 ────────────────────────────────────────
+    rdweb_serial_no    = db.Column(db.String(100), default="")   # rd-web 合同审签流水号
+    rdweb_submitted_at = db.Column(db.String(30), default="")    # 推送 rd-web 成功时间
+    # ── 驳回（打回合同草案重改，完整往返链条在 approval_logs）──────
+    reject_reason      = db.Column(db.Text, default="")
+    reject_count       = db.Column(db.Integer, default=0)
+    rejected_by        = db.Column(db.String(50), default="")
+    rejected_at        = db.Column(db.String(30), default="")
     # ── 元数据 ────────────────────────────────────────────────────
     created_by         = db.Column(db.String(50), default="")
     created_at         = db.Column(db.String(30), default="")

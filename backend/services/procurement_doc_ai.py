@@ -9,8 +9,13 @@
     text = review(project, demand)
 """
 import json
+import os
+
+import requests
 
 from services.llm_client import chat, get_llm_config
+
+REQGEN_SVC = os.environ.get("PMS_REQGEN_URL", "http://127.0.0.1:9020")
 
 SYSTEM_PROMPT = """你是内江市第一人民医院「院内竞选」采购文件编制的资深审阅专家，尤其熟悉医用耗材类采购。
 我会给你某个采购项目已填写的「采购需求」信息。请你站在审阅者角度，对照采购文件编制要求，给出具体、可操作的意见和建议。
@@ -121,12 +126,21 @@ def review(project, demand, *, max_tokens=3000, usage_ctx=None):
     """调用大模型，返回审阅意见 Markdown 文本。
     usage_ctx 传入时按账号记录 token 用量。"""
     summary = build_demand_summary(demand, project)
-    user = (
-        "以下是该采购项目已填写的采购需求信息，请审阅并给出意见和建议：\n\n"
-        f"{summary}\n"
-    )
-    return chat(SYSTEM_PROMPT, user, temperature=0.4, max_tokens=max_tokens,
-                timeout=240, usage_ctx=usage_ctx)
+    # 收敛到平台服务 9020 审阅模式；不可用则本地兜底
+    try:
+        r = requests.post(f"{REQGEN_SVC}/review", json={"summary": summary}, timeout=300)
+        r.raise_for_status()
+        d = r.json()
+        if d.get("ok"):
+            return d.get("content", "")
+        raise RuntimeError(d.get("error", "审阅服务错误"))
+    except Exception:
+        user = (
+            "以下是该采购项目已填写的采购需求信息，请审阅并给出意见和建议：\n\n"
+            f"{summary}\n"
+        )
+        return chat(SYSTEM_PROMPT, user, temperature=0.4, max_tokens=max_tokens,
+                    timeout=240, usage_ctx=usage_ctx)
 
 
 def current_model_name():

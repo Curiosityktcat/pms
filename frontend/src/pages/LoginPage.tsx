@@ -97,9 +97,15 @@ export default function LoginPage() {
   }, [activeAnnType])
 
   const onFinish = async (values: { username: string; password: string }) => {
+    // 先过滑块验证，拿到一次性通行令牌再提交登录（防撞库）
+    const cg = (window as any).CGCaptcha
+    const captchaToken: string = await new Promise(resolve => {
+      if (!cg) { resolve(''); return }   // widget 未加载则不阻断，由后端拦截
+      cg.open({ action: 'pms_login', title: '安全验证', onPass: (t: string) => resolve(t) })
+    })
     setLoginLoading(true)
     try {
-      const res = await authLogin(values.username, values.password)
+      const res = await authLogin(values.username, values.password, captchaToken)
       setUser(res.data.user)
       navigate('/portal')
     } catch (err: any) {

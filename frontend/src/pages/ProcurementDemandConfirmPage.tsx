@@ -161,7 +161,7 @@ export default function ProcurementDemandConfirmPage() {
     actions: (
       <>
         <Button size="small" icon={<PaperClipOutlined />} onClick={() => setAttachProject(r)}>需求文件</Button>
-        {canConfirm && (r.current_round || 1) <= 1 && (
+        {canConfirm && (
           <Button size="small" icon={<AppstoreOutlined />} onClick={() => openPkgSetting(r)}>分包设置</Button>
         )}
         {canConfirm && (r.demand_confirmed ? (
@@ -281,7 +281,7 @@ export default function ProcurementDemandConfirmPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="请确定本项目的分包数量。进入第二轮或有包中标后不可再调整，后续按包分轮采购，请谨慎填写。"
+          message="请确定本项目的分包数量。有包中标/签约、或本轮采购结果已确认后不可再调整；未中标前（含已流标进入下一轮）仍可在「项目流程」里改。后续按包分轮采购，请谨慎填写。"
         />
         <Space>
           <AppstoreOutlined />

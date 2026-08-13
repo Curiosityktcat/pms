@@ -3,6 +3,7 @@ import datetime
 import os
 import tempfile
 import threading
+import time
 from flask import Blueprint, session, jsonify, send_file, current_app
 from models import db
 from models.project import Project
@@ -13,6 +14,7 @@ from routes.utils import login_required, can_view_project
 
 _rdweb: dict = {}
 _rdweb_lock = threading.Lock()
+RDWEB_STALE_SEC = 8 * 60   # 线程僵死超过此时长，允许重新提交（否则永久 429）
 
 bp = Blueprint("archive", __name__, url_prefix="/api/archive")
 
@@ -96,6 +98,108 @@ def print_bundle(pid):
     )
 
 
+@bp.route("/<int:pid>/tree", methods=["GET"])
+@login_required
+def archive_tree(pid):
+    """归档「文件夹视图」：列出该项目按轮次组织的各归档要件（可逐件下载）。"""
+    p = db.session.get(Project, pid)
+    if not p:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if not can_view_project(p):
+        return jsonify({"ok": False, "error": "无权查看该项目"}), 403
+    from services.archive_print import list_archive_tree
+    return jsonify({"ok": True, "data": list_archive_tree(p)})
+
+
+@bp.route("/<int:pid>/item", methods=["GET"])
+@login_required
+def archive_item(pid):
+    """下载/预览单个归档要件。参数 round(轮次) + kind(要件类型)；?download=1 触发下载保存。"""
+    from flask import request as _req
+    p = db.session.get(Project, pid)
+    if not p:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if not can_view_project(p):
+        return jsonify({"ok": False, "error": "无权查看该项目"}), 403
+    try:
+        rno = int(_req.args.get("round", 1))
+    except (TypeError, ValueError):
+        rno = 1
+    kind = _req.args.get("kind", "")
+    from services.archive_print import build_item
+    try:
+        buf, name = build_item(p, rno, kind)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
+    if buf is None:
+        return jsonify({"ok": False, "error": "该要件不存在或暂不可生成"}), 404
+    from services.archive_print import _cn_round
+    download = _req.args.get("download") == "1"
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=download,
+        download_name=f"{p.number or p.name}-{_cn_round(rno)}-{name}.docx",
+    )
+
+
+# 归档通用附件端点：统一服务 ProcurementDocAttachment 各 kind 的真实文件
+# （采购需求/文件/评审/结果单价/中标通知书，同表不同物理目录）。
+_KIND_SUBDIR = {
+    "demand":        "procurement_doc",
+    "doc":           "procurement_doc",
+    "review_result": "project_review",
+    "result":        "procurement_result",
+    "award_notice":  "procurement_result",
+}
+_UPLOADS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "uploads"))
+
+
+@bp.route("/<int:pid>/attachment/<int:aid>", methods=["GET"])
+@login_required
+def archive_attachment(pid, aid):
+    """下载/预览项目在各模块上传的真实文件（ProcurementDocAttachment）。?download=1 触发保存。"""
+    from flask import request as _req
+    from models.procurement_doc_attachment import ProcurementDocAttachment
+    p = db.session.get(Project, pid)
+    if not p:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if not can_view_project(p):
+        return jsonify({"ok": False, "error": "无权查看该项目"}), 403
+    att = db.session.get(ProcurementDocAttachment, aid)
+    if not att or att.project_id != pid:
+        return jsonify({"ok": False, "error": "附件不存在"}), 404
+    subdir = _KIND_SUBDIR.get(att.kind)
+    if not subdir:
+        return jsonify({"ok": False, "error": "不支持的附件类型"}), 404
+    path = os.path.join(_UPLOADS, subdir, str(pid), att.saved_name or "")
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    if _req.args.get("download") == "1":
+        return send_file(path, as_attachment=True,
+                         download_name=att.original_name or att.saved_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name or att.saved_name)
+
+
+@bp.route("/<int:pid>/approval-record", methods=["GET"])
+@login_required
+def approval_record(pid):
+    """《审批过程记录表》：把本项目所有驳回/不确认往返生成 Word，作为归档件。"""
+    p = db.session.get(Project, pid)
+    if not p:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    if not can_view_project(p):
+        return jsonify({"ok": False, "error": "无权查看该项目"}), 403
+    from services.approval_record_word import build
+    buf, name = build(p)
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True, download_name=name,
+    )
+
+
 def _can_archive():
     role = session.get("role", "")
     from services.permission import is_admin_user
@@ -149,9 +253,15 @@ def submit_approval_to_rdweb(pid):
         return jsonify({"ok": False, "error": "无权操作该项目"}), 403
 
     with _rdweb_lock:
-        if _rdweb.get(pid, {}).get("running"):
-            return jsonify({"ok": False, "error": "该项目正在提交 rd-web，请稍后重试"}), 429
-        _rdweb[pid] = {"running": True, "ok": None, "serial_no": "", "msg": "提交中…"}
+        st = _rdweb.get(pid, {})
+        started = st.get("started_at", 0)
+        stale = st.get("running") and started and (time.time() - started > RDWEB_STALE_SEC)
+        if st.get("running") and not stale:
+            waited = int(time.time() - started) if started else 0
+            return jsonify({"ok": False,
+                            "error": f"该项目正在提交 rd-web（已 {waited} 秒），请稍后重试"}), 429
+        _rdweb[pid] = {"running": True, "ok": None, "serial_no": "", "msg": "提交中…",
+                       "started_at": time.time()}
 
     from routes.utils import get_rdweb_creds
     _rdweb_user, _rdweb_pass = get_rdweb_creds(session.get("display_name", ""))
@@ -163,7 +273,16 @@ def submit_approval_to_rdweb(pid):
     project_name_text = body.get("项目名称") or "采购文件确认函，授权函，采购结果确认函"
     material_type     = body.get("项目资料名称") or "备案资料"
     manage_dept       = body.get("归口管理科室") or p.manage_dept or ""
-    officer           = body.get("经办人") or "曾旌城"
+    # 经办人取本项目的经办人，其次是当前登录人。
+    # 原来这里写死「曾旌城」——rd-web 人员选择框里搜不到这个人，
+    # 提交必然卡在「人员选择框中未找到」，所以这个功能一次都没成功过。
+    officer           = (body.get("经办人") or p.officer
+                         or session.get("display_name", "")).strip()
+    if not officer:
+        with _rdweb_lock:
+            _rdweb[pid] = {"running": False, "ok": False, "serial_no": "",
+                           "msg": "项目没有经办人，且当前账号无姓名，无法提交"}
+        return jsonify({"ok": False, "error": "项目没有经办人，无法确定审批填报的经办人"}), 400
 
     # 预存提交所需的项目数据（避免跨线程 SQLAlchemy lazy-load）
     _pid      = p.id
@@ -186,7 +305,11 @@ def submit_approval_to_rdweb(pid):
                 display_name = f"{_pnumber or _pname}-归档资料.docx"
                 attachments = [{"path": tmp_path, "name": display_name}]
             else:
-                attachments = []
+                # rd-web 审批表单的附件是必填的；这里生成不出资料包就直接说清楚，
+                # 别空着附件跑完两分钟再被表单挡下来
+                raise RuntimeError(
+                    "该项目暂无可打印的归档要件（采购文件确认函/授权函/结果确认函都没有），"
+                    "无法生成审批附件。请先补齐要件，或在「11. 归档」页确认一键打印能出内容。")
 
             from services.procurement_approval_submit import submit_approval
             res = submit_approval(

@@ -14,7 +14,9 @@ import {
   addAgencyAttachmentFromTemplate, deleteAgencyAttachment,
   type AgencyAttachment,
 } from '../services/agencyAgreement'
-import { listTemplates, type TemplateInfo } from '../services/template'
+import {
+  listMyTemplates, uploadMyTemplate, deleteMyTemplate, type MyTemplate,
+} from '../services/myTemplate'
 import RecordCards from '../components/RecordCards'
 import HermesPanel, { type HermesField } from '../components/HermesPanel'
 import ProjectListToolbar, { useProjectListFilter, PROJECT_ACCESSORS } from '../components/ProjectListToolbar'
@@ -37,11 +39,17 @@ export default function AgencyAgreementPage() {
   const [generating, setGenerating] = useState(false)
   const [form] = Form.useForm()
 
-  // rd-web 审签附件（自行上传 / 从模板库选用）
+  // rd-web 审签附件（自行上传 / 从「我的模板」选用）
   const [attachments, setAttachments] = useState<AgencyAttachment[]>([])
-  const [templates, setTemplates] = useState<TemplateInfo[]>([])
-  const [tplKey, setTplKey] = useState<string>()
+  const [myTemplates, setMyTemplates] = useState<MyTemplate[]>([])
+  const [tplName, setTplName] = useState<string>()
   const [attachBusy, setAttachBusy] = useState(false)
+
+  const refreshMyTemplates = useCallback(() => {
+    listMyTemplates()
+      .then(res => setMyTemplates(res.data.data || []))
+      .catch(() => setMyTemplates([]))
+  }, [])
 
   const refreshAttachments = useCallback((pid: number) => {
     listAgencyAttachments(pid)
@@ -78,9 +86,7 @@ export default function AgencyAgreementPage() {
     })
     setModalOpen(true)
     refreshAttachments(p.id)
-    if (!templates.length) {
-      listTemplates().then(res => setTemplates(res.data.data || [])).catch(() => {})
-    }
+    refreshMyTemplates()
   }
 
   const doUploadAttachment = async (file: File) => {
@@ -100,18 +106,44 @@ export default function AgencyAgreementPage() {
   }
 
   const doAddTemplate = async () => {
-    if (!current || !tplKey) return
+    if (!current || !tplName) return
     setAttachBusy(true)
     try {
-      const res = await addAgencyAttachmentFromTemplate(current.id, tplKey)
+      const res = await addAgencyAttachmentFromTemplate(current.id, tplName)
       setAttachments(res.data.data || [])
       message.success('模板已加入附件')
-      setTplKey(undefined)
+      setTplName(undefined)
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: string } } }
       message.error(err?.response?.data?.error || '加入失败')
     } finally {
       setAttachBusy(false)
+    }
+  }
+
+  const doUploadTemplate = async (file: File) => {
+    setAttachBusy(true)
+    try {
+      const res = await uploadMyTemplate(file)
+      setMyTemplates(res.data.data || [])
+      message.success('模板已存入「我的模板」')
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: string } } }
+      message.error(err?.response?.data?.error || '模板上传失败')
+    } finally {
+      setAttachBusy(false)
+    }
+    return false
+  }
+
+  const doDeleteTemplate = async (name: string) => {
+    try {
+      const res = await deleteMyTemplate(name)
+      setMyTemplates(res.data.data || [])
+      if (tplName === name) setTplName(undefined)
+      message.success('模板已删除')
+    } catch {
+      message.error('删除模板失败')
     }
   }
 
@@ -260,15 +292,33 @@ export default function AgencyAgreementPage() {
             </Button>
           </Upload>
           <Select
-            size="small" style={{ minWidth: 220 }} placeholder="从模板库选用…"
-            value={tplKey} onChange={setTplKey} allowClear
-            options={templates.filter(t => t.exists)
-              .map(t => ({ value: t.key, label: `${t.label}（${t.filename}）` }))}
+            size="small" style={{ minWidth: 220 }} placeholder="从我的模板选用…"
+            value={tplName} onChange={setTplName} allowClear
+            notFoundContent="暂无模板，请先上传"
+            options={myTemplates.map(t => ({ value: t.name, label: t.name }))}
+            optionRender={opt => (
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <span>{opt.label}</span>
+                <DeleteOutlined
+                  style={{ color: '#ff4d4f' }}
+                  onClick={e => {
+                    e.stopPropagation()
+                    doDeleteTemplate(String(opt.value))
+                  }}
+                />
+              </Space>
+            )}
           />
-          <Button size="small" icon={<FileAddOutlined />} disabled={!tplKey}
+          <Button size="small" icon={<FileAddOutlined />} disabled={!tplName}
             loading={attachBusy} onClick={doAddTemplate}>
             加入附件
           </Button>
+          <Upload showUploadList={false} beforeUpload={doUploadTemplate}
+            accept=".docx,.doc,.xlsx,.xls,.pdf,.jpg,.jpeg,.png,.zip">
+            <Button size="small" icon={<UploadOutlined />} loading={attachBusy}>
+              上传模板
+            </Button>
+          </Upload>
         </Space>
         {attachments.length > 0 && (
           <List

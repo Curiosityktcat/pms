@@ -28,12 +28,13 @@ import {
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../hooks/useTheme'
 import { authLogout } from '../services/auth'
 import AiGuideButton from './AiGuideButton'
 import InboxBell from './InboxBell'
 import ChatWidget from './ChatWidget'
 import OnlineCount from './OnlineCount'
-import MouseAssistant from './MouseAssistant'
+import NiumaAssistant from './NiumaAssistant'
 
 const { Sider, Header, Content } = Layout
 
@@ -47,6 +48,7 @@ const DevLabel = ({ label }: { label: string }) => (
 
 export default function AppLayout() {
   const { user, setUser } = useAuth()
+  const { mode: themeMode, setMode: setThemeMode } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
   const handleLogout = async () => {
@@ -108,6 +110,11 @@ export default function AppLayout() {
       label: '1. 采购需求编制',
       icon: <FormOutlined />,
       children: [
+        {
+          key: 'procurement-plan',
+          label: '1.0 采购计划池',
+          onClick: () => navigate('/procurement-plan'),
+        },
         {
           key: 'procurement-demand-gov',
           label: '1.1 政府采购需求',
@@ -180,6 +187,13 @@ export default function AppLayout() {
       icon: <FolderOpenOutlined />,
       children: [
         {
+          key: 'project-pool',
+          icon: <ContainerOutlined />,
+          label: '4.0 项目池',
+          // 经办人本人的池子：只放本人账号抓的（view=pool），区别于 2.1 助理分发视图
+          onClick: () => navigate('/project-distribution?view=pool'),
+        },
+        {
           key: 'new',
           icon: <PlusCircleOutlined />,
           label: '4.1 项目立项',
@@ -251,14 +265,22 @@ export default function AppLayout() {
           label: '6.1 采购公告',
           onClick: () => navigate('/announcement'),
         },
-        { key: 'survey',        label: <DevLabel label="6.2 调研公告" />,       disabled: true },
+        {
+          key: 'survey',
+          label: '6.2 调研公告',
+          onClick: () => navigate('/survey'),
+        },
         {
           key: 'correction',
           icon: <FileSearchOutlined />,
           label: '6.3 更正公告',
           onClick: () => navigate('/correction'),
         },
-        { key: 'single-source', label: <DevLabel label="6.4 单一来源公示" />,   disabled: true },
+        {
+          key: 'single-source',
+          label: '6.4 单一来源公示',
+          onClick: () => navigate('/single-source'),
+        },
       ],
     },
 
@@ -326,10 +348,21 @@ export default function AppLayout() {
       onClick: () => navigate('/archive'),
     },
 
-    // ─── 12. 文件识别 ─────────────────────────────────────────
+    // ─── 12. 代理机构考核 ─────────────────────────────────────
+    // 独立顶层项，不能塞进「2. 采购项目分发」组——那个组是权限受控的，
+    // 经办人没有分发权限时整组隐藏，考核会跟着一起消失（踩过一次）。
+    // 分发页面里另有入口按钮，从那边也能进。
+    {
+      key: 'agency-assessment',
+      icon: <SafetyCertificateOutlined />,
+      label: '12. 代理机构考核',
+      onClick: () => navigate('/agency-assessment'),
+    },
+
+    // ─── 文件识别（工具集合，不参与采购流程编号）──────────────
     {
       key: 'file-ocr',
-      label: '12. 文件识别',
+      label: '文件识别',
       icon: <FileSearchOutlined />,
       onClick: () => navigate('/file-ocr'),
     },
@@ -341,6 +374,38 @@ export default function AppLayout() {
       icon: <FolderOpenOutlined />,
       onClick: () => navigate('/filebox'),
     }] : []),
+
+    // ─── 政采数据流水线看板（仅黄新博本人可见）──────────────
+    ...(user?.username === '黄新博' ? [{
+      key: 'datapipe',
+      label: '数据流水线看板',
+      icon: <BarChartOutlined />,
+      onClick: () => navigate('/datapipe'),
+    }] : []),
+
+    // ─── 政采数据检索（四川政采卫健：公告/产品/设备参数）────────
+    {
+      key: "ccgp-data",
+      label: "政采数据检索",
+      icon: <BookOutlined />,
+      children: [
+        {
+          key: "ccgp-match",
+          label: "参数匹配产品",
+          onClick: () => window.open("https://rag.curiosityktcat.cn/ccgp/match", "_blank"),
+        },
+        {
+          key: "ccgp-products",
+          label: "产品/设备检索",
+          onClick: () => window.open("https://rag.curiosityktcat.cn/ccgp/products", "_blank"),
+        },
+        {
+          key: "ccgp-notices",
+          label: "公告检索",
+          onClick: () => window.open("https://rag.curiosityktcat.cn/ccgp", "_blank"),
+        },
+      ],
+    },
 
     // ─── 13. 基础数据维护 ─────────────────────────────────────
     {
@@ -397,9 +462,19 @@ export default function AppLayout() {
     'people-manage', 'template-manage',
   ])
   const permSet = new Set(user?.perms || [])
+  // 投标文件审核：仅限「黄新博」本人可见，其余账号即便有权限也隐藏
+  const BID_REVIEW_USERS = ['黄新博']
+  // 项目池是黄新博本人用自己的 rd-web 账号抓来的医院内部资料：
+  // 经办人里只有他本人可见，另加采购部助理/负责人/管理员；其余经办人及代理机构不可见。
+  const POOL_USERS = ['黄新博', 'agent-hxb']   // 黄新博本人 + 他的 AI 经办人账号
+  const POOL_MANAGE_ROLES = ['assistant', 'pd_assistant', 'leader', 'admin']
+  const canSeePool = !!user && (POOL_USERS.includes(user.username) || POOL_MANAGE_ROLES.includes(user.role))
   // 系统级配置（权限/大模型/邮件）已迁至独立的后台管理系统
-  const leafVisible = (key: string) =>
-    !CONTROLLED_KEYS.has(key) || permSet.has(key)
+  const leafVisible = (key: string) => {
+    if (key === 'bid-review') return !!user && BID_REVIEW_USERS.includes(user.username)
+    if (key === 'project-pool') return canSeePool
+    return !CONTROLLED_KEYS.has(key) || permSet.has(key)
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const filteredMenuItems = (menuItems as any[])
@@ -481,8 +556,8 @@ export default function AppLayout() {
       {/* 侧边栏标题 */}
       <div style={{
         padding: '16px 16px 12px',
-        borderBottom: '1px solid #e8eaed',
-        background: '#fff',
+        borderBottom: '1px solid var(--pms-border)',
+        background: 'var(--pms-surface)',
       }}>
         <div
           onClick={() => navigate('/portal')}
@@ -530,8 +605,8 @@ export default function AppLayout() {
       <div style={{
         flexShrink: 0,
         padding: '10px 16px',
-        borderTop: '1px solid #e8eaed',
-        background: '#fff',
+        borderTop: '1px solid var(--pms-border)',
+        background: 'var(--pms-surface)',
         color: '#9aa0a6',
         fontSize: 11,
         textAlign: 'center',
@@ -556,8 +631,8 @@ export default function AppLayout() {
             position: 'sticky',
             top: 0,
             left: 0,
-            background: '#fff',
-            borderRight: '1px solid #e8eaed',
+            background: 'var(--pms-surface)',
+            borderRight: '1px solid var(--pms-border)',
           }}
         >
           {navInner}
@@ -578,12 +653,12 @@ export default function AppLayout() {
       <Layout>
         {/* 顶部导航栏 */}
         <Header style={{
-          background: '#fff',
+          background: 'var(--pms-surface)',
           padding: isMobile ? '0 12px' : '0 24px',
           display: 'flex',
           alignItems: 'center',
           gap: isMobile ? 4 : 0,
-          borderBottom: '1px solid #e8eaed',
+          borderBottom: '1px solid var(--pms-border)',
           boxShadow: '0 1px 2px 0 rgba(60,64,67,.05)',
           position: 'sticky',
           top: 0,
@@ -610,6 +685,16 @@ export default function AppLayout() {
             </Button>
           </Tooltip>
           <div style={{ flex: 1 }} />
+          {/* 主题切换：浅色 ⇄ 暖色护眼 */}
+          <Tooltip title={themeMode === 'sepia' ? '切换到浅色' : '切换到暖色护眼'}>
+            <Button
+              type="text"
+              onClick={() => setThemeMode(themeMode === 'sepia' ? 'light' : 'sepia')}
+              style={{ fontSize: 16, color: '#5f6368', marginRight: isMobile ? 0 : 4 }}
+            >
+              {themeMode === 'sepia' ? '☀️' : '🌿'}
+            </Button>
+          </Tooltip>
           {/* 在线人数 — 所有登录用户可见 */}
           <OnlineCount />
           {/* 聊天 + 待办 — 所有登录用户可见 */}
@@ -669,7 +754,7 @@ export default function AppLayout() {
           <Outlet />
         </Content>
       </Layout>
-      <MouseAssistant />
+      {user?.username === '黄新博' && <NiumaAssistant />}
     </Layout>
   )
 }

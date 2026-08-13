@@ -8,9 +8,9 @@ import {
   PlusOutlined, EditOutlined, DeleteOutlined, PaperClipOutlined,
   EyeOutlined, DownloadOutlined, RetweetOutlined, CloudDownloadOutlined,
   FileDoneOutlined, PrinterOutlined, ExportOutlined, SafetyCertificateOutlined, KeyOutlined,
-  PlusCircleOutlined,
+  PlusCircleOutlined, AuditOutlined,
 } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import dayjs from 'dayjs'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
@@ -18,12 +18,15 @@ import { useAuth } from '../hooks/useAuth'
 import {
   listDistributions, createDistribution, updateDistribution, deleteDistribution,
   reassignAgency, uploadDistAttachment, deleteDistAttachment,
+  linkDistProject, cancelDistProject, unlinkDistProject,
+  scrapeMine, scrapeMineStatus,
   distAttachmentPreviewUrl, distAttachmentDownloadUrl, distExportUrl, distPrintUrl,
   scrapeRdweb, scrapeStatus, rdwebAction, rdwebActionStatus,
   listRdwebAccounts, createRdwebAccount, updateRdwebAccount, deleteRdwebAccount,
   type Distribution, type DistAttachment, type RdwebAccount,
 } from '../services/projectDistribution'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
+import { getProjects, type Project } from '../services/project'
 
 const { Text } = Typography
 
@@ -55,8 +58,9 @@ function parseExtra(s: string): Record<string, string> {
   try { return s ? (JSON.parse(s) as Record<string, string>) : {} } catch { return {} }
 }
 
-const STATUS_COLOR: Record<string, string> = { 待分发: 'orange', 已分发: 'blue', 已立项: 'green' }
-const ACCENT: Record<string, string> = { 待分发: '#f9ab00', 已分发: '#1a73e8', 已立项: '#34a853' }
+const STATUS_COLOR: Record<string, string> = { 待分发: 'orange', 已分发: 'blue', 已立项: 'green', 已取消: 'default' }
+const ACCENT: Record<string, string> = { 待分发: '#f9ab00', 已分发: '#1a73e8', 已立项: '#34a853', 已取消: '#8c8c8c' }
+const TABS = ['待分发', '已分发', '已立项', '已取消']
 
 function fmtBudget(v: number | null) {
   if (v == null || v === 0) return '—'
@@ -96,13 +100,19 @@ export default function ProjectDistributionPage() {
   const { message, modal } = App.useApp()
   const { user } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  // 4.0 项目池（view=pool）：经办人本人的池子，只放本人账号抓的、加「抓取分发给我的」按钮；
+  // 无 view（2.1 项目分发）：助理的分发视图，通用抓取 + 分发工具。
+  const poolMode = searchParams.get('view') === 'pool'
   const role = user?.role || ''
   const isManager = ['assistant', 'pd_assistant', 'leader'].includes(role) || !!user?.is_admin
 
   const [rows, setRows] = useState<Distribution[]>([])
   const [loading, setLoading] = useState(false)
   const [scraping, setScraping] = useState(false)
-  const [tab, setTab] = useState('待分发')
+  // 4.0 项目池里「待分发」恒为 0 条（抓进来就直接是已分发给本人），默认停在空列表会让人
+  // 以为项目没抓到（实测被这个坑过一次）→ 池子模式默认落在「已分发」＝真正待你立项的那批。
+  const [tab, setTab] = useState(searchParams.get('view') === 'pool' ? '已分发' : '待分发')
 
   // rd-web 办理（接收/驳回/撤回）
   const [acting, setActing] = useState(false)
@@ -118,7 +128,7 @@ export default function ProjectDistributionPage() {
 
   const [attachFor, setAttachFor] = useState<Distribution | null>(null)
   const [uploading, setUploading] = useState(false)
-  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
+  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string; distId?: number }>({ open: false, url: '', name: '' })
   const [exportOpen, setExportOpen] = useState(false)
   const [exportRange, setExportRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null)
   const [exportMethods, setExportMethods] = useState<string[]>([])
@@ -130,8 +140,62 @@ export default function ProjectDistributionPage() {
   const [acctEditId, setAcctEditId] = useState<number | null>(null)
   const [acctForm] = Form.useForm()
 
+  // 对账：关联到已在 4.1 单独立项的项目
+  const [linkFor, setLinkFor] = useState<Distribution | null>(null)
+  const [linkPid, setLinkPid] = useState<number | undefined>()
+  const [linkOpts, setLinkOpts] = useState<Project[]>([])
+  const [linking, setLinking] = useState(false)
+
+  const openLink = async (d: Distribution) => {
+    setLinkFor(d)
+    setLinkPid(undefined)
+    try {
+      const r = await getProjects()
+      // 只列还没被池内其它条目占用的、非草稿项目
+      const taken = new Set(rows.filter(x => x.id !== d.id && x.project_id).map(x => x.project_id))
+      setLinkOpts((r.data.data || []).filter(p => !p.is_draft && !taken.has(p.id)))
+    } catch { message.error('加载项目列表失败') }
+  }
+
+  const doLink = async () => {
+    if (!linkFor || !linkPid) return
+    setLinking(true)
+    try {
+      const r = await linkDistProject(linkFor.id, linkPid)
+      message.success(r.data.message || '已关联')
+      setLinkFor(null)
+      load()
+    } catch (e: unknown) {
+      message.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || '关联失败')
+    } finally { setLinking(false) }
+  }
+
+  const doCancel = async (d: Distribution) => {
+    try {
+      await cancelDistProject(d.id)
+      message.success('已标记为不立项')
+      load()
+    } catch { message.error('操作失败') }
+  }
+
+  const doUnlink = async (d: Distribution) => {
+    try {
+      await unlinkDistProject(d.id)
+      message.success('已撤销关联')
+      load()
+    } catch { message.error('操作失败') }
+  }
+
+  // 记下是哪一条记录的附件，好让面板上的「上一件 / 下一件」翻同一批。
+  // 一条审签表常带三五个附件（方案、意见、通过文件），一件件点开关掉太费手。
   const previewAtt = (d: Distribution, att: DistAttachment) =>
-    setPreview({ open: true, url: distAttachmentPreviewUrl(d.id, att.id), name: att.original_name })
+    setPreview({ open: true, url: distAttachmentPreviewUrl(d.id, att.id), name: att.original_name, distId: d.id })
+
+  const pvOwner = rows.find(d => d.id === preview.distId)
+  const pvList = (pvOwner?.attachments || [])
+    .filter(a => isPreviewable(a.original_name))
+    .map(a => ({ url: distAttachmentPreviewUrl(pvOwner!.id, a.id), filename: a.original_name }))
+  const pvIdx = pvList.findIndex(x => x.url === preview.url)
 
   const loadAccts = useCallback(async () => {
     try { const r = await listRdwebAccounts(); setAccts(r.data.data || []) } catch { /* ignore */ }
@@ -153,14 +217,14 @@ export default function ProjectDistributionPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await listDistributions()
+      const res = await listDistributions(poolMode ? 'pool' : undefined)
       setRows(res.data.data || [])
     } catch {
       message.error('加载失败')
     } finally {
       setLoading(false)
     }
-  }, [message])
+  }, [message, poolMode])
   useEffect(() => { load() }, [load])
 
   // attachFor 同步最新数据（上传/删除后刷新弹窗内列表）
@@ -253,6 +317,32 @@ export default function ProjectDistributionPage() {
           }
         } catch { /* ignore */ }
         if (n > 30) { clearInterval(timer); setScraping(false); load() }
+      }, 4000)
+    } catch (e) {
+      setScraping(false)
+      const err = e as { response?: { data?: { error?: string } } }
+      message.warning(err.response?.data?.error || '抓取失败')
+    }
+  }
+
+  // 抓取「分发给我(经办人本人)的待处理审签表」——用本人 rd-web 账号，只进 4.0 项目池
+  const handleScrapeMine = async () => {
+    setScraping(true)
+    try {
+      const res = await scrapeMine()
+      message.success(res.data.message || '已开始抓取本人待处理项目')
+      let n = 0
+      const timer = setInterval(async () => {
+        n += 1
+        try {
+          const st = await scrapeMineStatus()
+          if (!st.data.data.running) {
+            clearInterval(timer); setScraping(false)
+            if (st.data.data.last_msg) message.info(st.data.data.last_msg)
+            load()
+          }
+        } catch { /* ignore */ }
+        if (n > 45) { clearInterval(timer); setScraping(false); load() }
       }, 4000)
     } catch (e) {
       setScraping(false)
@@ -386,9 +476,23 @@ export default function ProjectDistributionPage() {
     actions: (
       <Space size={4} wrap>
         {d.status === '已分发' && d.officer === user?.display_name && (
-          <Button size="small" type="primary" icon={<PlusCircleOutlined />}
-            style={{ background: '#52c41a', borderColor: '#52c41a', fontWeight: 600 }}
-            onClick={() => navigate(`/new?from_dist=${d.id}`)}>立项</Button>
+          <>
+            <Button size="small" type="primary" icon={<PlusCircleOutlined />}
+              style={{ background: '#52c41a', borderColor: '#52c41a', fontWeight: 600 }}
+              onClick={() => navigate(`/new?from_dist=${d.id}`)}>立项</Button>
+            {/* 已在 4.1 单独立项的（立项时项目常被改名，系统无法自动匹配）在这里手动销账 */}
+            <Button size="small" onClick={() => openLink(d)}>已立项·关联</Button>
+            <Popconfirm title="标记为不立项？" description="该条目将移出待办，可在「已取消」中撤销。"
+              onConfirm={() => doCancel(d)}>
+              <Button size="small">不立项</Button>
+            </Popconfirm>
+          </>
+        )}
+        {['已立项', '已取消'].includes(d.status) && d.officer === user?.display_name && (
+          <Popconfirm title={d.status === '已取消' ? '撤销「不立项」？' : '撤销关联？'}
+            description="该条目将退回「已分发」。" onConfirm={() => doUnlink(d)}>
+            <Button size="small">{d.status === '已取消' ? '恢复' : '撤销关联'}</Button>
+          </Popconfirm>
         )}
         {/* rd-web 办理：仅采购部助理、且有审签表流水号的记录 */}
         {isManager && d.serial_no && d.status === '待分发' && (
@@ -424,25 +528,55 @@ export default function ProjectDistributionPage() {
   const filtered = listFilter.filtered
   const counts = (s: string) => rows.filter(r => r.status === s).length
 
+  // 项目池是黄新博本人用自己 rd-web 账号抓来的医院内部资料：
+  // 仅本人 + 采购部助理/负责人/管理员可见，其余经办人及代理机构挡在门外。
+  const POOL_USERS = ['黄新博', 'agent-hxb']   // 黄新博本人 + 他的 AI 经办人账号
+  const canSeePool = ['assistant', 'pd_assistant', 'leader'].includes(role)
+    || !!user?.is_admin || POOL_USERS.includes(user?.username || '')
+  if (!canSeePool) {
+    return (
+      <Card>
+        <Alert type="error" showIcon message="无权访问"
+          description="项目池为经办人本人抓取的医院内部资料，未对当前账号开放。" />
+      </Card>
+    )
+  }
+
   return (
     <Card
-      title="采购项目分发"
-      extra={isManager && (
+      title={poolMode ? '4.0 项目池（我的）' : '采购项目分发'}
+      extra={poolMode ? (
         <Space wrap>
-          <Button icon={<KeyOutlined />} onClick={openAccts}>rd-web账号</Button>
-          <Button icon={<SafetyCertificateOutlined />} onClick={() => setValidateOpen(true)}>验证漏项</Button>
-          <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>导出清单</Button>
-          <Button icon={<CloudDownloadOutlined />} loading={scraping} onClick={handleScrape}>
-            从 rd-web 抓取
+          <Button type="primary" icon={<CloudDownloadOutlined />} loading={scraping} onClick={handleScrapeMine}>
+            抓取分发给我的
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建分发</Button>
+        </Space>
+      ) : (
+        <Space wrap>
+          {/* 派单前先看这家代理最近考核如何——低于90分要暂停下一轮拟派。
+              放在 isManager 外面：经办人也要能进考核，别再被角色挡住 */}
+          <Button icon={<AuditOutlined />} onClick={() => navigate('/agency-assessment')}>
+            代理机构考核
+          </Button>
+          {/* 以下是分发管理动作，仍只给助理/负责人/管理员 */}
+          {isManager && (
+            <>
+              <Button icon={<KeyOutlined />} onClick={openAccts}>rd-web账号</Button>
+              <Button icon={<SafetyCertificateOutlined />} onClick={() => setValidateOpen(true)}>验证漏项</Button>
+              <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>导出清单</Button>
+              <Button icon={<CloudDownloadOutlined />} loading={scraping} onClick={handleScrape}>
+                从 rd-web 抓取
+              </Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建分发</Button>
+            </>
+          )}
         </Space>
       )}
     >
       <Tabs
         activeKey={tab}
         onChange={setTab}
-        items={['待分发', '已分发', '已立项'].map(s => ({ key: s, label: `${s}（${counts(s)}）` }))}
+        items={TABS.map(s => ({ key: s, label: `${s}（${counts(s)}）` }))}
       />
       <div style={{ marginBottom: 12 }}>
         <ProjectListToolbar f={listFilter} placeholder="搜索项目名称 / 编号 / 代理机构" />
@@ -589,6 +723,9 @@ export default function ProjectDistributionPage() {
         open={preview.open}
         url={preview.url}
         filename={preview.name}
+        siblings={pvList}
+        index={pvIdx}
+        onNavigate={i => setPreview(p => ({ ...p, url: pvList[i].url, name: pvList[i].filename }))}
         onClose={() => setPreview(p => ({ ...p, open: false }))}
       />
 
@@ -778,6 +915,40 @@ export default function ProjectDistributionPage() {
             </List.Item>
           )} />
       </Drawer>
+
+      {/* 对账：把池内条目关联到已在 4.1 单独立项的项目 */}
+      <Modal
+        title="关联已立项项目"
+        open={!!linkFor}
+        onCancel={() => setLinkFor(null)}
+        onOk={doLink}
+        okText="关联"
+        okButtonProps={{ disabled: !linkPid }}
+        confirmLoading={linking}
+        destroyOnHidden
+        width={620}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="这条采购需求你已经在「4.1 项目立项」单独建过项目了？选中它即可销账。"
+          description="立项时项目名称常被改写，系统无法自动匹配，需要你指认一次。关联后本条目转为「已立项」。" />
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary">项目池条目：</Text>
+          <Text strong>{linkFor?.name}</Text>
+          {linkFor?.serial_no ? <Text type="secondary">（流水号 {linkFor.serial_no}）</Text> : null}
+        </div>
+        <Select
+          showSearch
+          style={{ width: '100%' }}
+          placeholder="搜索并选择已立项的项目（按名称或编号）"
+          value={linkPid}
+          onChange={setLinkPid}
+          filterOption={(input, opt) => (opt?.label as string).toLowerCase().includes(input.toLowerCase())}
+          options={linkOpts.map(p => ({
+            value: p.id,
+            label: `${p.number || '无编号'} — ${p.name}`,
+          }))}
+        />
+      </Modal>
     </Card>
   )
 }

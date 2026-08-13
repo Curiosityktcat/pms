@@ -7,22 +7,25 @@ import {
   AuditOutlined, PlusOutlined, UploadOutlined, DeleteOutlined, FileTextOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
-import axios from 'axios'
 import {
   listTasks, createTask, getTask, deleteTask, uploadProcDocUrl,
   listItems, updateItem,
   type ReviewTask, type ReviewResult, type ReviewItem,
 } from '../services/bidReview'
 import { TASK_STATUS_CN } from '../components/bidreview/shared'
+import { useAuth } from '../hooks/useAuth'
 import DocSummarySection from '../components/bidreview/DocSummarySection'
 import CriteriaSection from '../components/bidreview/CriteriaSection'
 import ResultsSection from '../components/bidreview/ResultsSection'
 import ItemsSection, { type ItemPatch } from '../components/bidreview/ItemsSection'
 import SummarySection from '../components/bidreview/SummarySection'
+import { smartUploadAbs } from '../services/upload'
 
 const { Title, Text } = Typography
 
 export default function BidReviewPage() {
+  const { user } = useAuth()
+  const authorized = !!user && user.username === '黄新博'   // 投标文件审核仅限本人
   const { message } = App.useApp()
   const [tasks, setTasks] = useState<ReviewTask[]>([])
   const [loading, setLoading] = useState(true)
@@ -36,12 +39,13 @@ export default function BidReviewPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = useCallback(async () => {
+    if (!authorized) { setLoading(false); return }
     setLoading(true)
     try {
       const res = await listTasks()
       setTasks(res.data.data || [])
     } catch { message.error('加载任务失败') } finally { setLoading(false) }
-  }, [message])
+  }, [message, authorized])
   useEffect(() => { load() }, [load])
 
   const refreshDetail = useCallback(async (tid: number) => {
@@ -104,13 +108,11 @@ export default function BidReviewPage() {
   const makeUpload = (url: string, extra?: Record<string, string>) => async (options: any) => {
     const { file, onSuccess, onError } = options
     setUploading(true)
-    const fd = new FormData()
-    fd.append('file', file as Blob)
-    Object.entries(extra || {}).forEach(([k, v]) => { if (v) fd.append(k, v) })
+    // 投标文件动辄上百 MB，公网必须绕开 Cloudflare —— smartUploadAbs 会自动判断
+    const extraFields: Record<string, string> = {}
+    Object.entries(extra || {}).forEach(([k, v]) => { if (v) extraFields[k] = v })
     try {
-      const res = await axios.post(url, fd, {
-        withCredentials: true, headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      const res = await smartUploadAbs<{ message?: string }>(url, file as File, extraFields)
       onSuccess?.(res.data)
       message.success(res.data.message || '上传成功')
       if (current) refreshDetail(current.id)
@@ -178,6 +180,16 @@ export default function BidReviewPage() {
 
   const busy = current && (['ocr_proc_doc', 'extracting'].includes(current.status))
   const hasCriteria = !!(current?.criteria || []).length
+
+  if (!authorized) {
+    return (
+      <Card>
+        <Alert type="warning" showIcon
+          message="无权访问"
+          description="投标文件审核功能未对当前账号开放，如需使用请联系管理员。" />
+      </Card>
+    )
+  }
 
   return (
     <Card>

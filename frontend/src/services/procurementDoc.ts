@@ -127,6 +127,24 @@ export const docAttachmentDownloadUrl = (projectId: number, attId: number) =>
 export const docAttachmentPreviewUrl = (projectId: number, attId: number) =>
   `/api/projects/${projectId}/doc-attachments/${attId}/preview`
 
+// 项目池附件：立项时不再全量带入（池里混着医院内部文件），由经办人在此按需勾选
+export interface PoolAttachment {
+  id: number
+  original_name: string
+  file_size: number
+  category: string
+  serial_no: string
+  uploaded_at: string
+  exists: boolean
+  imported: boolean   // 本轮已导入过同名文件
+}
+
+export const listPoolAttachments = (projectId: number) =>
+  api.get<{ ok: boolean; data: PoolAttachment[] }>(`/projects/${projectId}/pool-attachments`)
+
+export const importPoolAttachments = (projectId: number, ids: number[]) =>
+  api.post<{ ok: boolean; message: string }>(`/projects/${projectId}/pool-attachments/import`, { ids })
+
 export const deleteDocAttachment = (projectId: number, attId: number) =>
   api.delete(`/projects/${projectId}/doc-attachments/${attId}`)
 

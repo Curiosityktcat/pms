@@ -1,5 +1,6 @@
 import type { Pending } from './project'
 import api from './api'
+import { smartUpload, type UploadProgress } from './upload'
 
 export interface Contract {
   pending?: Pending          // 当前处理人
@@ -67,13 +68,8 @@ export const rejectContract = (id: number, reason: string) =>
 export const contractFileUrl = (id: number) => `/api/contracts/${id}/file`
 export const contractFilePreviewUrl = (id: number) => `/api/contracts/${id}/file/preview`
 
-export const uploadContractFile = (id: number, file: File) => {
-  const form = new FormData()
-  form.append('file', file)
-  return api.post<{ ok: boolean; file_name: string }>(`/contracts/${id}/upload`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
-}
+export const uploadContractFile = (id: number, file: File) =>
+  smartUpload<{ ok: boolean; file_name: string }>(`/contracts/${id}/upload`, file)
 
 // ── 合同附件 ──────────────────────────────────────────────────────
 export interface ContractAttachment {
@@ -91,14 +87,10 @@ export interface ContractAttachment {
 export const listAttachments = (cid: number) =>
   api.get<{ ok: boolean; data: ContractAttachment[] }>(`/contracts/${cid}/attachments`)
 
-export const uploadAttachment = (cid: number, file: File, stage: '草案' | '上传') => {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('stage', stage)
-  return api.post<{ ok: boolean; data: ContractAttachment }>(`/contracts/${cid}/attachments`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
-}
+export const uploadAttachment = (
+  cid: number, file: File, stage: '草案' | '上传', onProgress?: (p: UploadProgress) => void,
+) => smartUpload<{ ok: boolean; data: ContractAttachment }>(
+  `/contracts/${cid}/attachments`, file, { stage }, onProgress)
 
 export const deleteAttachment = (cid: number, aid: number) =>
   api.delete<{ ok: boolean }>(`/contracts/${cid}/attachments/${aid}`)

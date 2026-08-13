@@ -5,7 +5,17 @@ from models.project import Project
 from models.agency import Agency
 from models.people import People
 from services import auth_letter as svc
+from services.project_progress import stage_map
 from routes.utils import login_required
+
+
+def _current_round(pid):
+    """项目当前在第几轮采购——与「待出具授权函」待办用的是同一个来源。
+
+    授权函记错轮次的代价是待办永远消不掉（待办按 r{n} 建，授权函按 r1 存就对不上），
+    所以客户端没明确给轮次时一律以服务端为准，别默认第 1 轮。
+    """
+    return (stage_map([pid]).get(pid, {}) or {}).get('current_round') or 1
 
 bp = Blueprint('auth_letter', __name__, url_prefix='/api/projects')
 
@@ -25,7 +35,9 @@ def generate_auth_letter(pid):
     data = request.get_json(force=True) or {}
     supervisor_id = data.get('supervisor_id')
     representative_ids = data.get('representative_ids') or []
-    round_number = int(data.get('round_number', 1) or 1)
+    # 客户端不给（或给 0）就用服务端算的当前轮次；给了则尊重（补开历史轮次的授权函）
+    round_number = int(data.get('round_number') or 0) or _current_round(pid)
+    round_number = max(1, round_number)
     bid_time_override = (data.get('bid_time_override') or '').strip()
 
     if not supervisor_id or not representative_ids:

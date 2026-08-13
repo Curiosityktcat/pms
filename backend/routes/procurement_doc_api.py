@@ -11,7 +11,9 @@ from models.procurement_demand import ProcurementDemand
 from models.package import Package
 from models.procurement_round import ProcurementRound
 from models.round_package import RoundPackage
+from services import approval_log as alog
 from routes.utils import login_required
+from services import upload_relay
 
 bp = Blueprint("procurement_doc", __name__, url_prefix="/api/projects")
 
@@ -108,7 +110,7 @@ def _ensure_packages(project, current_round, count):
 @bp.route("/<int:pid>/packages", methods=["POST"])
 @login_required
 def set_package_count(pid):
-    """设置/调整项目分包数量（包固定不变，仅在第一轮且无包中标前可改）。"""
+    """设置/调整项目分包数量（无包中标/签约、本轮采购结果未确认前均可调整）。"""
     project = db.session.get(Project, pid)
     ok, err, status = _check_project_access(project)
     if not ok:
@@ -118,30 +120,74 @@ def set_package_count(pid):
     data = request.get_json(silent=True) or {}
     count = max(1, min(50, int(data.get("count") or 1)))
 
-    if (project.round or 1) > 1:
-        return jsonify({"ok": False, "error": "项目已进入第二轮及以后，包数量不可调整"}), 400
+    # 2026-08-12 放开「进入第二轮就不可调整」：改成只要**没有任何包已中标/签约**就能改。
+    # 起因：分包填错（两个包做成一个包）而首轮已流标进入第二轮时，采购结果确认函的包是
+    # 「按当前轮次自动带出、不可增删」的，代理只能填出错误的包数 → 整个项目卡死，
+    # 界面上谁也改不了，只能改库。
     won = db.session.execute(
         db.select(Package).filter_by(project_id=pid).where(Package.status != "进行中")
     ).first()
     if won:
         return jsonify({"ok": False, "error": "已有包中标/签约，包数量不可调整"}), 400
 
-    rnd = _current_round(project)   # 第一轮（无则建）
+    rnd = _current_round(project)   # 当前轮次（无则建第一轮）
+
+    # 本轮采购结果已确认则不能再动包（结果已生效，改包会让确认函对不上）
+    from models.procurement_result import ProcurementResult
+    done_res = db.session.execute(
+        db.select(ProcurementResult.id)
+        .filter_by(project_id=pid, round_number=rnd.round_number, status="已确认")
+    ).first()
+    if done_res:
+        return jsonify({"ok": False, "error": "本轮采购结果已确认，包数量不可调整"}), 400
+
     existing = db.session.execute(
-        db.select(Package).filter_by(project_id=pid)
+        db.select(Package).filter_by(project_id=pid).order_by(Package.package_no)
     ).scalars().all()
-    ex_ids = [p.id for p in existing]
-    if ex_ids:
-        db.session.execute(db.delete(RoundPackage).where(RoundPackage.package_id.in_(ex_ids)))
-        db.session.execute(db.delete(Package).where(Package.id.in_(ex_ids)))
-        db.session.flush()
-    for i in range(1, count + 1):
-        pk = Package(project_id=pid, package_no=i, status="进行中", created_at=_now())
-        db.session.add(pk)
-        db.session.flush()
-        db.session.add(RoundPackage(round_id=rnd.id, package_id=pk.id, result="待定"))
+
+    if (project.round or 1) <= 1:
+        # 第一轮：没有历史包袱，沿用原来的「删了重建」，包号从 1 连续
+        ex_ids = [p.id for p in existing]
+        if ex_ids:
+            db.session.execute(db.delete(RoundPackage).where(RoundPackage.package_id.in_(ex_ids)))
+            db.session.execute(db.delete(Package).where(Package.id.in_(ex_ids)))
+            db.session.flush()
+        for i in range(1, count + 1):
+            pk = Package(project_id=pid, package_no=i, status="进行中", created_at=_now())
+            db.session.add(pk)
+            db.session.flush()
+            db.session.add(RoundPackage(round_id=rnd.id, package_id=pk.id, result="待定"))
+    else:
+        # 第二轮及以后：**增量调整**，绝不删已有包（它们身上挂着历史轮次记录）
+        round_ids = [r.id for r in db.session.execute(
+            db.select(ProcurementRound).filter_by(project_id=pid)
+        ).scalars().all()]
+        cur_n = len(existing)
+        if count > cur_n:
+            next_no = (existing[-1].package_no if existing else 0) + 1
+            for _ in range(count - cur_n):
+                pk = Package(project_id=pid, package_no=next_no, status="进行中", created_at=_now())
+                db.session.add(pk)
+                db.session.flush()
+                # 补挂到该项目所有轮次（含已结束轮），保证历史与归档里包数一致
+                for rid in round_ids:
+                    db.session.add(RoundPackage(round_id=rid, package_id=pk.id, result="待定"))
+                next_no += 1
+        elif count < cur_n:
+            drop = [p.id for p in existing[count:]]
+            db.session.execute(db.delete(RoundPackage).where(RoundPackage.package_id.in_(drop)))
+            db.session.execute(db.delete(Package).where(Package.id.in_(drop)))
+
     db.session.commit()
-    return jsonify({"ok": True, "data": {"package_count": count}})
+    # 本轮已有结果草稿/待确认 → 包变了，提醒回去核对确认函
+    warn = ""
+    draft_res = db.session.execute(
+        db.select(ProcurementResult.id)
+        .filter_by(project_id=pid, round_number=rnd.round_number)
+    ).first()
+    if draft_res:
+        warn = "本轮采购结果已有草稿，包数量已变，请回到「采购结果确认函」重新核对包信息"
+    return jsonify({"ok": True, "data": {"package_count": count, "warn": warn}})
 
 
 @bp.route("/<int:pid>/rounds", methods=["GET"])
@@ -364,12 +410,75 @@ def set_doc_confirm(pid):
     setattr(project, f_flag, 1 if confirmed else 0)
     setattr(project, f_by, by)
     setattr(project, f_at, at)
+    if confirmed:
+        # 确认即视为本次往返结束，清掉挂在轮次上的驳回提示（历史仍在 approval_logs）
+        setattr(rnd, f"{kind}_reject_reason", "")
+    alog.log(pid, kind, "confirm" if confirmed else "revoke",
+             round_number=rnd.round_number or 1)
     db.session.commit()
     data_out = project.to_dict()
     data_out["package_count"] = db.session.execute(
         db.select(db.func.count()).select_from(Package).filter_by(project_id=pid)
     ).scalar_one()
     return jsonify({"ok": True, "data": data_out})
+
+
+@bp.route("/<int:pid>/doc-reject", methods=["POST"])
+@login_required
+def reject_doc(pid):
+    """驳回采购需求(5.1) / 采购文件(5.2)：打回代理机构修改，必须写明原因。
+
+    与「撤销确认」不同——撤销只是把标记抹掉，驳回会留下原因并计次，
+    代理机构侧能直接看到要改什么，改完重新上传即进入下一次往返。
+    """
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind", "")
+    if kind not in _CONFIRM_FIELDS:
+        return jsonify({"ok": False, "error": "确认类型无效"}), 400
+    if session.get("role", "") == "agency":
+        return jsonify({"ok": False, "error": "驳回由采购人方操作，代理机构只能修改后重新提交"}), 403
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "请填写驳回原因"}), 400
+
+    rnd = _current_round(project)
+    f_flag, f_by, f_at = _CONFIRM_FIELDS[kind]
+    # 驳回即撤下确认标记，回到"待代理机构修改"
+    setattr(rnd, f_flag, 0)
+    setattr(rnd, f_by, "")
+    setattr(rnd, f_at, "")
+    setattr(project, f_flag, 0)
+    setattr(project, f_by, "")
+    setattr(project, f_at, "")
+
+    cnt = int(getattr(rnd, f"{kind}_reject_count", 0) or 0) + 1
+    setattr(rnd, f"{kind}_reject_reason", reason)
+    setattr(rnd, f"{kind}_reject_count", cnt)
+    setattr(rnd, f"{kind}_rejected_by", session.get("display_name", ""))
+    setattr(rnd, f"{kind}_rejected_at", _now())
+    alog.log(pid, kind, "reject", round_number=rnd.round_number or 1, reason=reason)
+    db.session.commit()
+    label = "采购需求" if kind == "demand" else "采购文件"
+    return jsonify({"ok": True,
+                    "message": f"已驳回{label}（第{cnt}次），代理机构可修改后重新提交",
+                    "data": rnd.to_dict()})
+
+
+@bp.route("/<int:pid>/approval-logs", methods=["GET"])
+@login_required
+def approval_logs(pid):
+    """本项目的审批往返记录（可按 node 过滤），前端展示驳回历史时间线。"""
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    return jsonify({"ok": True,
+                    "data": alog.list_for_project(pid, request.args.get("node") or None)})
 
 
 @bp.route("/<int:pid>/doc-contact", methods=["POST"])
@@ -553,7 +662,7 @@ def upload_doc_attachment(pid):
     if _kind_confirmed(project, kind):
         return jsonify({"ok": False, "error": "已确认，如需修改请先撤销确认"}), 400
 
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
     _, ext = os.path.splitext(f.filename.lower())
@@ -613,7 +722,8 @@ def preview_doc_attachment(pid, aid):
     path = os.path.join(_attach_dir(pid), att.saved_name)
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": "文件已丢失，请重新上传"}), 404
-    return send_file(path, as_attachment=False, download_name=att.original_name)
+    from services.office_convert import send_preview
+    return send_preview(path, att.original_name)
 
 
 @bp.route("/<int:pid>/doc-attachments/<int:aid>", methods=["DELETE"])
@@ -637,6 +747,117 @@ def delete_doc_attachment(pid, aid):
     db.session.delete(att)
     db.session.commit()
     return jsonify({"ok": True, "message": "已删除"})
+
+
+# ══════════════════════════════════════════════════════════════════
+# 从项目池挑选采购需求文件
+# 项目池（rd-web 抓来的审签表）里混有医院内部文件，全量带入会连同内部文件
+# 一起发给代理机构，所以立项时不再自动复制；改由经办人在此按需勾选导入。
+# 仅采购人方（经办人/助理/负责人）可用，代理机构不得访问项目池。
+# ══════════════════════════════════════════════════════════════════
+_POOL_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "uploads", "project_distribution")
+)
+
+
+def _pool_atts(pid):
+    """该项目关联的项目池附件（审签表不列——那是流程表单，不是采购需求）。"""
+    from models.project_distribution import (
+        ProjectDistribution, ProjectDistributionAttachment,
+    )
+    dists = db.session.execute(
+        db.select(ProjectDistribution).filter_by(project_id=pid)
+    ).scalars().all()
+    out = []
+    for d in dists:
+        rows = db.session.execute(
+            db.select(ProjectDistributionAttachment)
+            .filter_by(distribution_id=d.id)
+            .order_by(ProjectDistributionAttachment.id)
+        ).scalars().all()
+        out += [(d, a) for a in rows if (a.category or "") != "审签表"]
+    return out
+
+
+def _pool_allowed():
+    return session.get("role", "") in ("officer", "assistant", "pd_assistant", "leader")
+
+
+@bp.route("/<int:pid>/pool-attachments", methods=["GET"])
+@login_required
+def list_pool_attachments(pid):
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    if not _pool_allowed():
+        return jsonify({"ok": False, "error": "项目池不对代理机构开放"}), 403
+    rnd = _current_round(project, create=False)
+    rno = rnd.round_number if rnd else 1
+    # 已导入过的（同名）标记出来，避免经办人重复导入
+    imported = {
+        r.original_name for r in db.session.execute(
+            db.select(ProcurementDocAttachment)
+            .where(ProcurementDocAttachment.project_id == pid)
+            .where(ProcurementDocAttachment.kind == "demand")
+            .where(ProcurementDocAttachment.round_number == rno)
+        ).scalars().all()
+    }
+    data = []
+    for d, a in _pool_atts(pid):
+        item = a.to_dict()
+        item["serial_no"] = d.serial_no or ""
+        item["exists"] = os.path.exists(
+            os.path.join(_POOL_ROOT, str(d.id), a.saved_name or ""))
+        item["imported"] = a.original_name in imported
+        data.append(item)
+    return jsonify({"ok": True, "data": data})
+
+
+@bp.route("/<int:pid>/pool-attachments/import", methods=["POST"])
+@login_required
+def import_pool_attachments(pid):
+    """把勾选的项目池附件复制成本轮采购需求附件（kind='demand'）。"""
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    if not _pool_allowed():
+        return jsonify({"ok": False, "error": "项目池不对代理机构开放"}), 403
+    if _kind_confirmed(project, "demand"):
+        return jsonify({"ok": False, "error": "已确认，如需修改请先撤销确认"}), 400
+    ids = set((request.get_json(silent=True) or {}).get("ids") or [])
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择文件"}), 400
+
+    import shutil
+    rnd = _current_round(project)
+    rno = rnd.round_number if rnd else 1
+    dest_dir = _attach_dir(pid)
+    now = _now()
+    added = 0
+    for d, a in _pool_atts(pid):
+        if a.id not in ids:
+            continue
+        src = os.path.join(_POOL_ROOT, str(d.id), a.saved_name or "")
+        if not a.saved_name or not os.path.exists(src):
+            continue
+        ext = os.path.splitext(a.original_name or a.saved_name or "")[1]
+        saved_name = f"{uuid.uuid4().hex}{ext}"
+        dest = os.path.join(dest_dir, saved_name)
+        shutil.copy(src, dest)
+        db.session.add(ProcurementDocAttachment(
+            project_id=pid, kind="demand", round_number=rno,
+            original_name=a.original_name, saved_name=saved_name,
+            file_size=os.path.getsize(dest), sha256=_sha256_of(dest),
+            uploaded_by=session.get("display_name", ""), uploaded_at=now,
+        ))
+        added += 1
+    if not added:
+        return jsonify({"ok": False, "error": "所选文件不存在或已丢失"}), 400
+    db.session.commit()
+    return jsonify({"ok": True, "message": f"已从项目池导入 {added} 个文件"})
+
 
 # ══════════════════════════════════════════════════════════════════
 # AI 一键生成采购文件定稿：选初稿/模板 + 采购需求附件 → DeepSeek 段落级修订

@@ -17,6 +17,7 @@ from models.inquiry_template import InquiryTemplate
 from models.project import Project
 from models.sys_config import SysConfig
 from routes.utils import login_required, admin_required, can_view_project
+from services import upload_relay
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -57,6 +58,17 @@ def _block_if_deleted(letter):
     if proj is not None and proj.is_deleted:
         return jsonify({"ok": False, "error": "所属项目已删除，不可继续操作"}), 400
     return None
+
+
+def _scoped_letter(lid):
+    """取询/议价函并做归属校验（officer 本人经办 / agency 本机构 / 助理·负责人·管理员）。
+    返回 (letter, error)；error 非空时应直接 return。"""
+    letter = db.session.get(InquiryLetter, lid)
+    if not letter:
+        return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if not can_view_project(db.session.get(Project, letter.project_id)):
+        return None, (jsonify({"ok": False, "error": "无权访问该询/议价函"}), 403)
+    return letter, None
 
 
 def _now():
@@ -113,7 +125,7 @@ def create_inquiry():
         detail     = data.get("detail", ""),
         requirements = data.get("requirements", ""),
         deadline   = data.get("deadline", ""),
-        status     = "草稿",
+        status     = "待办",
         notes      = data.get("notes", ""),
         created_by = session.get("display_name", ""),
         created_at = now,
@@ -132,13 +144,13 @@ def create_inquiry():
 @bp.route("/api/inquiries/<int:lid>", methods=["PUT"])
 @login_required
 def update_inquiry(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     blocked = _block_if_deleted(letter)
     if blocked:
         return blocked
-    # 草稿与进行中均可改（如发现预算/限价填错，可修正后重新发送）；已完成（评审已出结果）锁定
+    # 待办与进行中均可改（如发现预算/限价填错，可修正后重新发送）；已完成（评审已出结果）锁定
     if letter.status == "已完成":
         return jsonify({"ok": False, "error": "已完成的函件不可编辑"}), 400
     data = request.get_json(force=True) or {}
@@ -158,15 +170,42 @@ def update_inquiry(lid):
 @bp.route("/api/inquiries/<int:lid>", methods=["DELETE"])
 @login_required
 def delete_inquiry(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "不存在"}), 404
-    if letter.status != "草稿":
-        return jsonify({"ok": False, "error": "仅草稿状态可删除"}), 400
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
+    if letter.status != "待办":
+        return jsonify({"ok": False, "error": "仅待办状态可删除"}), 400
     # 级联删除供应商
     db.session.execute(
         db.delete(InquirySupplier).where(InquirySupplier.inquiry_id == lid)
     )
+    # 级联删除附件：**记录和磁盘文件都要删**。只删记录会留下孤儿文件；只删函件不删附件，
+    # 则因为 SQLite 会复用被删记录的 id，下一封新建的函件会"继承"上一封的附件（实测过）。
+    _atts = db.session.execute(
+        db.select(InquiryAttachment).filter_by(inquiry_id=lid)
+    ).scalars().all()
+    for _a in _atts:
+        try:
+            _fp = os.path.join(PMS_ROOT, _a.filepath or "")
+            if _a.filepath and os.path.exists(_fp):
+                os.remove(_fp)
+        except OSError:
+            pass          # 文件删不掉不阻断删记录，避免留下"看得见删不掉"的僵尸函件
+        db.session.delete(_a)
+    # 供应商上传的响应文件同理
+    try:
+        from models.inquiry_review import InquirySupplierFile as _ISF   # 模型定义在 inquiry_review.py 里
+        _sfs = db.session.execute(db.select(_ISF).filter_by(inquiry_id=lid)).scalars().all()
+        for _sf in _sfs:
+            try:
+                _sfp = os.path.join(PMS_ROOT, _sf.filepath or "")
+                if _sf.filepath and os.path.exists(_sfp):
+                    os.remove(_sfp)
+            except OSError:
+                pass
+            db.session.delete(_sf)
+    except ImportError:
+        pass
     db.session.delete(letter)
     db.session.commit()
     return jsonify({"ok": True, "message": "已删除"})
@@ -175,9 +214,9 @@ def delete_inquiry(lid):
 @bp.route("/api/inquiries/<int:lid>/complete", methods=["POST"])
 @login_required
 def complete_inquiry(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     blocked = _block_if_deleted(letter)
     if blocked:
         return blocked
@@ -190,9 +229,9 @@ def complete_inquiry(lid):
 @bp.route("/api/inquiries/<int:lid>/word", methods=["GET"])
 @login_required
 def download_word(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     proj = db.session.get(Project, letter.project_id)
     project_name   = proj.name    if proj else ""
     project_number = proj.number  if proj else ""
@@ -216,9 +255,9 @@ def download_word(lid):
 @login_required
 def preview_word(lid):
     """在线预览生成的询/议价邀请函（内联，前端 docx-preview 渲染）"""
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     proj = db.session.get(Project, letter.project_id)
     project_name   = proj.name    if proj else ""
     project_number = proj.number  if proj else ""
@@ -243,6 +282,9 @@ def preview_word(lid):
 @bp.route("/api/inquiries/<int:lid>/suppliers", methods=["GET"])
 @login_required
 def list_suppliers(lid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     suppliers = db.session.execute(
         db.select(InquirySupplier).filter_by(inquiry_id=lid).order_by(InquirySupplier.id)
     ).scalars().all()
@@ -252,9 +294,9 @@ def list_suppliers(lid):
 @bp.route("/api/inquiries/<int:lid>/suppliers", methods=["POST"])
 @login_required
 def add_supplier(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     blocked = _block_if_deleted(letter)
     if blocked:
         return blocked
@@ -284,9 +326,9 @@ def inquiry_replies(lid):
     匹配按固定格式『项目名称_第N次_供应商全称』：主题含供应商名→该家已回复，
     含项目名→确信是本项目。格式不规范的旧回复尽力匹配，匹配不上的列为待人工归类。
     """
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "询价单不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     _, proj_name, rnd = _reply_subject_format(letter)
     sups = db.session.execute(
         db.select(InquirySupplier).filter_by(inquiry_id=lid)).scalars().all()
@@ -347,6 +389,9 @@ def inquiry_replies(lid):
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>", methods=["PUT"])
 @login_required
 def update_supplier(lid, sid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     sup = db.session.get(InquirySupplier, sid)
     if not sup or sup.inquiry_id != lid:
         return jsonify({"ok": False, "error": "不存在"}), 404
@@ -364,6 +409,9 @@ def update_supplier(lid, sid):
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>", methods=["DELETE"])
 @login_required
 def delete_supplier(lid, sid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     sup = db.session.get(InquirySupplier, sid)
     if not sup or sup.inquiry_id != lid:
         return jsonify({"ok": False, "error": "不存在"}), 404
@@ -482,12 +530,12 @@ def _send_letter_to(sup, letter, project_name, project_number, subject,
 
 
 def _advance_status_if_all_sent(letter):
-    """所有供应商均已发送时，把草稿函件推进为「进行中」。"""
+    """所有供应商均已发送时，把待办函件推进为「进行中」。"""
     all_suppliers = db.session.execute(
         db.select(InquirySupplier).filter_by(inquiry_id=letter.id)
     ).scalars().all()
     if all_suppliers and all(s.sent_at for s in all_suppliers):
-        if letter.status == "草稿":
+        if letter.status == "待办":
             letter.status     = "进行中"
             letter.updated_at = _now()
             db.session.commit()
@@ -507,9 +555,9 @@ def _xunjia_email_ok(letter):
 @bp.route("/api/inquiries/<int:lid>/suppliers/<int:sid>/send", methods=["POST"])
 @login_required
 def send_to_supplier(lid, sid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     blocked = _block_if_deleted(letter)
     if blocked:
         return blocked
@@ -545,9 +593,9 @@ def send_to_supplier(lid, sid):
 @login_required
 def send_all_suppliers(lid):
     """一键群发：把函件正文+附件发送给所有「已填邮箱且未发送」的供应商。"""
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     blocked = _block_if_deleted(letter)
     if blocked:
         return blocked
@@ -609,6 +657,9 @@ def send_all_suppliers(lid):
 @bp.route("/api/inquiries/<int:lid>/attachments", methods=["GET"])
 @login_required
 def list_inquiry_attachments(lid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     atts = db.session.execute(
         db.select(InquiryAttachment).filter_by(inquiry_id=lid).order_by(InquiryAttachment.id)
     ).scalars().all()
@@ -618,13 +669,13 @@ def list_inquiry_attachments(lid):
 @bp.route("/api/inquiries/<int:lid>/attachments", methods=["POST"])
 @login_required
 def upload_inquiry_attachment(lid):
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
 
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
-    f = request.files["file"]
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
 
@@ -652,6 +703,9 @@ def upload_inquiry_attachment(lid):
 @bp.route("/api/inquiries/<int:lid>/attachments/<int:aid>", methods=["DELETE"])
 @login_required
 def delete_inquiry_attachment(lid, aid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     att = db.session.get(InquiryAttachment, aid)
     if not att or att.inquiry_id != lid:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
@@ -681,6 +735,9 @@ def _inquiry_attachment_path(lid, aid):
 @bp.route("/api/inquiries/<int:lid>/attachments/<int:aid>/download", methods=["GET"])
 @login_required
 def download_inquiry_attachment(lid, aid):
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     att, path = _inquiry_attachment_path(lid, aid)
     if not att:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
@@ -693,12 +750,16 @@ def download_inquiry_attachment(lid, aid):
 @login_required
 def preview_inquiry_attachment(lid, aid):
     """内联预览（PDF/图片浏览器渲染，docx/xlsx 前端渲染）"""
+    _letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     att, path = _inquiry_attachment_path(lid, aid)
     if not att:
         return jsonify({"ok": False, "error": "附件不存在"}), 404
     if not path:
         return jsonify({"ok": False, "error": "文件已丢失"}), 404
-    return send_file(path, as_attachment=False, download_name=att.filename)
+    from services.office_convert import send_preview
+    return send_preview(path, att.filename)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -719,7 +780,7 @@ def list_templates():
 def upload_template():
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
-    f = request.files["file"]
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
 
@@ -743,6 +804,39 @@ def upload_template():
     db.session.add(tmpl)
     db.session.commit()
     return jsonify({"ok": True, "data": tmpl.to_dict()}), 201
+
+
+def _template_path(tid):
+    """返回 (模板, 绝对路径)；文件丢了路径为 None。"""
+    tmpl = db.session.get(InquiryTemplate, tid)
+    if not tmpl:
+        return None, None
+    full = os.path.join(PMS_ROOT, tmpl.filepath or "")
+    return tmpl, (full if tmpl.filepath and os.path.exists(full) else None)
+
+
+@bp.route("/api/inquiry-templates/<int:tid>/preview", methods=["GET"])
+@login_required
+def preview_template(tid):
+    """模板内联预览（doc/ppt 等自动转 PDF；docx/xlsx 交前端渲染）"""
+    tmpl, path = _template_path(tid)
+    if not tmpl:
+        return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not path:
+        return jsonify({"ok": False, "error": "文件已丢失"}), 404
+    from services.office_convert import send_preview
+    return send_preview(path, tmpl.filename)
+
+
+@bp.route("/api/inquiry-templates/<int:tid>/download", methods=["GET"])
+@login_required
+def download_template(tid):
+    tmpl, path = _template_path(tid)
+    if not tmpl:
+        return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not path:
+        return jsonify({"ok": False, "error": "文件已丢失"}), 404
+    return send_file(path, as_attachment=True, download_name=tmpl.filename)
 
 
 @bp.route("/api/inquiry-templates/<int:tid>", methods=["PUT"])
@@ -779,9 +873,9 @@ def delete_template(tid):
 @login_required
 def attach_from_template(lid):
     """将模板库中的文件复制为本函件的附件（独立副本，互不影响）"""
-    letter = db.session.get(InquiryLetter, lid)
-    if not letter:
-        return jsonify({"ok": False, "error": "函件不存在"}), 404
+    letter, _serr = _scoped_letter(lid)
+    if _serr:
+        return _serr
     data = request.get_json(force=True) or {}
     template_ids = data.get("template_ids", [])
     if not template_ids:

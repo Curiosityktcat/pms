@@ -18,6 +18,8 @@ from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from services.docx_utils import set_default_fonts
+
 # 采购部固定信息
 RECEIVE_EMAIL = "njyycgbxjh@163.com"
 DEPT_ADDRESS  = "内江市汉安大道西段1866号，内江市第一人民医院新区全科医师楼三楼采购部。"
@@ -33,6 +35,7 @@ def generate_inquiry_word(letter, project_name: str, project_number: str,
     返回包含 Word 文档内容的 BytesIO 对象
     """
     doc = Document()
+    set_default_fonts(doc)   # 正文默认：中文仿宋_GB2312、西文 Times New Roman
 
     # ── 页面边距 ──────────────────────────────────────────────────
     for section in doc.sections:

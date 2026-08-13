@@ -29,22 +29,59 @@ const POLL_MS = 45000
 const PRIORITY_COLOR: Record<string, string> = { 普通: 'default', 重要: 'orange', 紧急: 'red' }
 
 // 系统待办事件 → 对应处理页面。点击直达该模块，项目已按阶段筛在该页列表里。
+/** 系统待办事件 → 可办理页面。必须与后端 services/system_todos.py 的 _EVENTS 一一对应，
+ *  漏一个，那类待办就没有「去处理」按钮，只能靠人自己找菜单。 */
 const EVENT_ROUTE: Record<string, string> = {
-  demand_confirm: '/procurement-doc/demand',  // 5.1 采购需求确认
-  doc_upload:     '/procurement-doc/file',     // 5.2 采购文件确认（代理上传）
-  doc_confirm:    '/procurement-doc/file',     // 5.2 采购文件确认
-  announce:       '/announcement',             // 6.1 采购公告
-  bid_open:       '/bid',                       // 开标管理
-  result:         '/procurement-result',        // 9 采购结果确认
-  contract:       '/contract',                  // 10 合同管理
+  // 5.1 采购需求
+  demand_confirm:   '/procurement-doc/demand',
+  demand_fix:       '/procurement-doc/demand',
+  // 5.2 采购文件
+  doc_upload:       '/procurement-doc/file',
+  doc_confirm:      '/procurement-doc/file',
+  doc_fix:          '/procurement-doc/file',
+  // 6.1 采购公告
+  ann_draft:        '/announcement',
+  ann_confirm:      '/announcement',
+  ann_fix:          '/announcement',
+  // 6.3 更正公告
+  corr_confirm:     '/correction',
+  corr_fix:         '/correction',
+  // 开标
+  bid_open:         '/bid',
+  bid_fail_confirm: '/bid',
+  auth_letter:      '/auth-letter',
+  // 8.5 项目评审资料
+  review_upload:    '/project-review',
+  review_confirm:   '/project-review',
+  review_fix:       '/project-review',
+  // 9 采购结果
+  result_draft:     '/procurement-result',
+  result_confirm:   '/procurement-result',
+  result_fix:       '/procurement-result',
+  result_recheck:   '/procurement-result',
+  // 10 合同
+  contract:         '/contract',
+  contract_draft:   '/contract',
+  contract_review:  '/contract',
+  contract_fix:     '/contract',
+  // 询/议价、紧急采购
+  inquiry_letter:   '/inquiry',
+  inquiry_review:   '/inquiry-review',
+  // 13.4 代理机构考核
+  agency_assess:    '/agency-assessment',
 }
 
-/** 待办对应的可办理页面路径（带 focus=项目id），无则 null。 */
+/** 少数页面用自己的参数名接项目（授权函页读 project_id 直接预填表单），其余统一 focus= 高亮行。 */
+const EVENT_PARAM: Record<string, string> = { auth_letter: 'project_id' }
+
+/** 待办对应的可办理页面路径（带项目参数），无则 null。 */
 function todoLink(t: Todo): string | null {
   if (t.source === 'system' && t.source_key) {
     const event = t.source_key.split(':')[1] || ''
     const base = EVENT_ROUTE[event]
-    if (base) return t.related_project_id ? `${base}?focus=${t.related_project_id}` : base
+    if (!base) return null
+    if (!t.related_project_id) return base
+    return `${base}?${EVENT_PARAM[event] || 'focus'}=${t.related_project_id}`
   }
   return null
 }

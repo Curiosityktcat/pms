@@ -13,6 +13,7 @@ from services import announcement as svc
 from services import approval_log as alog
 from services.permission import is_admin_user
 from routes.utils import login_required
+from services import upload_relay
 
 bp = Blueprint("announcement", __name__, url_prefix="/api/announcements")
 
@@ -753,7 +754,7 @@ def upload_file(aid):
     if ann.status == "已确认" and not _can_confirm(project):
         return jsonify({"ok": False, "error": "公告已确认，无法上传附件"}), 403
 
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
 

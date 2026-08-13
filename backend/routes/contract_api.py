@@ -12,6 +12,7 @@ from models.contract_attachment import ContractAttachment
 from models.project import Project
 from services import approval_log as alog
 from routes.utils import login_required, can_view_project
+from services import upload_relay
 
 # ── rd-web 合同审签单直连提交状态（按合同 id 隔离）────────────────
 _rdweb: dict = {}   # {cid: {running, ok, serial_no, msg, started_at}}
@@ -231,7 +232,8 @@ def upload_file(cid):
     c, _project, err = _scoped(cid)
     if err:
         return err
-    f = request.files.get("file")
+    # 同附件口：公网大文件走 OSS 中转
+    f = request.files.get("file") or upload_relay.staged_file()
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
     _, ext = os.path.splitext(f.filename.lower())
@@ -399,7 +401,8 @@ def upload_attachment(cid):
     c, _project, err = _scoped(cid)
     if err:
         return err
-    f = request.files.get("file")
+    # 公网大文件走 OSS 中转（浏览器直传 OSS，这里把它拉回本地），局域网仍是普通 multipart
+    f = request.files.get("file") or upload_relay.staged_file()
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
     _, ext = os.path.splitext(f.filename.lower())

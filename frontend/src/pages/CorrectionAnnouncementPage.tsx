@@ -8,7 +8,6 @@ import {
   FileSearchOutlined, PlusOutlined, DeleteOutlined, FileWordOutlined,
   UploadOutlined, PaperClipOutlined, DownloadOutlined, MinusCircleOutlined,
 } from '@ant-design/icons'
-import axios from 'axios'
 import {
   getAnnouncements, getEligibleProjects, createAnnouncement, updateAnnouncement,
   deleteAnnouncement, submitAnnouncement, confirmAnnouncement, revokeAnnouncement,
@@ -20,6 +19,7 @@ import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useAuth } from '../hooks/useAuth'
 import { cnOrdinal } from '../utils/ordinal'
 import { parseCnDate, fmtCnDateTime } from '../utils/cnDate'
+import { smartUploadAbs } from '../services/upload'
 
 const { Text, Title } = Typography
 
@@ -131,13 +131,8 @@ export default function CorrectionAnnouncementPage() {
   const uploadPending = async (annId: number) => {
     let ok = 0
     for (const f of pendingFiles) {
-      const fd = new FormData()
-      fd.append('file', f)
       try {
-        await axios.post(`/api/announcements/${annId}/files`, fd, {
-          withCredentials: true,
-          headers: { 'Content-Type': 'multipart/form-data' },
-        })
+        await smartUploadAbs(`/api/announcements/${annId}/files`, f)
         ok += 1
       } catch {
         message.error(`附件「${f.name}」上传失败`)
@@ -241,13 +236,8 @@ export default function CorrectionAnnouncementPage() {
     if (!editing) return
     const { file, onSuccess, onError } = options
     setUploading(true)
-    const fd = new FormData()
-    fd.append('file', file as Blob)
     try {
-      const res = await axios.post(`/api/announcements/${editing.id}/files`, fd, {
-        withCredentials: true,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      const res = await smartUploadAbs(`/api/announcements/${editing.id}/files`, file as File)
       onSuccess?.(res.data)
       message.success('上传成功')
       loadFiles(editing.id)

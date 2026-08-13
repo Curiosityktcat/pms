@@ -64,18 +64,26 @@ def create_app():
     from routes.ocr_api import bp as ocr_bp
     from routes.bid_review_api import bp as bid_review_bp
     from routes.filebox_api import bp as filebox_bp
+    from routes.datapipe_api import bp as datapipe_bp   # 政采数据流水线看板（仅黄新博）
     from routes.presence_api import bp as presence_bp
     from routes.supervision_api import bp as supervision_bp  # 投诉质疑数据库
     from routes.dept_announcement_api import bp as dept_announcement_bp  # 采购部公告
     from routes.tools_doc_gen_api import bp as tools_doc_gen_bp  # AI采购文件生成工具
     from models.dept_announcement import DeptAnnouncement  # noqa: F401 建表用
     from routes.law_api import bp as law_bp  # 法规库
+    from routes.sysdocs_api import bp as sysdocs_bp  # 系统说明书/更新日志
     from routes.project_distribution_api import bp as project_distribution_bp  # 采购项目分发
     from routes.project_review_api import bp as project_review_bp  # 8.5 项目评审资料上传
     from routes.ai_assistant_api import bp as ai_assistant_bp  # 耗子AI助手
     from routes.hermes_api import bp as hermes_bp  # 指挥 Hermes 自动填报 rd-web
     from routes.agency_api import bp as agency_bp  # 代理机构信息维护
     from routes.rdweb_contract_api import bp as rdweb_contract_bp  # rd-web 合同审签单直连自动提交
+    from routes.api_provider_api import bp as api_provider_bp  # 后台 API 管理（大模型台账）
+    from routes.agency_assessment_api import bp as agency_assessment_bp  # 代理机构服务质量考核
+    from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
+    from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
+    from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
+    from routes.auth_letter_pending_api import bp as auth_letter_pending_bp  # 待出具授权函清单
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -105,18 +113,28 @@ def create_app():
     app.register_blueprint(ocr_bp)
     app.register_blueprint(bid_review_bp)
     app.register_blueprint(filebox_bp)
+    app.register_blueprint(datapipe_bp)
     app.register_blueprint(presence_bp)
     app.register_blueprint(supervision_bp)
     app.register_blueprint(dept_announcement_bp)
     app.register_blueprint(tools_doc_gen_bp)
     app.register_blueprint(my_template_bp)
     app.register_blueprint(law_bp)
+    app.register_blueprint(sysdocs_bp)
     app.register_blueprint(project_distribution_bp)
     app.register_blueprint(project_review_bp)
     app.register_blueprint(ai_assistant_bp)  # 耗子AI助手
     app.register_blueprint(hermes_bp)  # Hermes 自动填报
     app.register_blueprint(agency_bp)  # 代理机构信息维护
     app.register_blueprint(rdweb_contract_bp)  # rd-web 合同审签单直连
+    app.register_blueprint(api_provider_bp)  # 后台 API 管理
+    app.register_blueprint(agency_assessment_bp)
+    app.register_blueprint(procurement_plan_bp)  # 采购计划池
+    app.register_blueprint(web_announcement_bp)  # 官网公告存档
+    app.register_blueprint(doc_intake_attach_bp)  # 资料智能归档 → 自动挂载到业务模块
+    app.register_blueprint(auth_letter_pending_bp)  # 授权函任务清单
+    from routes.storage_api import bp as storage_bp
+    app.register_blueprint(storage_bp)            # 对象存储直传/签名（未配 OSS 时自动降级为本地）
 
     # 确保所有表都已创建（新模型自动建表）
     with app.app_context():
@@ -124,6 +142,9 @@ def create_app():
         from models.announcement_attachment import AnnouncementAttachment  # noqa: F401
         from models.agency_template import AgencyTemplate  # noqa: F401
         from models.auth_letter_record import AuthLetterRecord  # noqa: F401
+        from models.procurement_plan import (ProcurementPlan,  # noqa: F401
+                                             ProcurementPlanAttachment)
+        from models.web_announcement import WebAnnouncement  # noqa: F401 官网公告存档
         from models.procurement_demand import ProcurementDemand  # noqa: F401
         from models.procurement_result import ProcurementResult  # noqa: F401
         from models.contract import Contract  # noqa: F401
@@ -156,13 +177,60 @@ def create_app():
         from models.supervision import SupervisionChannel  # noqa: F401  投诉质疑数据库
         from models.user_balance import UserBalance  # noqa: F401  耗子AI按人计费余额
         from models.hermes_task import HermesTask  # noqa: F401  Hermes 自动填报任务
+        from models.approval_log import ApprovalLog  # noqa: F401  审批驳回过程留痕
+        from models.agency_assessment import AgencyAssessment  # noqa: F401  代理机构考核
         db.create_all()
+
+        # rd-web 常驻登录会话：起回收线程，空闲会话自动关掉释放内存。
+        # 会话本身按需创建（首次推送时登录），此处只管回收。
+        try:
+            from services import rdweb_session as _rs
+            _rs.start_reaper()
+        except Exception as _e:
+            print("[rdweb] 会话回收线程启动失败：", _e, flush=True)
 
         # SQLite 开 WAL：投标审查的后台线程需要边写边读（一写多读并发）
         from sqlalchemy import text as _text_wal
         with db.engine.connect() as _conn_wal:
             _conn_wal.execute(_text_wal("PRAGMA journal_mode=WAL"))
             _conn_wal.commit()
+
+        # ── 连接级 PRAGMA：journal_mode 是**库级**设置（设一次就持久），但
+        #    synchronous / busy_timeout 是**连接级**的，每条新连接都要重设一遍。
+        #    · synchronous=NORMAL：WAL 下的标准搭配，提交不再每次 fsync，写入快很多。
+        #      代价是**突然断电**可能丢最后几个事务（数据库本身不会损坏）；
+        #      想要最高持久性就把下面这行改回 FULL。
+        #    · busy_timeout=15s：写高峰时先等锁而不是直接抛 "database is locked"
+        #      （原来只有驱动默认的 5 秒，多人同时提交容易 500）。
+        from sqlalchemy import event as _sa_event
+
+        @_sa_event.listens_for(db.engine, "connect")
+        def _sqlite_conn_pragmas(dbapi_conn, _rec):      # noqa: ANN001
+            cur = dbapi_conn.cursor()
+            try:
+                cur.execute("PRAGMA synchronous=NORMAL")
+                cur.execute("PRAGMA busy_timeout=15000")
+                cur.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cur.close()
+
+        # ── WAL 定期检查点：WAL 文件只在检查点时回收，持续读会一直推迟它。
+        #    实测涨到 9.9MB 还没回收；WAL 越大，**别的服务读 pms.db 快照看到的数据越旧**
+        #    （llm-gateway 就踩过：不 checkpoint 就读到旧值）。每 10 分钟截断一次。
+        def _wal_checkpoint_loop():
+            import time as _t
+            while True:
+                _t.sleep(int(os.environ.get("WAL_CHECKPOINT_SEC") or "600"))
+                try:
+                    with app.app_context():
+                        with db.engine.connect() as _c:
+                            _c.execute(_text_wal("PRAGMA wal_checkpoint(TRUNCATE)"))
+                            _c.commit()
+                except Exception as _e:
+                    print("[wal] 检查点失败：", _e, flush=True)
+
+        import threading as _th_wal
+        _th_wal.Thread(target=_wal_checkpoint_loop, daemon=True).start()
 
         # 高频过滤列加索引（幂等 IF NOT EXISTS，不改数据；加速列表/归档/权限过滤）
         _indexes = [
@@ -272,12 +340,29 @@ def create_app():
                 ("doc_confirmed_at",    "TEXT DEFAULT ''"),
                 ("doc_agency_contact",  "TEXT DEFAULT ''"),
                 ("doc_agency_phone",    "TEXT DEFAULT ''"),
+                ("agency_rdweb_serial_no",    "TEXT DEFAULT ''"),
+                ("agency_rdweb_submitted_at", "TEXT DEFAULT ''"),
             ]:
                 if _col not in _existing2:
                     _conn2.execute(_text2(
                         f"ALTER TABLE projects ADD COLUMN {_col} {_typedef}"
                     ))
             _conn2.commit()
+
+        # 为 contracts 表追加 rd-web 合同审签流水号列
+        with db.engine.connect() as _conn_ct:
+            _existing_ct = {row[1] for row in _conn_ct.execute(
+                _text2("PRAGMA table_info(contracts)")
+            )}
+            for _col, _typedef in [
+                ("rdweb_serial_no",    "TEXT DEFAULT ''"),
+                ("rdweb_submitted_at", "TEXT DEFAULT ''"),
+            ]:
+                if _col not in _existing_ct:
+                    _conn_ct.execute(_text2(
+                        f"ALTER TABLE contracts ADD COLUMN {_col} {_typedef}"
+                    ))
+            _conn_ct.commit()
 
         # 为 procurement_demands 表追加新列（SQLite 不支持自动迁移）
         new_cols = [
@@ -486,6 +571,84 @@ def create_app():
                         ))
             conn7.commit()
 
+        # ── 审批驳回 / 不确认：各单据追加驳回字段（approval_logs 表由 create_all 建）──
+        _rej_cols = {
+            "announcements": [
+                ("survey_content",       "TEXT DEFAULT ''"),
+                ("survey_qualification", "TEXT DEFAULT ''"),
+                ("survey_quote_req",     "TEXT DEFAULT ''"),
+                ("survey_materials",     "TEXT DEFAULT ''"),
+                ("survey_deadline",      "TEXT DEFAULT ''"),
+                ("survey_submit_way",    "TEXT DEFAULT ''"),
+                ("survey_note",          "TEXT DEFAULT ''"),
+                ("ss_goods_desc",        "TEXT DEFAULT ''"),
+                ("ss_reason",            "TEXT DEFAULT ''"),
+                ("ss_supplier_name",     "TEXT DEFAULT ''"),
+                ("ss_supplier_addr",     "TEXT DEFAULT ''"),
+                ("ss_experts_json",      "TEXT DEFAULT '[]'"),
+                ("ss_publicity_start",   "TEXT DEFAULT ''"),
+                ("ss_publicity_end",     "TEXT DEFAULT ''"),
+                ("ss_objection_dept",    "TEXT DEFAULT ''"),
+                ("ss_objection_contact", "TEXT DEFAULT ''"),
+                ("ss_objection_phone",   "TEXT DEFAULT ''"),
+                ("ss_objection_addr",    "TEXT DEFAULT ''"),
+                ("reject_reason", "TEXT DEFAULT ''"),
+                ("reject_count",  "INTEGER DEFAULT 0"),
+                ("rejected_by",   "TEXT DEFAULT ''"),
+                ("rejected_at",   "TEXT DEFAULT ''"),
+            ],
+            "procurement_rounds": [
+                ("demand_reject_reason", "TEXT DEFAULT ''"),
+                ("demand_reject_count",  "INTEGER DEFAULT 0"),
+                ("demand_rejected_by",   "TEXT DEFAULT ''"),
+                ("demand_rejected_at",   "TEXT DEFAULT ''"),
+                ("doc_reject_reason",    "TEXT DEFAULT ''"),
+                ("doc_reject_count",     "INTEGER DEFAULT 0"),
+                ("doc_rejected_by",      "TEXT DEFAULT ''"),
+                ("doc_rejected_at",      "TEXT DEFAULT ''"),
+                ("review_status",        "TEXT DEFAULT ''"),
+                ("review_confirmed_by",  "TEXT DEFAULT ''"),
+                ("review_confirmed_at",  "TEXT DEFAULT ''"),
+                ("review_reject_reason", "TEXT DEFAULT ''"),
+                ("review_reject_count",  "INTEGER DEFAULT 0"),
+                ("review_rejected_by",   "TEXT DEFAULT ''"),
+                ("review_rejected_at",   "TEXT DEFAULT ''"),
+            ],
+            "procurement_results": [
+                ("reject_reason",      "TEXT DEFAULT ''"),
+                ("reject_count",       "INTEGER DEFAULT 0"),
+                ("rejected_by",        "TEXT DEFAULT ''"),
+                ("rejected_at",        "TEXT DEFAULT ''"),
+                ("not_confirm_reason", "TEXT DEFAULT ''"),
+                ("not_confirm_count",  "INTEGER DEFAULT 0"),
+                ("not_confirmed_by",   "TEXT DEFAULT ''"),
+                ("not_confirmed_at",   "TEXT DEFAULT ''"),
+                ("recheck_handling",   "TEXT DEFAULT ''"),
+                ("recheck_note",       "TEXT DEFAULT ''"),
+                ("recheck_by",         "TEXT DEFAULT ''"),
+                ("recheck_at",         "TEXT DEFAULT ''"),
+            ],
+            "contracts": [
+                ("reject_reason", "TEXT DEFAULT ''"),
+                ("reject_count",  "INTEGER DEFAULT 0"),
+                ("rejected_by",   "TEXT DEFAULT ''"),
+                ("rejected_at",   "TEXT DEFAULT ''"),
+            ],
+        }
+        with db.engine.connect() as conn8:
+            for _tbl, _cols in _rej_cols.items():
+                existing8 = {row[1] for row in conn8.execute(
+                    text(f"PRAGMA table_info({_tbl})")
+                )}
+                if not existing8:
+                    continue          # 表还没建（首次启动），create_all 已带上新列
+                for col, typedef in _cols:
+                    if col not in existing8:
+                        conn8.execute(text(
+                            f"ALTER TABLE {_tbl} ADD COLUMN {col} {typedef}"
+                        ))
+            conn8.commit()
+
         # ── 一次性回填：为存量项目补出「采购轮次 / 包」骨架（幂等）──────
         from models.project import Project as _BFProj
         from models.package import Package as _BFPkg
@@ -496,9 +659,16 @@ def create_app():
         import json as _json_bf
 
         _now_bf = _dt_bf.datetime.now().isoformat(timespec="seconds")
+        # 询/议价、紧急采购是**独立轨道，本就不走轮次系统**（真相在 inquiry_letters/
+        # inquiry_reviews，见 services/project_progress.py 的注释）。给它们补轮次会造成
+        # current_round=1 → 「7. 询/议价函」的可立函下拉把项目排除掉（条件是"无轮次或已废标"）
+        # → 经办人立了项却建不了询价函、管理页里什么都看不到。2026-08-04 实测踩中。
+        _NO_ROUND_METHODS = ("院内询价", "院内议价", "医用耗材紧急采购")
         for _p in db.session.execute(db.select(_BFProj)).scalars().all():
             if _p.is_draft:
                 continue  # 草稿项目不建轮次
+            if (_p.method or "") in _NO_ROUND_METHODS:
+                continue  # 独立轨道，不建轮次
             # 已有轮次则跳过
             if db.session.execute(
                 db.select(_BFRound).filter_by(project_id=_p.id)
@@ -579,6 +749,121 @@ def create_app():
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         return resp
+
+    # ── 滑块验证同源反代（→ captcha-svc 3060），供登录页调用验证接口/加载 widget ──
+    import requests as _rq
+    _CAPTCHA_URL = os.environ.get("CAPTCHA_URL", "http://127.0.0.1:3060")
+
+    @app.route("/captcha/<path:sub>", methods=["GET", "POST"])
+    def _captcha_proxy(sub):
+        from flask import request as _req, Response
+        url = f"{_CAPTCHA_URL}/captcha/{sub}"
+        try:
+            if _req.method == "POST":
+                r = _rq.post(url, data=_req.get_data(),
+                             headers={"Content-Type": _req.headers.get("Content-Type", "application/json")},
+                             timeout=10)
+            else:
+                r = _rq.get(url, params=_req.args, timeout=10)
+            return Response(r.content, status=r.status_code,
+                            mimetype=r.headers.get("Content-Type", "application/json"))
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:120]), 502
+
+    # ── 资料智能归档 同源反代（→ doc-intake 9080），供 PMS 工具栏 iframe 内嵌 ──
+    _INTAKE_URL = os.environ.get("DOC_INTAKE_URL", "http://127.0.0.1:9080")
+
+    # ── 反代用：把 request.stream 包成 requests 能算长度的对象 ───────────
+    # 直接把 stream 交给 requests，它算不出长度就会自作主张加
+    # Transfer-Encoding: chunked；若同时又转发了 Content-Length，
+    # 两个头并存 → 对端（gunicorn/express）判为非法请求头直接 400。
+    # 给包装对象一个 .len，requests 就只发 Content-Length。
+    class _StreamBody:
+        def __init__(self, stream, length):
+            self._s = stream
+            self.len = length
+
+        def read(self, n=-1):
+            return self._s.read() if n is None or n < 0 else self._s.read(n)
+
+    def _fwd_body(_req):
+        """返回 (body, extra_headers)：知道长度就按长度发，不知道就退分块编码。"""
+        try:
+            cl = int(_req.headers.get("Content-Length") or 0)
+        except ValueError:
+            cl = 0
+        if cl > 0:
+            return _StreamBody(_req.stream, cl), {}
+        return _req.stream, {}
+
+    @app.route("/doc-intake-svc/", defaults={"sub": ""}, methods=["GET", "POST"])
+    @app.route("/doc-intake-svc/<path:sub>", methods=["GET", "POST"])
+    def _intake_proxy(sub):
+        from flask import request as _req, Response, stream_with_context
+        url = f"{_INTAKE_URL}/{sub}"
+        try:
+            if _req.method == "POST":
+                # 流式转发：get_data() 会把整个上传体读进 PMS 进程内存
+                # （291MB 的件在这里要占两三份），大文件必须边收边转。
+                hdr = {"Content-Type": _req.headers.get("Content-Type", "application/octet-stream")}
+                body, extra = _fwd_body(_req)
+                hdr.update(extra)
+                r = _rq.post(url, data=body, params=_req.args,
+                             headers=hdr, timeout=650, stream=True)
+            else:
+                r = _rq.get(url, params=_req.args, timeout=60, stream=True)
+            return Response(stream_with_context(r.iter_content(chunk_size=64 * 1024)),
+                            status=r.status_code,
+                            mimetype=r.headers.get("Content-Type", "text/html"))
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:160]), 502
+
+    # ── 牛马 agent 同源反代（→ 各人自己的 officer-agent 盒子，流式 SSE）──
+    # 一人一盒（B 方案物理隔离）：按登录人路由到各自端口，盒子之间互不可见。
+    # 新增经办人 = 起一个容器 + 这里加一行映射。
+    _OFFICER_BOXES = {
+        "黄新博": os.environ.get("OFFICER_URL_HXB", "http://127.0.0.1:3071"),
+        "郑跃俊": os.environ.get("OFFICER_URL_ZYJ", "http://127.0.0.1:3072"),
+    }
+    # 与 agent 盒子约定的共享密钥：PMS 这头已校验登录态，凭密钥把「谁在用」传过去。
+    # 盒子只监听 127.0.0.1，加上这道密钥，绕过 PMS 直接打 agent 端口就不成立了。
+    def _proxy_secret():
+        p = os.environ.get("OFFICER_PROXY_SECRET_FILE", "/home/huangxb/pms/.officer_proxy_secret")
+        try:
+            with open(p, encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return os.environ.get("OFFICER_PROXY_SECRET", "")
+
+    @app.route("/officer-agent/", defaults={"sub": ""}, methods=["GET", "POST", "DELETE"])
+    @app.route("/officer-agent/<path:sub>", methods=["GET", "POST", "DELETE"])
+    def _officer_proxy(sub):
+        from flask import request as _req, Response, session, stream_with_context
+        user = session.get("user")
+        target = _OFFICER_BOXES.get(user or "")
+        if not target:                            # 没盒子的账号一律不给
+            return jsonify(ok=False, error="牛马助手未对当前账号开放"), 403
+        url = f"{target}/{sub}"
+        from urllib.parse import quote as _q
+        # HTTP 头只能 ASCII，中文用户名必须编码后再传（否则到对面变乱码）
+        hdr = {"X-Proxy-Secret": _proxy_secret(), "X-Proxy-User": _q(user)}
+        try:
+            if _req.method == "POST":
+                hdr["Content-Type"] = _req.headers.get("Content-Type", "application/json")
+                # 流式转发，拖进牛马面板的大文件不再整份占 PMS 内存
+                body, extra = _fwd_body(_req)
+                hdr.update(extra)
+                r = _rq.post(url, data=body, params=_req.args, headers=hdr,
+                             stream=True, timeout=300)
+            elif _req.method == "DELETE":
+                r = _rq.delete(url, params=_req.args, headers=hdr, stream=True, timeout=60)
+            else:
+                r = _rq.get(url, params=_req.args, headers=hdr, stream=True, timeout=120)
+            return Response(stream_with_context(r.iter_content(chunk_size=None)),
+                            status=r.status_code,
+                            mimetype=r.headers.get("Content-Type", "text/html"))
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:160]), 502
 
     return app
 

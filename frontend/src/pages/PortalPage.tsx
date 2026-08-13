@@ -5,7 +5,7 @@ import {
   FileTextOutlined, GlobalOutlined, MailOutlined, TeamOutlined,
   CheckCircleOutlined, AuditOutlined, FileDoneOutlined, FileSearchOutlined,
   FileProtectOutlined, BookOutlined, AlertOutlined, FolderOpenOutlined,
-  SettingOutlined, RightOutlined, RobotOutlined,
+  ReadOutlined, SettingOutlined, RightOutlined, RobotOutlined, ThunderboltOutlined, CloudUploadOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../hooks/useAuth'
 import DeptAnnouncementBoard from '../components/DeptAnnouncementBoard'
@@ -47,16 +47,25 @@ const FLOW: Tile[] = [
     anyPerm: ['contract'] },
   { no: '11', label: '归档', path: '/archive', icon: <FileDoneOutlined />,
     anyPerm: ['archive'] },
+  // 考核不设权限门槛：经办人要给自己项目的代理打分，助理/负责人要看汇总。
+  // 曾经把它挂在「分发」权限下，结果经办人整个看不到，别再犯。
+  { no: '12', label: '代理机构考核', path: '/agency-assessment',
+    icon: <SafetyCertificateOutlined />, anyPerm: [] },
 ]
 
 // ── 工具集合（流程之外的能力）───────────────────────────────────
 const TOOLS: Tile[] = [
   { label: 'AI 采购文件生成', path: '/ai-doc-gen', icon: <RobotOutlined />, anyPerm: [] },
+  { label: '合同审签推送', path: '/rdweb-contract', icon: <ThunderboltOutlined />,
+    anyPerm: ['contract'] },
   { label: '文件识别（OCR）', path: '/file-ocr', icon: <FileSearchOutlined />,
     anyPerm: ['file-ocr'] },
+  { label: '资料智能归档', path: '/doc-intake', icon: <CloudUploadOutlined />, anyPerm: [] },
   { label: '投标文件审查', path: '/bid-review', icon: <FileProtectOutlined />,
-    anyPerm: ['bid-review'] },
+    anyPerm: [], ownerOnly: true },   // 仅限「黄新博」本人
   { label: '法规库', path: '/law-library', icon: <BookOutlined />, anyPerm: [] },
+  { label: '系统说明书', path: '/sys-docs', icon: <ReadOutlined />,
+    anyPerm: [], ownerOnly: true },   // 仅限「黄新博」本人
   { label: '投诉质疑数据库', path: '/supervision', icon: <AlertOutlined />, anyPerm: [] },
   { label: '我的文件库', path: '/filebox', icon: <FolderOpenOutlined />,
     anyPerm: [], ownerOnly: true },

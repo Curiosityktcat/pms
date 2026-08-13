@@ -226,8 +226,11 @@ def generate_word(template_key, data):
     from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+    from services.docx_utils import set_default_fonts
+
     tpl = TEMPLATES.get(template_key) or {}
     doc = Document()
+    set_default_fonts(doc)   # 正文默认：中文仿宋_GB2312、西文 Times New Roman
     # 标题
     h = doc.add_paragraph()
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER

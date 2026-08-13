@@ -55,3 +55,6 @@ laws_export.json
 聊天附件/
 询价附件/
 耗子知识/
+
+# 对象存储凭据（绝不进 git）
+.oss.env

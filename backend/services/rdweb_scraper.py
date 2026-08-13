@@ -102,10 +102,11 @@ def _attach_dir(did):
 
 
 # ── Playwright 抓取某个流程（返回 [dict(...含 _files、_print_pdf)]）──────────────
-def _scrape(wf, target_serial=None):
+def _scrape(wf, target_serial=None, loginuser=None, password=None, state_path=None):
     from playwright.sync_api import sync_playwright
-    loginuser = _cfg("rdweb_loginuser")
-    password = _cfg("rdweb_password")
+    loginuser = loginuser or _cfg("rdweb_loginuser")
+    password = password or _cfg("rdweb_password")
+    state_path = state_path or STATE_PATH
     if not (loginuser and password):
         raise RuntimeError("未配置 rd-web 账号（SysConfig rdweb_loginuser / rdweb_password）")
     import tempfile
@@ -115,8 +116,8 @@ def _scrape(wf, target_serial=None):
         browser = p.chromium.launch(channel="chrome", headless=True,
                                     args=["--no-sandbox", "--disable-dev-shm-usage"])
         ctx_args = {"user_agent": UA, "accept_downloads": True}
-        if os.path.exists(STATE_PATH):
-            ctx_args["storage_state"] = STATE_PATH
+        if os.path.exists(state_path):
+            ctx_args["storage_state"] = state_path
         ctx = browser.new_context(**ctx_args)
         pg = ctx.new_page()
         pg.goto(LOGIN_URL, wait_until="networkidle", timeout=45000)
@@ -127,7 +128,7 @@ def _scrape(wf, target_serial=None):
             pg.fill("#password", password)
             pg.click("#loginBtn")
             pg.wait_for_selector(f"text={wf['name']}", timeout=25000)
-            ctx.storage_state(path=STATE_PATH)
+            ctx.storage_state(path=state_path)
         body = pg.evaluate("()=>document.body.innerText")
         if "登录太频繁" in body:
             browser.close()
@@ -252,15 +253,17 @@ def source_tag_default():
     return "rd-web"
 
 
-def import_pending(target_serial=None, source_tag="rd-web", only_form_type=None):
+def import_pending(target_serial=None, source_tag="rd-web", only_form_type=None,
+                   loginuser=None, password=None, state_path=None, workflows=None,
+                   officer_override=None):
     """遍历三个流程抓取待分发项并写入项目分发（按流水号去重/更新）。返回 summary。"""
     import json as _json
     imported, updated, errors = 0, 0, []
-    for wf in WORKFLOWS:
+    for wf in (workflows or WORKFLOWS):
         if only_form_type and wf["form_type"] != only_form_type:
             continue
         try:
-            scraped = _scrape(wf, target_serial)
+            scraped = _scrape(wf, target_serial, loginuser, password, state_path)
         except Exception as e:
             errors.append(f"{wf['form_type']}: {str(e)[:120]}")
             continue
@@ -284,6 +287,8 @@ def import_pending(target_serial=None, source_tag="rd-web", only_form_type=None)
                 d.name = f.get(wf["title"], "") or d.name  # 该流程的标题字段作项目名
                 if not d.officer and wf["officer"]:
                     d.officer = wf["officer"]  # 默认经办人
+                if officer_override:
+                    d.officer = officer_override
                 # 采购需求审签表：另填通用列（其它流程这些列留空，全字段在 extra）
                 if wf["form_type"] == "采购需求审签表":
                     d.content = f.get("项目基本情况", "")
@@ -297,6 +302,10 @@ def import_pending(target_serial=None, source_tag="rd-web", only_form_type=None)
                 # 照搬该表单全部字段到 extra（去发起人，前端动态展示）
                 d.extra = _json.dumps({k: v for k, v in f.items() if k != "发起人"},
                                       ensure_ascii=False)
+            # 已指定经办人即等于已分发（与新建/编辑分发同口径）。
+            # 漏了这步会一直挂在「待分发」，经办人看不到「立项」按钮（只在已分发时出现）。
+            if d.officer and d.status == "待分发":
+                d.status = "已分发"
             d.updated_at = _now()
             db.session.flush()
             for fname, path in r.get("_files", []):

@@ -77,8 +77,8 @@ def generate(project, ann, agency_name):
     project_name = project.name or ""
     project_number = project.number or ""
 
-    # 第二次及以后的竞选，标题/正文叙述里的项目名称追加「（第二次）」等，
-    # 以体现这是第几次竞选；1.2 采购项目名称字段仍用纯项目名（法定名称）。
+    # 第二次及以后的竞选，标题/正文叙述以及 1.2 采购项目名称都追加「（第二次）」等，
+    # 以体现这是第几次竞选（第一次不带后缀）。
     round_suffix = ""
     if ann.round_number and ann.round_number > 1:
         cn = ROUND_CN[min(ann.round_number, len(ROUND_CN) - 1)]
@@ -97,8 +97,8 @@ def generate(project, ann, agency_name):
     # ── 项目编号 Para[3] ──────────────────────────────────────────
     _set(ps[3], 2, project_number + "；")
 
-    # ── 项目名称 Para[4] ──────────────────────────────────────────
-    _set(ps[4], 2, project_name + "；")
+    # ── 项目名称 Para[4]：随第几次变化（第二次及以后带「（第二次）」）──
+    _set(ps[4], 2, project_name_round + "；")
 
     # ── 招标项目简介 Para[6] ──────────────────────────────────────
     _set(ps[6], 0, ann.project_intro or "")
@@ -199,6 +199,13 @@ def generate(project, ann, agency_name):
 
     # ── 代理联系电话 Para[48] ────────────────────────────────────
     _set(ps[48], 1, ann.agency_contact_phone or "")
+
+    # ── 采购人（医院）联系人 Para[42]：随项目经办人变化（姓+老师）──
+    # 模板写死「黄老师」，但经办人可能是别人（如郑跃俊→郑老师）。电话 Para[43]
+    # 是医院采购部总机，各经办人共用，保持模板值不动。
+    officer = (project.officer or "").strip()
+    if officer:
+        _set(ps[42], 1, f"{officer[0]}老师")
 
     from services.docx_utils import strip_highlight
     strip_highlight(doc)                 # 清除模板黄色高亮占位印记

@@ -217,7 +217,25 @@ export default function ChatWidget() {
                       value={text}
                       onChange={e => setText(e.target.value)}
                       onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); doSendText() } }}
-                      placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+                      onPaste={e => {
+                        // Ctrl+V 直接发图：截图粘进来即发送，走和「发图片」按钮同一条路。
+                        // 剪贴板图片没有文件名，按时间补一个，否则后端存成空名字。
+                        const imgs = Array.from(e.clipboardData?.items || [])
+                          .filter(i => i.type.startsWith('image/'))
+                        if (!imgs.length) return
+                        e.preventDefault()
+                        imgs.forEach((it, idx) => {
+                          const f = it.getAsFile()
+                          if (!f) return
+                          const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+                          const name = f.name && f.name !== 'image.png'
+                            ? f.name
+                            : `粘贴图片_${new Date().toLocaleString('zh-CN', { hour12: false })
+                                .replace(/[/\s:]/g, '')}${imgs.length > 1 ? `_${idx + 1}` : ''}.${ext}`
+                          doSendFile(new File([f], name, { type: f.type }))
+                        })
+                      }}
+                      placeholder="输入消息，Enter 发送，Shift+Enter 换行，可直接 Ctrl+V 粘贴图片"
                       autoSize={{ minRows: 1, maxRows: 4 }}
                     />
                     <Button type="primary" icon={<SendOutlined />} loading={sending}

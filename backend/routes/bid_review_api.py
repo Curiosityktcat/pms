@@ -20,6 +20,7 @@ from models.bid_review import (
 )
 from routes.utils import login_required
 from services import bid_review as svc
+from services import upload_relay
 
 bp = Blueprint("bid_review", __name__, url_prefix="/api/bid-review")
 
@@ -33,9 +34,14 @@ ALLOWED_EXTS = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".web
 _CAT_ORDER = {c: i for i, c in enumerate(CATEGORIES)}
 
 
+# 投标文件审核仅限白名单用户（默认仅「黄新博」）；可用 env BID_REVIEW_USERS 逗号分隔扩展。
+BID_REVIEW_USERS = [u.strip() for u in os.environ.get(
+    "BID_REVIEW_USERS", "黄新博").split(",") if u.strip()]
+
+
 def _check_role():
-    """评审为采购人内部环节：仅 officer/assistant/leader。"""
-    return session.get("role", "") in ("officer", "assistant", "leader")
+    """投标文件审核：仅限白名单用户本人（默认仅 黄新博），其余人一律 403。"""
+    return session.get("user", "") in BID_REVIEW_USERS
 
 
 def _usage_ctx(feature="bid-review"):
@@ -98,7 +104,7 @@ def _guard():
     if request.method == "OPTIONS":
         return None
     if session.get("user") and not _check_role():
-        return jsonify({"ok": False, "error": "投标文件审查仅限采购人内部使用"}), 403
+        return jsonify({"ok": False, "error": "投标文件审核功能未对当前账号开放"}), 403
     return None
 
 
@@ -248,7 +254,7 @@ def upload_proc_doc(tid):
         return jsonify({"ok": False, "error": "任务不存在"}), 404
     if t.status in ("ocr_proc_doc", "extracting"):
         return jsonify({"ok": False, "error": "采购文件正在处理中，请稍候"}), 400
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
     try:

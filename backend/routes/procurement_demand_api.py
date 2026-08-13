@@ -6,12 +6,35 @@ from models.procurement_demand import ProcurementDemand
 from models.project import Project
 from models.agency import Agency
 from routes.utils import login_required
+from services.permission import is_admin_user
+from services import upload_relay
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'emergency')
 
 bp = Blueprint("procurement_demand", __name__, url_prefix="/api/procurement-demands")
 
 FLOW = ["草稿", "待分发", "已分发", "已立项"]
+
+
+def _scope_ok(demand) -> bool:
+    """采购需求归属：本人创建(created_by) 或被指派(assigned_officer)；
+    助理/负责人/管理员全部；代理机构不可见。"""
+    role = session.get("role", "")
+    if role in ("assistant", "leader") or is_admin_user(session.get("user", "")):
+        return True
+    if role == "agency":
+        return False
+    me = session.get("display_name", "")
+    return me != "" and me in ((demand.created_by or ""), (demand.assigned_officer or ""))
+
+
+def _scoped(did):
+    demand = db.session.get(ProcurementDemand, did)
+    if not demand:
+        return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if not _scope_ok(demand):
+        return None, (jsonify({"ok": False, "error": "无权访问该采购需求"}), 403)
+    return demand, None
 
 
 def _now():
@@ -105,9 +128,9 @@ def create_demand():
 @bp.route("/<int:did>", methods=["GET"])
 @login_required
 def get_demand(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     return jsonify({"ok": True, "data": _enrich(demand)})
 
 
@@ -115,9 +138,9 @@ def get_demand(did):
 @bp.route("/<int:did>", methods=["PUT"])
 @login_required
 def update_demand(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status == "已立项":
         return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
 
@@ -140,9 +163,9 @@ def update_demand(did):
 @bp.route("/<int:did>", methods=["DELETE"])
 @login_required
 def delete_demand(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "草稿":
         return jsonify({"ok": False, "error": "只有草稿状态的需求可以删除"}), 400
     db.session.delete(demand)
@@ -154,9 +177,9 @@ def delete_demand(did):
 @bp.route("/<int:did>/submit", methods=["POST"])
 @login_required
 def submit_demand(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "草稿":
         return jsonify({"ok": False, "error": "只有草稿状态可以提交"}), 400
     if not (demand.project_name or "").strip():
@@ -171,9 +194,9 @@ def submit_demand(did):
 @bp.route("/<int:did>/recall", methods=["POST"])
 @login_required
 def recall_demand(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "待分发":
         return jsonify({"ok": False, "error": "只有待分发状态可以撤回"}), 400
     demand.status = "草稿"
@@ -188,9 +211,9 @@ def recall_demand(did):
 def dispatch_demand(did):
     if session["role"] not in ("assistant", "leader"):
         return jsonify({"ok": False, "error": "仅采购部助理/负责人可分发"}), 403
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "待分发":
         return jsonify({"ok": False, "error": "只有待分发状态可以分发"}), 400
 
@@ -215,9 +238,9 @@ def dispatch_demand(did):
 def return_demand(did):
     if session["role"] not in ("assistant", "leader"):
         return jsonify({"ok": False, "error": "仅采购部助理/负责人可退回"}), 403
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "已分发":
         return jsonify({"ok": False, "error": "只有已分发状态可以退回"}), 400
     demand.assigned_officer = ""
@@ -237,9 +260,9 @@ def create_project_from_demand(did):
     返回新建项目的信息。前端跳转到项目立项页面（已预填），
     实际 Project 由 project_api 创建；本接口只做校验 + 返回预填数据。
     """
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status != "已分发":
         return jsonify({"ok": False, "error": "只有已分发状态可以立项"}), 400
     if session["role"] != "officer":
@@ -276,9 +299,9 @@ def create_project_from_demand(did):
 @login_required
 def mark_approved(did):
     """当 project_api 成功创建项目后，回调此接口把需求标记为已立项。"""
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     data = request.get_json(force=True) or {}
     project_id = data.get("project_id")
     demand.project_id = project_id
@@ -293,9 +316,9 @@ def mark_approved(did):
 @login_required
 def generate_word(did):
     from services.procurement_demand_word import generate
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     project = db.session.get(Project, demand.project_id) if demand.project_id else None
     try:
         buf, filename = generate(demand, project)
@@ -329,7 +352,7 @@ def download_template(dtype):
 @bp.route("/import-excel", methods=["POST"])
 @login_required
 def import_excel():
-    file  = request.files.get("file")
+    file = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     dtype = request.form.get("demand_type", "competition")
     if not file or not file.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
@@ -347,12 +370,12 @@ def import_excel():
 @bp.route("/<int:did>/upload", methods=["POST"])
 @login_required
 def upload_attachment(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand:
-        return jsonify({"ok": False, "error": "不存在"}), 404
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
     if demand.status == "已立项":
         return jsonify({"ok": False, "error": "已立项，不可修改"}), 400
-    file = request.files.get("file")
+    file = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not file or not file.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
     os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -376,8 +399,10 @@ def upload_attachment(did):
 @bp.route("/<int:did>/attachment", methods=["GET"])
 @login_required
 def download_attachment(did):
-    demand = db.session.get(ProcurementDemand, did)
-    if not demand or not demand.attachment_path:
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    if not demand.attachment_path:
         return jsonify({"ok": False, "error": "无附件"}), 404
     base = os.path.dirname(os.path.dirname(__file__))
     file_path = os.path.join(base, demand.attachment_path)

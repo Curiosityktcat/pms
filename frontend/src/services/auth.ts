@@ -10,8 +10,8 @@ export interface UserInfo {
   is_admin: boolean
 }
 
-export const authLogin = (username: string, password: string) =>
-  api.post<{ ok: boolean; user: UserInfo }>('/auth/login', { username, password })
+export const authLogin = (username: string, password: string, captchaToken?: string) =>
+  api.post<{ ok: boolean; user: UserInfo }>('/auth/login', { username, password, captcha_token: captchaToken })
 
 export const authLogout = () => api.post('/auth/logout')
 

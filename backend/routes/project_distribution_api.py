@@ -17,6 +17,7 @@ from models.agency import Agency
 from models.sys_config import SysConfig
 from routes.utils import login_required
 from services.permission import is_admin_user
+from services import upload_relay
 
 _MANUAL_THROTTLE_SEC = 30 * 60  # 手动刷新：30 分钟一次
 
@@ -26,6 +27,11 @@ UPLOAD_ROOT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "uploads", "project_distribution"))
 
 _MANAGE_ROLES = ("assistant", "pd_assistant", "leader")
+
+# 项目池是「经办人本人的池子」：里面的审签表和附件是用黄新博本人的 rd-web 账号
+# 抓下来的医院内部资料，所以经办人里只有他本人可见（其余经办人一律挡掉），
+# 另加采购部助理/负责人/管理员。口径同「投标文件审核」，可用环境变量扩展。
+POOL_OFFICERS = [s.strip() for s in os.environ.get("POOL_OFFICERS", "黄新博,agent-hxb").split(",") if s.strip()]
 
 
 def _now():
@@ -40,6 +46,11 @@ def _attach_dir(did):
 
 def _can_manage():
     return session.get("role") in _MANAGE_ROLES or is_admin_user(session.get("user", ""))
+
+
+def _pool_user():
+    """能进项目池的人：白名单经办人本人 + 采购部助理/负责人/管理员。"""
+    return _can_manage() or session.get("user", "") in POOL_OFFICERS
 
 
 def _agency_name(code):
@@ -141,13 +152,18 @@ def rdweb_action_status():
 @bp.route("", methods=["GET"])
 @login_required
 def list_distributions():
-    role = session.get("role", "")
     name = session.get("display_name", "")
+    # 项目池是黄新博本人用自己的 rd-web 账号抓来的医院内部资料：
+    # 代理机构、其余经办人、监督人员一律不可见。
+    if not _pool_user():
+        return jsonify({"ok": False, "error": "项目池未对当前账号开放"}), 403
     q = db.select(ProjectDistribution).order_by(ProjectDistribution.id.desc())
-    if role == "officer":
+    if not _can_manage():
         q = q.where(ProjectDistribution.officer == name)
-    elif not _can_manage():
-        return jsonify({"ok": True, "data": []})
+    # 4.0 项目池（scope=pool）：只放经办人本人账号抓的（source='rd-经办人抓取'），
+    # 通用抓取器/手动录入的属于「2. 采购项目分发」，不进这里。
+    if request.args.get("scope") == "pool":
+        q = q.where(ProjectDistribution.source == "rd-经办人抓取")
     rows = db.session.execute(q).scalars().all()
     return jsonify({"ok": True, "data": [_enrich(r) for r in rows]})
 
@@ -398,6 +414,66 @@ def reassign_agency(did):
     return jsonify({"ok": True, "data": _enrich(d)})
 
 
+# ── 经办人对账：关联已立项项目 / 标记不立项 ────────────────────
+# 从项目池点「立项」会自动回填 project_id+已立项；但经办人若走 4.1 项目立项
+# 另行建项（立项时项目常被改名，无法按名称自动匹配），池里就一直挂着「待分发」。
+@bp.route("/<int:did>/link-project", methods=["POST"])
+@login_required
+def link_project(did):
+    d = db.session.get(ProjectDistribution, did)
+    if not d:
+        return jsonify({"ok": False, "error": "不存在"}), 404
+    if not _visible(d):
+        return jsonify({"ok": False, "error": "无权限"}), 403
+    data = request.get_json(silent=True) or {}
+
+    if data.get("cancel"):
+        d.project_id = None
+        d.status = "已取消"
+        d.updated_at = _now()
+        db.session.commit()
+        return jsonify({"ok": True, "message": "已标记为不立项", "data": _enrich(d)})
+
+    pid = data.get("project_id")
+    if not pid:
+        return jsonify({"ok": False, "error": "未选择项目"}), 400
+    from models.project import Project
+    p = db.session.get(Project, int(pid))
+    if not p or p.is_deleted:
+        return jsonify({"ok": False, "error": "项目不存在"}), 404
+    # 经办人只能关联自己的项目；助理/负责人不限
+    if session.get("role") == "officer" and p.officer != session.get("display_name", ""):
+        return jsonify({"ok": False, "error": "只能关联自己经办的项目"}), 403
+    other = db.session.execute(
+        db.select(ProjectDistribution)
+        .where(ProjectDistribution.project_id == p.id)
+        .where(ProjectDistribution.id != d.id)
+    ).scalars().first()
+    if other:
+        return jsonify({"ok": False, "error": f"该项目已关联池内条目「{other.name}」"}), 400
+    d.project_id = p.id
+    d.status = "已立项"
+    d.updated_at = _now()
+    db.session.commit()
+    return jsonify({"ok": True, "message": f"已关联项目 {p.number or p.name}", "data": _enrich(d)})
+
+
+@bp.route("/<int:did>/unlink-project", methods=["POST"])
+@login_required
+def unlink_project(did):
+    """撤销关联/取消标记，退回「已分发」。"""
+    d = db.session.get(ProjectDistribution, did)
+    if not d:
+        return jsonify({"ok": False, "error": "不存在"}), 404
+    if not _visible(d):
+        return jsonify({"ok": False, "error": "无权限"}), 403
+    d.project_id = None
+    d.status = "已分发" if d.officer else "待分发"
+    d.updated_at = _now()
+    db.session.commit()
+    return jsonify({"ok": True, "message": "已撤销关联", "data": _enrich(d)})
+
+
 # ── 删除 ──────────────────────────────────────────────────────
 @bp.route("/<int:did>", methods=["DELETE"])
 @login_required
@@ -420,10 +496,10 @@ def delete_distribution(did):
 
 # ── 附件：上传 / 预览 / 下载 / 删除 ───────────────────────────
 def _visible(d):
-    role = session.get("role", "")
     if _can_manage():
         return True
-    return role == "officer" and d.officer == session.get("display_name", "")
+    # 白名单经办人本人，且只看分给自己的
+    return _pool_user() and d.officer == session.get("display_name", "")
 
 
 @bp.route("/<int:did>/attachments", methods=["POST"])
@@ -434,7 +510,7 @@ def upload_attachment(did):
     d = db.session.get(ProjectDistribution, did)
     if not d:
         return jsonify({"ok": False, "error": "不存在"}), 404
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未选择文件"}), 400
     ext = os.path.splitext(secure_filename(f.filename))[1]
@@ -464,8 +540,8 @@ def preview_attachment(did, aid):
     d, att = _get_att(did, aid)
     if not att:
         return jsonify({"ok": False, "error": "无权限或不存在"}), 404
-    return send_file(os.path.join(_attach_dir(did), att.saved_name),
-                     download_name=att.original_name, as_attachment=False)
+    from services.office_convert import send_preview
+    return send_preview(os.path.join(_attach_dir(did), att.saved_name), att.original_name)
 
 
 @bp.route("/<int:did>/attachments/<int:aid>/download", methods=["GET"])
@@ -493,3 +569,24 @@ def delete_attachment(did, aid):
     db.session.delete(att)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# ── 抓取「分发给我(经办人)的采购需求审签表·待处理」→ 项目池（含附件，rdweb_mine）──
+@bp.route("/scrape-mine", methods=["POST"])
+@login_required
+def scrape_mine():
+    # 抓的是绑定在 rdweb_mine 里的那个本人账号（黄新博），别的经办人抓来的不是自己的东西
+    if not _pool_user():
+        return jsonify({"ok": False, "error": "项目池未对当前账号开放"}), 403
+    from services.rdweb_mine import run_async
+    started = run_async(current_app._get_current_object())
+    if not started:
+        return jsonify({"ok": False, "error": "已有抓取任务在进行中，请稍候"}), 409
+    return jsonify({"ok": True, "message": "已开始抓取分发给我的待处理审签表(含附件)，约1-2分钟后刷新项目池"})
+
+
+@bp.route("/scrape-mine-status", methods=["GET"])
+@login_required
+def scrape_mine_status():
+    from services.rdweb_mine import status
+    return jsonify({"ok": True, "data": status()})

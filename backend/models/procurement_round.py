@@ -25,6 +25,23 @@ class ProcurementRound(db.Model):
     # 内容确认表所需的代理机构联系人（下沉到轮次）
     doc_agency_contact  = db.Column(db.String(50), default="")
     doc_agency_phone    = db.Column(db.String(50), default="")
+    # 驳回（5.1 / 5.2 各自独立，可反复驳回；完整往返链条在 approval_logs）
+    demand_reject_reason = db.Column(db.Text, default="")
+    demand_reject_count  = db.Column(db.Integer, default=0)
+    demand_rejected_by   = db.Column(db.String(50), default="")
+    demand_rejected_at   = db.Column(db.String(30), default="")
+    doc_reject_reason    = db.Column(db.Text, default="")
+    doc_reject_count     = db.Column(db.Integer, default=0)
+    doc_rejected_by      = db.Column(db.String(50), default="")
+    doc_rejected_at      = db.Column(db.String(30), default="")
+    # 项目评审资料审核（8.5）："" 未提交 | 待确认 | 已确认 | 已驳回
+    review_status        = db.Column(db.String(10), default="")
+    review_confirmed_by  = db.Column(db.String(50), default="")
+    review_confirmed_at  = db.Column(db.String(30), default="")
+    review_reject_reason = db.Column(db.Text, default="")
+    review_reject_count  = db.Column(db.Integer, default=0)
+    review_rejected_by   = db.Column(db.String(50), default="")
+    review_rejected_at   = db.Column(db.String(30), default="")
     # 开标标记（本轮能否开标）：""未定 | 可开标 | 流标
     can_open    = db.Column(db.String(10), default="")
     can_open_at = db.Column(db.String(30), default="")    # 提交/标记时间（流标=代理提交时间）

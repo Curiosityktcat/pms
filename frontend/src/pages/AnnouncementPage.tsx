@@ -16,7 +16,6 @@ import {
   SearchOutlined, ClockCircleOutlined, CheckSquareOutlined, HourglassOutlined,
   SortAscendingOutlined, SortDescendingOutlined,
 } from '@ant-design/icons'
-import axios from 'axios'
 import {
   getEligibleProjects, getAnnouncements, createAnnouncement, updateAnnouncement,
   deleteAnnouncement, generateAnnouncementWord, announcementWordUrl,
@@ -32,6 +31,7 @@ import {
 import type { AgencyTemplate } from '../services/agencyTemplate'
 import { useAuth } from '../hooks/useAuth'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
+import { smartUploadAbs } from '../services/upload'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -143,13 +143,9 @@ function AttachmentSection({ annId }: { annId: number }) {
   const customUpload = async (options: UploadRequestOption) => {
     const { file, onSuccess, onError } = options
     setUploading(true)
-    const formData = new FormData()
-    formData.append('file', file as Blob)
     try {
-      const res = await axios.post(`/api/announcements/${annId}/files`, formData, {
-        withCredentials: true,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      // 公网大附件自动改走 OSS 直传（绕开 Cloudflare 100 秒源站超时），内网仍是普通上传
+      const res = await smartUploadAbs(`/api/announcements/${annId}/files`, file as File)
       onSuccess?.(res.data)
       message.success('上传成功')
       load()
@@ -547,13 +543,8 @@ export default function AnnouncementPage() {
   const uploadPendingAnn = async (annId: number) => {
     let ok = 0
     for (const f of pendingFiles) {
-      const fd = new FormData()
-      fd.append('file', f)
       try {
-        await axios.post(`/api/announcements/${annId}/files`, fd, {
-          withCredentials: true,
-          headers: { 'Content-Type': 'multipart/form-data' },
-        })
+        await smartUploadAbs(`/api/announcements/${annId}/files`, f)
         ok += 1
       } catch { message.error(`附件「${f.name}」上传失败`) }
     }

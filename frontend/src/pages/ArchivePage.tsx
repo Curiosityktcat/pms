@@ -1,10 +1,15 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  Card, Button, Space, Tabs, Popconfirm, App, Typography, Modal,
+  Card, Button, Space, Tabs, Popconfirm, App, Typography, Modal, Empty, Spin,
 } from 'antd'
-import { InboxOutlined, RollbackOutlined, PrinterOutlined, RobotOutlined } from '@ant-design/icons'
 import {
-  listArchive, archiveProject, revokeArchive, printBundleUrl, type ArchiveItem,
+  InboxOutlined, RollbackOutlined, PrinterOutlined, RobotOutlined,
+  FolderOpenOutlined, FolderOutlined, FileWordOutlined, EyeOutlined, DownloadOutlined,
+} from '@ant-design/icons'
+import {
+  listArchive, archiveProject, revokeArchive, printBundleUrl,
+  archiveTree,
+  type ArchiveItem, type ArchiveTreeFolder,
 } from '../services/archive'
 import FilePreviewModal from '../components/FilePreviewModal'
 import RecordCards from '../components/RecordCards'
@@ -28,11 +33,28 @@ export default function ArchivePage() {
   const [acting, setActing] = useState(0)
   const [printItem, setPrintItem] = useState<ArchiveItem | null>(null)
   const [approvalItem, setApprovalItem] = useState<ArchiveItem | null>(null)
+  // 文件夹视图：打开某项目 → 按轮次浏览/下载各归档要件
+  const [folderItem, setFolderItem] = useState<ArchiveItem | null>(null)
+  const [tree, setTree] = useState<ArchiveTreeFolder[]>([])
+  const [treeLoading, setTreeLoading] = useState(false)
+  const [itemPreview, setItemPreview] = useState<{ url: string; name: string } | null>(null)
+
+  const openFolder = useCallback((r: ArchiveItem) => {
+    setFolderItem(r)
+    setTree([])
+    setTreeLoading(true)
+    archiveTree(r.id)
+      .then(res => setTree(res.data.data || []))
+      .catch(() => message.error('加载归档资料失败'))
+      .finally(() => setTreeLoading(false))
+  }, [message])
   const approvalFields = useMemo<HermesField[]>(() => approvalItem ? [
     { label: '归口管理科室', value: approvalItem.manage_dept || '' },
     { label: '项目名称', value: '采购文件确认函，授权函，采购结果确认函', long: true },
     { label: '项目资料名称', value: '备案资料' },
-    { label: '经办人', value: '曾旌城' },
+    // 经办人必须是 rd-web 人员库里搜得到的人，取本项目经办人；
+    // 原来写死「曾旌城」，人员选择框搜不到，提交必然失败
+    { label: '经办人', value: approvalItem.officer || '' },
   ] : [], [approvalItem])
 
   const load = useCallback(() => {
@@ -118,6 +140,9 @@ export default function ArchivePage() {
             ],
             actions: (
               <>
+                <Button size="small" type="primary" ghost icon={<FolderOpenOutlined />} onClick={() => openFolder(r)}>
+                  打开文件夹
+                </Button>
                 <Button size="small" icon={<PrinterOutlined />} onClick={() => setPrintItem(r)}>
                   一键打印资料
                 </Button>
@@ -166,6 +191,60 @@ export default function ArchivePage() {
           directSubmitUrl={approvalItem ? `/archive/${approvalItem.id}/submit-to-rdweb` : undefined}
           directStatusUrl={approvalItem ? `/archive/${approvalItem.id}/rdweb-status` : undefined} />
       </Modal>
+
+      <Modal
+        title={<><FolderOpenOutlined style={{ color: '#faad14', marginRight: 6 }} />{folderItem?.name || ''}　归档资料</>}
+        open={!!folderItem}
+        onCancel={() => setFolderItem(null)}
+        footer={null}
+        width={640}
+        destroyOnHidden
+      >
+        {treeLoading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0' }}><Spin /></div>
+        ) : tree.length === 0 ? (
+          <Empty description="该项目暂无归档资料" />
+        ) : (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {tree.map(fd => (
+              <div key={fd.folder}>
+                <Text strong><FolderOutlined style={{ color: '#faad14', marginRight: 6 }} />{fd.folder}</Text>
+                <div style={{ marginTop: 8 }}>
+                  {fd.items.map((it, idx) => (
+                    <div key={idx} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '8px 12px', marginBottom: 6, borderRadius: 6,
+                      background: '#f8f9fa', border: '1px solid #eef0f2',
+                    }}>
+                      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <FileWordOutlined style={{ color: '#2b5797', marginRight: 8 }} />{it.name}
+                      </span>
+                      <Space size={4} style={{ flexShrink: 0 }}>
+                        {it.preview_url && (
+                          <Button size="small" icon={<EyeOutlined />}
+                            onClick={() => setItemPreview({ url: it.preview_url, name: it.name })}>预览</Button>
+                        )}
+                        <Button size="small" type="primary" ghost icon={<DownloadOutlined />}
+                          href={it.url} target="_blank">下载</Button>
+                      </Space>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </Space>
+        )}
+      </Modal>
+
+      {itemPreview && (
+        <FilePreviewModal
+          open={!!itemPreview}
+          url={itemPreview.url}
+          filename={itemPreview.name}
+          showPrint
+          onClose={() => setItemPreview(null)}
+        />
+      )}
     </Card>
   )
 }

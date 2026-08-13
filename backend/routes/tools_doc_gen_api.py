@@ -92,12 +92,33 @@ def start():
 
     def _worker():
         try:
-            from services.procurement_doc_gen import generate_final_doc
+            import base64
+            docgen = os.environ.get("PMS_DOCGEN_URL", "http://127.0.0.1:9030")
+            try:
+                with open(draft_path, "rb") as df, open(demand_path, "rb") as mf:
+                    import requests as _rq
+                    rr = _rq.post(f"{docgen}/revise",
+                                  files={"draft": (os.path.basename(draft_path), df),
+                                         "demand": (os.path.basename(demand_path), mf)},
+                                  timeout=1800)
+                rr.raise_for_status()
+                dd = rr.json()
+                if not dd.get("ok"):
+                    raise RuntimeError(dd.get("error", "定稿服务错误"))
+                summary = dd.get("summary", "")
+                applied = dd.get("edits") or []
+                with open(out_path, "wb") as of:
+                    of.write(base64.b64decode(dd["docx_b64"]))
+                usage = {}
+            except Exception:
+                # 9030 不可用 → 本地兜底
+                from services.procurement_doc_gen import generate_final_doc
+                with app.app_context():
+                    summary, applied, usage = generate_final_doc(draft_path, demand_path, out_path)
             with app.app_context():
-                summary, applied, usage = generate_final_doc(draft_path, demand_path, out_path)
                 from services import llm_usage
                 llm_usage.record(username, display, "采购文件AI生成(工具)",
-                                 "deepseek-v4-flash", usage, agency_code=agency_code)
+                                 "deepseek-v4-flash", usage or {}, agency_code=agency_code)
             with _lock:
                 _jobs[job_id] = {"running": False, "ok": True,
                                  "msg": f"生成完成，共 {len(applied)} 处修订",

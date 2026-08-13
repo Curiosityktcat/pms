@@ -62,18 +62,55 @@ def _login_if_needed(pg, ctx, loginuser, password, state_path):
         raise RuntimeError("rd-web 提示「登录太频繁」，请稍后重试")
 
 
-def _nav_to_contract(pg):
-    clicked = pg.evaluate("""() => {
-        const el = [...document.querySelectorAll('*')].find(e =>
-            e.children.length <= 3 && e.innerText.trim() === '合同审签单'
-            && e.getBoundingClientRect().width > 0);
-        if (el) { el.click(); return true; }
-        return false;
-    }""")
-    if not clicked:
-        raise RuntimeError("未找到「合同审签单」菜单")
-    pg.wait_for_timeout(4000)
-    return _wait_frame(pg)
+_CLICK_BY_TEXT = """(txt) => {
+    const el = [...document.querySelectorAll('*')].find(e =>
+        e.children.length <= 3 && e.innerText.trim() === txt
+        && e.getBoundingClientRect().width > 0);
+    if (el) { el.click(); return true; }
+    return false;
+}"""
+
+
+def _nav_to_contract(pg, timeout_s=20):
+    """点进「合同审签单」。
+
+    坑：这个表单是否出现在首页取决于每个人有没有把它固定为常用应用。
+    黄新博固定了、郑跃俊没固定——只在首页找的老逻辑对后者必然报
+    「未找到合同审签单菜单」，等于这个功能只有一个人能用。
+    所以首页找不到时，先展开左侧「采购部」（退而求其次「应用」）分组再找。
+    """
+    def _try_click():
+        return pg.evaluate(_CLICK_BY_TEXT, "合同审签单")
+
+    # 首次登录/换肤等情况下菜单渲染可能晚于固定等待，轮询而非一击即弃
+    for _ in range(timeout_s):
+        if _try_click():
+            pg.wait_for_timeout(4000)
+            return _wait_frame(pg)
+        pg.wait_for_timeout(1000)
+
+    # 首页没有 → 展开应用分组再找（未固定为常用应用的账号走这条路）。
+    # 分组节点用 Playwright 的 text 选择器点，比按 innerText 全等匹配宽容：
+    # 导航树里的「采购部」节点常常带着子项文本，全等匹配会漏掉。
+    for group in ("采购部", "应用"):
+        try:
+            el = pg.query_selector(f"text={group}")
+            if not el:
+                continue
+            el.click()
+            pg.wait_for_timeout(2500)
+            for _ in range(8):
+                if _try_click():
+                    pg.wait_for_timeout(4000)
+                    return _wait_frame(pg)
+                pg.wait_for_timeout(1000)
+        except Exception:
+            continue
+
+    head = pg.evaluate("()=>document.body.innerText")[:120].replace("\n", " ")
+    raise RuntimeError(
+        f"未找到「合同审签单」菜单（首页与采购部分组都没有）。"
+        f"请确认该 rd-web 账号有此表单权限。页面开头：{head}")
 
 
 def _open_form(fr, pg):
@@ -209,6 +246,28 @@ def _fill_officer(fr, pg, officer):
     # 等弹框
     pg.locator('input[placeholder="输入查找的姓名"]').wait_for(state='visible', timeout=8000)
     pg.wait_for_timeout(500)
+
+    # 等「我的」部门树渲染出来（数据异步加载）。一直为空 = 登录态没带上
+    # 人员组件的身份令牌（详见 submit_contract 里禁用 storage_state 的注释）。
+    tree_ok = False
+    for _ in range(12):
+        tree_ok = pg.evaluate("""() => {
+            for (const e of document.querySelectorAll('i, button.selectPersonBtn')) {
+                const cls = e.className || '';
+                if (e.tagName === 'I' && !cls.includes('Caret') && !cls.includes('caret-right')) continue;
+                const r = e.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0 || r.y < 140) continue;
+                if (e.tagName === 'I' && (r.x < 550 || r.x > 900)) continue;
+                return true;
+            }
+            return false;
+        }""")
+        if tree_ok:
+            break
+        pg.wait_for_timeout(1000)
+    if not tree_ok:
+        pg.screenshot(path="/tmp/officer_not_found.png")
+        raise RuntimeError("人员选择框部门树为空（登录态异常，截图 /tmp/officer_not_found.png），请重试一次")
 
     def _click_select_btn(name):
         """在弹框内（y>140, x<1060）找到姓名行，点击同行的 selectPersonBtn。"""
@@ -376,9 +435,15 @@ def _upload_attachments(fr, pg, attachments):
     return {"ok": True, "count": len(attachments)}
 
 
-def _submit(fr, pg):
-    """点「提交」并等待流水号。"""
-    # 找最靠下的「提交」按钮
+def _submit(fr, pg, dry_run=False):
+    """点「提交」并等待流水号。
+
+    dry_run=True 时改点「存草稿」——走完整条链路（填字段/选类别/传附件/选经办人）
+    但不推进审批流，产生的是一条可自行删除的草稿。用于端到端验证：
+    既能证明整条路通，又不会给别人发出真实单据。
+    """
+    want = "存草稿" if dry_run else "提交"
+    # 找最靠下的目标按钮
     submit_btns = fr.locator("button,a,[role=button]").all()
     target = None
     max_y = -1
@@ -387,7 +452,7 @@ def _submit(fr, pg):
             if not btn.is_visible(timeout=200):
                 continue
             txt = (btn.inner_text() or "").strip()
-            if txt != "提交":
+            if txt != want:
                 continue
             box = btn.bounding_box()
             if box and box["y"] > max_y:
@@ -397,7 +462,7 @@ def _submit(fr, pg):
             pass
 
     if not target:
-        raise RuntimeError("未找到可见的「提交」按钮")
+        raise RuntimeError(f"未找到可见的「{want}」按钮")
 
     target.click(timeout=5000)
     pg.wait_for_timeout(3000)
@@ -477,12 +542,13 @@ def _submit(fr, pg):
 
 # ── 主入口 ───────────────────────────────────────────────────────────────
 
-def submit_contract(
+def _submit_contract_once(
     data: dict,
     file_path: str   = "",         # 兼容旧调用（代理协议用），单文件路径
     attachments: list = None,      # 优先：[{"path": str, "name": str}, ...]
     loginuser: str   = "13029144451",
     password: str    = "whywhy123",
+    dry_run: bool    = False,
 ) -> dict:
     """
     提交合同审签单。
@@ -498,7 +564,7 @@ def submit_contract(
 
     返回：{"ok": bool, "serial_no": str, "msg": str, "detail": dict}
     """
-    from playwright.sync_api import sync_playwright
+    from services import rdweb_session
 
     field_values = [data.get(f, "") for f in TEXT_FIELDS]
     category     = data.get("合同类别", "采购部合同")
@@ -509,28 +575,19 @@ def submit_contract(
     if not attachments and file_path:
         attachments = [{"path": file_path, "name": os.path.basename(file_path)}]
 
-    state_path = _state_path(loginuser)
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome",
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        ctx_kwargs = {
-            "user_agent": UA,
-            "viewport": {"width": 1920, "height": 1080},
-            "accept_downloads": True,
-        }
-        if os.path.exists(state_path):
-            ctx_kwargs["storage_state"] = state_path
-
-        ctx = browser.new_context(**ctx_kwargs)
-        pg  = ctx.new_page()
-
+    # 走常驻会话池：浏览器一直活着、登录态留在内存里，避免每次提交都登录一次
+    # （频繁登录会被站点判「登录太频繁」限流，一限流所有自动化全停）。
+    #
+    # 注意仍然绝不使用 storage_state：人员选择组件（choosePerson_new）的
+    # user_id/token 只在真实登录过程中注入内存，不落 cookies/localStorage，
+    # 序列化会话带回来会让经办人弹框空树 →「未找到经办人」。
+    # 保活的是**活着的浏览器**，不是存下来的会话文件，两者本质不同。
+    sess = rdweb_session.session_for(loginuser)
+    with sess.lock:
         try:
-            # 1. 登录（session 有效时跳过）
-            _login_if_needed(pg, ctx, loginuser, password, state_path)
+            pg, reused = sess.acquire(password, _login_if_needed, home_url=LOGIN_URL)
+            detail["session_reused"] = reused
+            detail["login_count"] = sess.login_count
 
             # 2. 导航到合同审签单
             fr = _nav_to_contract(pg)
@@ -561,12 +618,11 @@ def submit_contract(
                 pg.wait_for_timeout(300)
 
             # 8. 提交
-            result = _submit(fr, pg)
+            result = _submit(fr, pg, dry_run=dry_run)
             detail["submit"] = result
+            detail["dry_run"] = dry_run
 
-            ctx.storage_state(path=state_path)
-            browser.close()
-
+            # 不关浏览器——留给下一次提交复用，这正是免于反复登录的关键
             return {
                 "ok":        result["ok"],
                 "serial_no": result.get("serial_no", ""),
@@ -575,9 +631,45 @@ def submit_contract(
             }
 
         except Exception as e:
+            # 出错很可能是登录态坏了或页面卡在半路，丢掉这个会话下次重新登录，
+            # 免得一个坏会话让后续每次都失败
             try:
-                ctx.storage_state(path=state_path)
-                browser.close()
+                sess.invalidate()
             except Exception:
                 pass
             return {"ok": False, "msg": str(e), "serial_no": "", "detail": detail}
+
+
+# 登录态类故障的特征串：复用的会话失效时会以这些形态暴露出来
+_SESSION_BROKEN = (
+    "部门树为空",
+    "未找到经办人",
+    "人员选择",
+    "未找到「合同审签单」菜单",
+    "超时：未加载到合同审签单 frame",
+)
+
+
+def submit_contract(*args, **kwargs):
+    """对外入口：复用常驻会话提交；若因登录态问题失败，丢弃会话重登再试一次。
+
+    常驻会话省掉了绝大多数登录，但会话总有失效的时候（站点侧超时、被顶下线）。
+    失效时的表现就是人员弹框空树这类错误——单靠报错让人重试太粗糙，
+    这里自动降级成「重新登录再来一次」，对用户表现为一次成功的提交。
+    """
+    loginuser = kwargs.get("loginuser") or (args[3] if len(args) > 3 else "")
+    res = _submit_contract_once(*args, **kwargs)
+    if res.get("ok"):
+        return res
+    msg = str(res.get("msg", ""))
+    if not any(k in msg for k in _SESSION_BROKEN):
+        return res          # 不是登录态问题（如字段缺失），重试也没用
+    try:
+        from services import rdweb_session
+        rdweb_session.session_for(loginuser).invalidate()
+    except Exception:
+        pass
+    res2 = _submit_contract_once(*args, **kwargs)
+    res2.setdefault("detail", {})["retried_after_relogin"] = True
+    res2["detail"]["first_error"] = msg[:200]
+    return res2

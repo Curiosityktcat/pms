@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { App as AntApp, ConfigProvider, Spin } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { AuthContext } from './hooks/useAuth'
+import { ThemeContext, type ThemeMode } from './hooks/useTheme'
 import { useIdleLogout } from './hooks/useIdleLogout'
 import type { UserInfo } from './services/auth'
 import { authMe } from './services/auth'
@@ -17,7 +18,10 @@ const BidBoardPage = lazy(() => import('./pages/BidBoardPage'))
 const ChpwdPage = lazy(() => import('./pages/ChpwdPage'))
 const SupervisionPage = lazy(() => import('./pages/SupervisionPage'))  // 投诉质疑数据库
 const AuthLetterPage = lazy(() => import('./pages/AuthLetterPage'))
+const ProcurementPlanPage = lazy(() => import('./pages/ProcurementPlanPage'))  // 1.0 采购计划池
 const AgencyManagePage = lazy(() => import('./pages/AgencyManagePage'))
+const AgencyAssessmentPage = lazy(() => import('./pages/AgencyAssessmentPage'))
+const SurveySingleSourcePage = lazy(() => import('./pages/SurveySingleSourcePage'))
 const PeopleManagePage = lazy(() => import('./pages/PeopleManagePage'))
 const AnnouncementPage = lazy(() => import('./pages/AnnouncementPage'))
 const CorrectionAnnouncementPage = lazy(() => import('./pages/CorrectionAnnouncementPage'))
@@ -39,8 +43,13 @@ const ProcurementDemandConfirmPage = lazy(() => import('./pages/ProcurementDeman
 const TemplateManagePage = lazy(() => import('./pages/TemplateManagePage'))
 const ArchivePage = lazy(() => import('./pages/ArchivePage'))
 const FileOcrPage = lazy(() => import('./pages/FileOcrPage'))
+const DocIntakePage = lazy(() => import('./pages/DocIntakePage'))
+const SysDocsPage = lazy(() => import('./pages/SysDocsPage'))
 const AiDocGenPage = lazy(() => import('./pages/AiDocGenPage'))
+const RdwebContractPushPage = lazy(() => import('./pages/RdwebContractPushPage'))
+const ApiManagePage = lazy(() => import('./pages/ApiManagePage'))
 const FileBoxPage = lazy(() => import('./pages/FileBoxPage'))
+const DataPipeBoardPage = lazy(() => import('./pages/DataPipeBoardPage'))
 const EmailSettingsPage = lazy(() => import('./pages/EmailSettingsPage'))
 const ScraperSettingsPage = lazy(() => import('./pages/ScraperSettingsPage'))
 const PermissionManagePage = lazy(() => import('./pages/PermissionManagePage'))
@@ -91,8 +100,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   )
 }
 
-// ── Google / Material 主题（全局生效，所有页面共用）────────────────────────
-const googleTheme = {
+// ── Google / Material 主题：浅色基底（全局生效，所有页面共用）──────────────
+const lightTheme = {
   token: {
     colorPrimary: '#1a73e8',
     colorInfo: '#1a73e8',
@@ -160,13 +169,57 @@ const googleTheme = {
   },
 }
 
+// ── 暖色护眼主题：仅对浅色基底做增量覆盖（把纯白 surface 换成暖米纸色）──
+const THEME_PATCH: Record<string, any> = {
+  light: {},
+  // 暖色护眼：暖米纸感，降低纯白眩光，文字对比度保持
+  sepia: {
+    token: {
+      colorBgLayout: '#e7e4d3',
+      colorBgContainer: '#f4f1e6',
+      colorBgElevated: '#f7f4ea',
+      colorBorderSecondary: '#e0dbc7',
+    },
+    components: {
+      Layout: { headerBg: '#f4f1e6', siderBg: '#f4f1e6', bodyBg: '#e7e4d3' },
+      Menu: { itemHoverBg: '#ece7d5', itemSelectedBg: '#e5efe0', itemSelectedColor: '#1a7f4e' },
+      Table: { headerBg: '#ece8d8', rowHoverBg: '#efeada', borderColor: '#e0dbc7' },
+    },
+  },
+}
+
+function mergeComponents(base: any, patch: any) {
+  const out: any = { ...base }
+  for (const k of Object.keys(patch)) out[k] = { ...(base[k] || {}), ...patch[k] }
+  return out
+}
+
+function buildTheme(mode: string) {
+  const patch = THEME_PATCH[mode] || {}
+  return {
+    ...lightTheme,
+    token: { ...lightTheme.token, ...(patch.token || {}) },
+    components: mergeComponents(lightTheme.components, patch.components || {}),
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null)
   // 测试实例构建时注入 VITE_PMS_ENV=test，正式构建无此标志
   const isTest = import.meta.env.VITE_PMS_ENV === 'test'
 
+  // 主题：浅色 / 暖色护眼，记忆到 localStorage（切换按钮在顶栏，见 AppLayout）
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    try { return localStorage.getItem('pms-theme') === 'sepia' ? 'sepia' : 'light' } catch { return 'light' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('pms-theme', themeMode) } catch { /* ignore */ }
+    document.documentElement.setAttribute('data-pms-theme', themeMode)
+  }, [themeMode])
+
   return (
-    <ConfigProvider locale={zhCN} theme={googleTheme}>
+    <ThemeContext.Provider value={{ mode: themeMode, setMode: setThemeMode }}>
+    <ConfigProvider locale={zhCN} theme={buildTheme(themeMode)}>
       <AntApp>
         {isTest && (
           <div
@@ -220,6 +273,8 @@ export default function App() {
               <Route path="template-manage" element={<TemplateManagePage />} />
               <Route path="announcement" element={<AnnouncementPage />} />
               <Route path="correction" element={<CorrectionAnnouncementPage />} />
+              <Route path="survey" element={<SurveySingleSourcePage kind="survey" />} />
+              <Route path="single-source" element={<SurveySingleSourcePage kind="single_source" />} />
               {/* 采购需求编制：无 type 参数时显示总览（供助理分发用） */}
               <Route path="project-distribution" element={<ProjectDistributionPage />} />
               <Route path="procurement-demand" element={<ProcurementDemandPage />} />
@@ -233,14 +288,20 @@ export default function App() {
               <Route path="project-review" element={<ProjectReviewUploadPage />} />
               <Route path="agency-agreement" element={<AgencyAgreementPage />} />
               <Route path="agency-manage" element={<AgencyManagePage />} />
+              <Route path="agency-assessment" element={<AgencyAssessmentPage />} />
+              <Route path="procurement-plan" element={<ProcurementPlanPage />} />
               <Route path="procurement-doc" element={<ProcurementDocPage />} />
               <Route path="procurement-doc/demand" element={<ProcurementDemandConfirmPage />} />
               <Route path="procurement-doc/file" element={<ProcurementDocPage />} />
               <Route path="archive" element={<ArchivePage />} />
               <Route path="file-ocr" element={<FileOcrPage />} />
+              <Route path="doc-intake" element={<DocIntakePage />} />
+              <Route path="sys-docs" element={<SysDocsPage />} />
               <Route path="ai-doc-gen" element={<AiDocGenPage />} />
+              <Route path="rdweb-contract" element={<RdwebContractPushPage />} />
               <Route path="bid-review" element={<BidReviewPage />} />
               <Route path="filebox" element={<FileBoxPage />} />
+              <Route path="datapipe" element={<DataPipeBoardPage />} />
               <Route path="chpwd" element={<ChpwdPage />} />
               <Route path="supervision" element={<SupervisionPage />} />
               <Route path="law-library" element={<LawLibraryPage />} />
@@ -257,6 +318,7 @@ export default function App() {
               <Route index element={<Navigate to="permissions" replace />} />
               <Route path="permissions" element={<PermissionManagePage />} />
               <Route path="model" element={<ScraperSettingsPage />} />
+              <Route path="api" element={<ApiManagePage />} />
               <Route path="usage" element={<LlmUsagePage />} />
               <Route path="email" element={<EmailSettingsPage />} />
             </Route>
@@ -265,5 +327,6 @@ export default function App() {
         </BrowserRouter>
       </AntApp>
     </ConfigProvider>
+    </ThemeContext.Provider>
   )
 }

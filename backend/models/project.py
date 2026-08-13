@@ -43,6 +43,10 @@ class Project(db.Model):
     doc_agency_contact = db.Column(db.String(50), default="")
     doc_agency_phone = db.Column(db.String(50), default="")
 
+    # 代理协议 rd-web 审签提交
+    agency_rdweb_serial_no = db.Column(db.String(100), default="")    # 代理协议 rd-web 审签流水号
+    agency_rdweb_submitted_at = db.Column(db.String(30), default="")  # 代理协议推送 rd-web 成功时间
+
     def to_dict(self):
         r = self.round or 1
         if r <= 1:
@@ -50,9 +54,14 @@ class Project(db.Model):
         else:
             cn = _CN_NUMS[r] if r < len(_CN_NUMS) else str(r)
             display_name = f"{self.name}（第{cn}次）"
+        # 编号自带年月（NJYYJX-HX-260109 = 26年1月第9个），
+        # 排序与按月筛选都靠它，比 id / created_at 可靠
+        from services import project_number as pnum
         return {
             "id": self.id,
             "number": self.number or "",
+            "period": pnum.period(self.number),
+            "period_label": pnum.label(self.number),
             "name": self.name,
             "round": r,
             "display_name": display_name,
@@ -86,4 +95,6 @@ class Project(db.Model):
             "doc_confirmed_at": self.doc_confirmed_at or "",
             "doc_agency_contact": self.doc_agency_contact or "",
             "doc_agency_phone": self.doc_agency_phone or "",
+            "agency_rdweb_serial_no": self.agency_rdweb_serial_no or "",
+            "agency_rdweb_submitted_at": self.agency_rdweb_submitted_at or "",
         }

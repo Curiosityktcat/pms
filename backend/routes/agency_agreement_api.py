@@ -4,20 +4,21 @@ import tempfile
 import threading
 import datetime as _dt
 
-from flask import Blueprint, request, session, jsonify, send_file
+from flask import Blueprint, request, session, jsonify, send_file, current_app
 from werkzeug.utils import secure_filename
 
 from models import db
 from models.project import Project
 from models.agency import Agency
 from routes.utils import login_required
+from services import upload_relay
 
 bp = Blueprint("agency_agreement", __name__, url_prefix="/api/projects")
 
 _rdweb: dict = {}
 _rdweb_lock = threading.Lock()
 
-# rd-web 审签附件（每项目一个目录：自行上传 + 从模板库复制，提交时全部随单带上）
+# rd-web 审签附件（每项目一个目录：自行上传 + 从「我的模板」复制，提交时全部随单带上）
 _PMS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ATTACH_ROOT = os.path.join(_PMS_ROOT, "uploads", "agency_agreement")
 ATTACH_ALLOWED = {".docx", ".doc", ".xlsx", ".xls", ".pdf", ".jpg", ".jpeg", ".png", ".zip"}
@@ -95,7 +96,7 @@ def generate_agency_agreement(pid):
 
 
 # ══════════════════════════════════════════════════════════════════
-# rd-web 审签附件管理（自行上传 / 从模板库选用）
+# rd-web 审签附件管理（自行上传 / 从「我的模板」选用）
 # ══════════════════════════════════════════════════════════════════
 
 def _list_attachments(pid: int) -> list:
@@ -135,7 +136,7 @@ def upload_agency_attachment(pid):
     err = _check_project_access(project)
     if err:
         return err
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "未收到文件"}), 400
     name = _safe_name(f.filename)
@@ -150,23 +151,20 @@ def upload_agency_attachment(pid):
 @bp.route("/<int:pid>/agency-agreement/attachments/from-template", methods=["POST"])
 @login_required
 def add_agency_attachment_from_template(pid):
-    """从模板维护库复制一份模板作为附件（上传并选用模板）。"""
+    """从「我的模板」复制一份作为附件（每个用户自己的模板库）。"""
     project = db.session.get(Project, pid)
     if not project:
         return jsonify({"ok": False, "error": "项目不存在"}), 404
     err = _check_project_access(project)
     if err:
         return err
-    key = (request.get_json(silent=True) or {}).get("key", "")
-    from routes.template_api import _BY_KEY, _abs_path
-    tpl = _BY_KEY.get(key)
-    if not tpl:
-        return jsonify({"ok": False, "error": f"未知模板：{key}"}), 404
-    src = _abs_path(tpl)
-    if not os.path.isfile(src):
-        return jsonify({"ok": False, "error": "模板文件不存在，请先在模板维护中上传"}), 404
+    name = (request.get_json(silent=True) or {}).get("name", "")
+    from routes.my_template_api import resolve_tpl
+    src = resolve_tpl(name)
+    if not src:
+        return jsonify({"ok": False, "error": "模板不存在，请先在「我的模板」中上传"}), 404
     import shutil
-    dst = os.path.join(_attach_dir(pid), _safe_name(tpl["rel"][-1]))
+    dst = os.path.join(_attach_dir(pid), _safe_name(os.path.basename(src)))
     shutil.copyfile(src, dst)
     return jsonify({"ok": True, "data": _list_attachments(pid)})
 
@@ -256,6 +254,7 @@ def submit_agency_agreement_to_rdweb(pid):
     _proj_id     = project.id
     _proj_name   = project.name or ""
     _proj_number = project.number or ""
+    app = current_app._get_current_object()
 
     def _worker():
         tmp_path = None
@@ -304,6 +303,17 @@ def submit_agency_agreement_to_rdweb(pid):
                     "serial_no": res.get("serial_no", ""),
                     "msg":       res.get("msg", ""),
                 }
+            # 成功且有流水号 → 落库到项目，供项目列表打标
+            if res.get("ok") and res.get("serial_no"):
+                try:
+                    with app.app_context():
+                        _p2 = db.session.get(Project, _proj_id)
+                        if _p2:
+                            _p2.agency_rdweb_serial_no = res.get("serial_no", "")
+                            _p2.agency_rdweb_submitted_at = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            db.session.commit()
+                except Exception as _pe:
+                    print(f"[rdweb] 代理协议流水号落库失败 pid={_proj_id}: {_pe}", flush=True)
         except Exception as e:
             with _rdweb_lock:
                 _rdweb[pid] = {"running": False, "ok": False, "serial_no": "", "msg": str(e)[:300]}

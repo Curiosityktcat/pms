@@ -2,13 +2,13 @@
  * 流程模块统一的列表工具栏 + 过滤排序 hook。
  *
  * 规则（经办人要求，2026-07）：
- * - 默认按项目新增时间（created_at）倒序；可切换按项目编号排序；
+ * - 按新增时间、按项目编号两种排序键都默认倒序（新的/编号大的在前），可按钮切正/倒序；
  * - 统一搜索框（名称/编号/代理机构，合同模块可扩展供应商）；
  * - 筛选：年度（取编号/创建时间中的年份）、采购方式。
  */
 import { useMemo, useState } from 'react'
-import { Input, Select, Segmented, Space } from 'antd'
-import { SearchOutlined } from '@ant-design/icons'
+import { Input, Select, Segmented, Space, Button } from 'antd'
+import { SearchOutlined, SortAscendingOutlined, SortDescendingOutlined } from '@ant-design/icons'
 
 export interface ListFilterAccessors<T> {
   /** 参与关键词搜索的字段值 */
@@ -35,6 +35,7 @@ export function useProjectListFilter<T>(rows: T[], acc: ListFilterAccessors<T>) 
   const [year, setYear] = useState<string>('')
   const [method, setMethod] = useState<string>('')
   const [sortBy, setSortBy] = useState<SortKey>('created')
+  const [asc, setAsc] = useState(false)   // 默认倒序
 
   const years = useMemo(() => {
     const s = new Set<string>()
@@ -58,16 +59,15 @@ export function useProjectListFilter<T>(rows: T[], acc: ListFilterAccessors<T>) 
       return true
     })
     out = [...out].sort((a, b) => {
-      if (sortBy === 'number') {
-        return (acc.number(a) || '').localeCompare(acc.number(b) || '')
-      }
-      // 默认：新增时间倒序（新的在前）
-      return (acc.createdAt(b) || '').localeCompare(acc.createdAt(a) || '')
+      const r = sortBy === 'number'
+        ? (acc.number(a) || '').localeCompare(acc.number(b) || '')
+        : (acc.createdAt(a) || '').localeCompare(acc.createdAt(b) || '')
+      return asc ? r : -r
     })
     return out
-  }, [rows, kw, year, method, sortBy, acc])
+  }, [rows, kw, year, method, sortBy, asc, acc])
 
-  return { filtered, kw, setKw, year, setYear, method, setMethod, sortBy, setSortBy, years, methods }
+  return { filtered, kw, setKw, year, setYear, method, setMethod, sortBy, setSortBy, asc, setAsc, years, methods }
 }
 
 export default function ProjectListToolbar<T>({
@@ -113,6 +113,12 @@ export default function ProjectListToolbar<T>({
           { value: 'number', label: '按项目编号' },
         ]}
       />
+      <Button
+        icon={f.asc ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+        onClick={() => f.setAsc(!f.asc)}
+      >
+        {f.asc ? '正序' : '倒序'}
+      </Button>
     </Space>
   )
 }

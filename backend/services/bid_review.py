@@ -28,6 +28,8 @@ from services.llm_client import chat_json, embed
 # OCR 服务（与 routes/ocr_api.py 一致，可被 PMS_OCR_URL 覆盖）
 OCR_URL = os.environ.get("PMS_OCR_URL", "http://192.168.1.12:8118")
 OCR_TIMEOUT = 1800      # 秒（30分钟）；超大扫描件单文件可能 200+ 页，留足时间不被丢
+# 容器化审核服务（绞杀者：审核算法收敛到 9010 单一真源；不可用则本地兜底）
+BID_REVIEW_SVC = os.environ.get("PMS_BID_REVIEW_URL", "http://127.0.0.1:9010")
 
 PAGES_PER_BATCH = 20    # 投标文件分批扫描：每批页数
 # 单次抽取调用送入 LLM 的采购文件文本预算（关键词选页后拼接）
@@ -593,6 +595,34 @@ SCAN_RECHECK_NOTE = (
     "确有响应/材料才据实判定/打分；本片段中仍无对应内容的，继续 found=false。"
 )
 
+# 扫描返回的 JSON 契约：强制各模型用统一字段名（criteria_seq/found/verdict/score…），
+# 避免 gemini 等自造字段(如"审查项/结论")导致命中被丢弃。支持的模型走
+# response_format=json_schema 严格约束；不支持者自动降级为提示词约束。
+SCAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "hits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "criteria_seq": {"type": "integer"},
+                    "found": {"type": "boolean"},
+                    "verdict": {"type": "string"},
+                    "score": {"type": "number"},
+                    "reason": {"type": "string"},
+                    "evidence_page": {"type": "string"},
+                    "evidence_text": {"type": "string"},
+                    "confidence": {"type": "string"},
+                },
+                "required": ["criteria_seq", "found"],
+            },
+        }
+    },
+    "required": ["hits"],
+}
+
+
 _CONF_RANK = {"高": 3, "中": 2, "低": 1, "": 0}
 # 分批合并优先级：满足(明确达标) > 需核验(材料在但合规性待核) > 不满足(有相反证据) > 未找到(本批无)
 # 需核验 高于 不满足：避免某批"没读全"误判不满足盖过另一批"材料在、待核验"
@@ -672,7 +702,8 @@ def _scan_pass(criteria_rows, batches, id2crit, best, usage_ctx, recheck, prog):
                 user += SCAN_RECHECK_NOTE
             try:
                 out = chat_json(SCAN_SYSTEM, user, temperature=0.1,
-                                max_tokens=8192, timeout=300, usage_ctx=usage_ctx)
+                                max_tokens=8192, timeout=300, usage_ctx=usage_ctx,
+                                response_schema=SCAN_SCHEMA)
             except Exception:
                 # 单批失败不致命：跳过本批（相当于该批未提供证据），继续后续批次
                 out = {"hits": []}
@@ -777,6 +808,34 @@ def _merge_docs(files):
     return "\n\n".join(out)
 
 
+def _scan_via_service(criteria_rows, pages_md):
+    """调容器化审核服务(9010)扫描，返回 {criteria_id: hit}（同 _scan_batches 格式，仅命中项）。
+    9010 内部走 llm-gateway；失败抛异常由调用方本地兜底。"""
+    crit = [{"id": c.id, "category": c.category, "content": c.content,
+             "max_score": c.max_score, "score_rule": c.score_rule or ""}
+            for c in criteria_rows]
+    r = requests.post(f"{BID_REVIEW_SVC}/review",
+                      json={"criteria": crit, "pages_md": pages_md}, timeout=1800)
+    r.raise_for_status()
+    d = r.json()
+    if not d.get("ok"):
+        raise RuntimeError(d.get("error", "审核服务返回错误"))
+    best = {}
+    for row in d.get("results", []):
+        cid = row.get("id")
+        base = {"evidence_page": row.get("evidence_page", ""),
+                "evidence_text": row.get("evidence_text", ""),
+                "confidence": row.get("confidence", "")}
+        if row.get("category") == "打分":
+            if row.get("score") is not None:
+                best[cid] = {**base, "score": row["score"], "reason": row.get("reason", "")}
+        else:
+            v = row.get("verdict")
+            if v and v != "未找到":
+                best[cid] = {**base, "verdict": v}
+    return best
+
+
 def review_bid_file(app, result_id, usage_ctx):
     """后台线程：投标文件（多文件合并）OCR → 分批扫描 → 报价抽取 → 写逐条明细。"""
     with app.app_context():
@@ -820,7 +879,14 @@ def review_bid_file(app, result_id, usage_ctx):
                 r.progress = f"{done}/{total} 批"
                 db.session.commit()
 
-            best = _scan_batches(criteria_rows, pages, usage_ctx, on_progress)
+            r0 = db.session.get(BidReviewResult, result_id)
+            r0.progress = "审核服务处理中…"
+            db.session.commit()
+            try:
+                best = _scan_via_service(criteria_rows, res.ocr_md)
+            except Exception as _svc_err:
+                # 9010 不可用 → 本地兜底扫描，保证审核不中断
+                best = _scan_batches(criteria_rows, pages, usage_ctx, on_progress)
 
             # 2) 报价抽取（人工改过价则不覆盖）
             if not res.price_edited_by:

@@ -13,6 +13,7 @@ from models import db
 from models.dept_announcement import DeptAnnouncement
 from routes.utils import login_required
 from services.permission import is_admin_user
+from services import upload_relay
 
 bp = Blueprint("dept_announcement", __name__, url_prefix="/api/dept-announcements")
 
@@ -67,7 +68,7 @@ def create_announcement():
         return jsonify({"ok": False, "error": "请填写公告标题"}), 400
 
     filename, saved_name, size = "", "", 0
-    f = request.files.get("file")
+    f = request.files.get("file") or upload_relay.staged_file()  # 公网大文件走 OSS 中转（见 services/upload_relay.py）
     if f and f.filename:
         ext = os.path.splitext(f.filename)[1].lower()
         if ext not in ALLOWED_EXT:

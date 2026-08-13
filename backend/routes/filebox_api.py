@@ -95,14 +95,43 @@ def upload():
         print(f"[filebox] upload 未收到文件 content_length={clen} "
               f"form_keys={list(request.form.keys())} files_keys={list(request.files.keys())}",
               file=sys.stderr, flush=True)
-        hint = ("（请求体几乎为空，多为前端未正确以 multipart 发送，请强刷页面重试）"
-                if clen < 1024 else
-                "（请求体已传输但未解析到文件，可能上传中断，或经 Cloudflare 公网超 100MB 上限——大文件走局域网直连）")
-        return jsonify({"ok": False, "error": f"未收到文件（请求体 {clen // 1024} KB）{hint}"}), 400
+        # 注意：clen 只是客户端声明的 Content-Length，不代表真的收全了。
+        # 解析器在 multipart 中途遇到 EOF 会抛 ValueError，被 Werkzeug 静默吞掉，
+        # 已解析出的字段（如 path）也一并丢弃 → form/files 双空。所以「双空且
+        # clen 很大」= 传输被掐断，而不是文件太大被拒。
+        if clen < 1024:
+            hint = "（请求体几乎为空，多为前端未正确以 multipart 发送，请强刷页面重试）"
+        elif not request.form:
+            hint = ("（上传中途被中断：浏览器超时、切走页面或网络掉线都会这样，"
+                    "请重试；经公网访问时另有 Cloudflare 100MB 上限，大文件请走局域网 172.1.14.12:1573）")
+        else:
+            hint = "（表单已收到但没有文件字段，请重新选择文件）"
+        return jsonify({"ok": False,
+                        "error": f"未收到文件（客户端声明 {clen // 1024 // 1024} MB）{hint}"}), 400
+    # 文件夹上传：前端以文件的相对路径（webkitRelativePath）作为 filename 传来，
+    # 需在目标目录内还原子目录结构；否则退化为按文件名平铺保存。
+    preserve = request.form.get("preserve_paths") == "1"
     saved, skipped = 0, []
     for f in files:
-        # 兼容 Windows 路径（Linux 上 os.path.basename 不切反斜杠，先归一）
-        name = os.path.basename((f.filename or "").replace("\\", "/"))
+        raw = (f.filename or "").replace("\\", "/")   # 归一 Windows 反斜杠
+        if preserve and "/" in raw:
+            # 逐段清洗，剔除空段/./..，防目录穿越
+            segs = [s for s in raw.split("/") if s and s not in (".", "..")]
+            if not segs:
+                skipped.append(f.filename or "(空名)")
+                continue
+            dest = os.path.abspath(os.path.join(d, *segs))
+            if os.path.commonpath([dest, FILEBOX_ROOT]) != FILEBOX_ROOT:
+                skipped.append(raw)
+                continue
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                f.save(dest)
+                saved += 1
+            except Exception as e:
+                skipped.append(f"{raw}（{e}）")
+            continue
+        name = os.path.basename(raw)
         if not name or name in (".", ".."):
             skipped.append(f.filename or "(空名)")
             continue
@@ -130,6 +159,52 @@ def download():
     return send_file(p, as_attachment=True, download_name=os.path.basename(p))
 
 
+@bp.route("/download-folder", methods=["GET"])
+@login_required
+def download_folder():
+    """把整个文件夹打包成 zip 下载（保留内部子目录结构）。"""
+    import tempfile
+    import zipfile
+    from flask import after_this_request
+
+    d = _resolve(request.args.get("path", ""))
+    if not d or not os.path.isdir(d):
+        return jsonify({"ok": False, "error": "文件夹不存在"}), 404
+    base = os.path.basename(d) or "filebox"
+
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, _dirs, fnames in os.walk(d):
+                for fn in fnames:
+                    full = os.path.join(root, fn)
+                    if not os.path.isfile(full):
+                        continue
+                    arc = os.path.join(base, os.path.relpath(full, d))
+                    z.write(full, arc)
+                # 保留空目录
+                if not fnames and not _dirs and root != d:
+                    z.writestr(os.path.join(base, os.path.relpath(root, d)) + "/", "")
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return jsonify({"ok": False, "error": f"打包失败：{e}"}), 500
+
+    @after_this_request
+    def _cleanup(resp):
+        # Linux 上 send_file 持有打开的 fd，unlink 后仍可完成流式传输
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return resp
+
+    return send_file(tmp, as_attachment=True, download_name=f"{base}.zip")
+
+
 @bp.route("/preview", methods=["GET"])
 @login_required
 def preview():
@@ -137,7 +212,8 @@ def preview():
     p = _resolve(request.args.get("path", ""))
     if not p or not os.path.isfile(p):
         return jsonify({"ok": False, "error": "文件不存在"}), 404
-    return send_file(p, as_attachment=False, download_name=os.path.basename(p))
+    from services.office_convert import send_preview
+    return send_preview(p, os.path.basename(p))
 
 
 @bp.route("/mkdir", methods=["POST"])
