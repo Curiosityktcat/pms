@@ -226,13 +226,27 @@ export default function FilePreviewModal({
   // antd 抽屉自己也收 Esc，它一关就触发重渲染，把我这个监听在**事件正在派发的
   // 半路上**摘走了——浏览器不会把当前这个事件补给新挂上去的监听，于是第一下
   // Esc 丢掉，得按第二下才关。所以真正要用的 onClose 从 ref 里现取。
+  //
+  // 而且要在**捕获阶段**截住、把这一次事件吃掉：抽屉和弹窗自己也收 Esc，
+  // 不截的话一下 Esc 会把面板和底下正在填的表单一起关掉——填了半天的东西
+  // 就这么没了。面板是最上面那一层，Esc 就该先关它；再按一次才轮到抽屉。
+  // 例外是下拉框/日期框自己弹出来的那层，那种 Esc 得让它自己收，不然
+  // 选个采购方式按 Esc 反而把预览关了。
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector(
+        '.ant-select-open, .ant-picker-dropdown:not(.ant-picker-dropdown-hidden),'
+        + ' .ant-dropdown:not(.ant-dropdown-hidden)')) return
+      e.stopImmediatePropagation()
+      e.preventDefault()
+      closeRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [open])
 
   // ── 拖左边框改宽度 ──────────────────────────────────────────────────
@@ -455,51 +469,68 @@ function DocxView({ url, dl, compact, onPdfFallback }: { url: string; dl: string
   const [renderErr, setRenderErr] = useState(false)
   const { loading, error, buf } = useFileBuffer(url)
   useEffect(() => { setRenderErr(false) }, [url])
-  useEffect(() => {
-    if (!buf || !ref.current) return
-    ref.current.innerHTML = ''
-    import('docx-preview')
-      .then(({ renderAsync }) => renderAsync(buf, ref.current!, undefined, {
-        className: 'docx', inWrapper: true, ignoreWidth: false,
-      }))
-      .catch(() => setRenderErr(true))
-  }, [buf])
 
   // docx 是按 A4 的真实宽度铺的（≈794px），面板比这窄的时候右边一截就被切掉，
   // 得横向拖着看——原来那个弹窗有 80% 屏宽，所以从没露出来过。
   //
-  // 这里按面板宽度整体缩一下，版式不动（不重排——重排会把套打好的表格和
+  // 按面板宽度整体缩一下，版式不动（不重排——重排会把套打好的表格和
   // 签章位置挪位，核对的时候就不能信了）。用 zoom 而不是 transform：
   // zoom 会重新参与布局，滚动条量得准；transform 缩完外面还按原尺寸算，
   // 底下会多出一大片空白。放不满一页宽就不放大，只缩不放。
   const natural = useRef(0)
+  const fitRef = useRef(() => {})
+  fitRef.current = () => {
+    const box = ref.current
+    const host = box?.parentElement
+    if (!box || !host) return
+    const page = box.querySelector('section.docx') as HTMLElement | null
+    if (!page) return
+    if (!natural.current) {
+      // 原始页宽只量一次，而且必须在没缩之前量——缩过之后再量就越量越小。
+      box.style.zoom = ''
+      natural.current = page.offsetWidth
+    }
+    const avail = host.clientWidth - 24
+    if (natural.current > 0 && avail > 0) {
+      box.style.zoom = String(Math.max(Math.min(avail / natural.current, 1), 0.3))
+    }
+  }
+
+  useEffect(() => {
+    if (!buf || !ref.current) return
+    const box = ref.current
+    box.innerHTML = ''
+    box.style.zoom = ''
+    natural.current = 0
+    let alive = true
+    import('docx-preview')
+      .then(({ renderAsync }) => renderAsync(buf, box, undefined, {
+        className: 'docx', inWrapper: true, ignoreWidth: false,
+      }))
+      // 缩放必须挂在「渲染真的完成了」这个点上，不能另起一个定时器去赌时间。
+      // 原来是 setTimeout(400) 补算一次：机器闲着的时候刚好赶上，一旦忙起来
+      // （这台机器同时在跑 OCR，负载 20+）渲染还没铺完就算，section.docx
+      // 还不存在，缩放就悄悄没生效——文档右边一截被切掉。实测红过一次。
+      .then(() => { if (alive) fitRef.current() })
+      .catch(() => setRenderErr(true))
+    return () => { alive = false }
+  }, [buf])
+
   useEffect(() => {
     const box = ref.current
     const host = box?.parentElement
     if (!box || !host) return
-    natural.current = 0
-    const fit = () => {
-      const page = box.querySelector('section.docx') as HTMLElement | null
-      if (!page) return
-      if (!natural.current) {
-        // 原始页宽只量一次，而且必须在没缩之前量——缩过之后再量就越量越小。
-        box.style.zoom = ''
-        natural.current = page.offsetWidth
-      }
-      const avail = host.clientWidth - 24
-      if (natural.current > 0 && avail > 0) {
-        box.style.zoom = String(Math.max(Math.min(avail / natural.current, 1), 0.3))
-      }
-    }
-    fit()
     // 面板宽度是能拖的，拖完要重新算一遍。
     // 注意观察的是**外层**容器，不是 box 自己：改 box 的 zoom 会改它自己的尺寸，
     // 观察自己就成了自激循环（改→通知→再改），一按住把手拖就卡死。
-    const ro = new ResizeObserver(fit)
+    const ro = new ResizeObserver(() => fitRef.current())
     ro.observe(host)
-    const timer = window.setTimeout(fit, 400)   // 渲染是异步的，补一次
-    return () => { ro.disconnect(); window.clearTimeout(timer) }
-  }, [buf])
+    // 再兜一层：字体、图片晚一点到位也会改变页宽。只看子节点增减，
+    // 不看属性——zoom 是加在 box 自己身上的样式，不会触发这里，所以不会自激。
+    const mo = new MutationObserver(() => fitRef.current())
+    mo.observe(box, { childList: true, subtree: true })
+    return () => { ro.disconnect(); mo.disconnect() }
+  }, [])
   if (loading) return <Centered><Spin tip="加载中…" /></Centered>
   if (error || renderErr) return <LoadError dl={dl} onPdfFallback={onPdfFallback} />
   return <div ref={ref} className={compact ? 'docx-compact' : undefined} style={{ padding: 16, background: '#f5f5f5' }} />

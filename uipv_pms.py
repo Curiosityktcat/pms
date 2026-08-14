@@ -46,7 +46,9 @@ def run(pg):
     # 特意选它：附件列表在右侧抽屉里，文件在面板里，两个抢同一条地方。
     # 这是最容易出层级/让位问题的组合，也正是「边看边办」最典型的场景。
     pg.goto(BASE + "/project-distribution", wait_until="networkidle")
-    pg.wait_for_timeout(2500)
+    # 等那个按钮真的出现，别用固定 sleep 等——这台机器同时在跑 OCR，
+    # 负载一上去列表就渲染得慢，固定等法会时通时不通（已经红过一次）。
+    pg.wait_for_selector('button:has-text("附件(")', timeout=40000)
     att = pg.locator('button:has-text("附件(")')
     t("分发列表里有带附件的记录", att.count() > 0, "%d 条" % att.count())
 
@@ -232,8 +234,12 @@ def run_plain(pg):
     调宽度」这条只在普通页面上成立——而普通页面恰好是大多数调用点。
     上一段在抽屉页测这条会红，红的却不是功能，是 antd 的焦点锁，白耗。
     """
+    # 上一段把宽度拖到过最小值并且记住了。带着它进下一段，等于让「上一段
+    # 干了什么」决定这一段量到多少——出问题很难复现。这里先钉回一个已知宽度。
+    pg.goto(BASE + "/inquiry", wait_until="domcontentloaded")
+    pg.evaluate("() => localStorage.setItem('pms-pv-w', '620')")
     pg.goto(BASE + "/inquiry", wait_until="networkidle")
-    pg.wait_for_timeout(2500)
+    pg.wait_for_selector('button:has-text("预览")', timeout=40000)
     btn = pg.locator('button:has-text("预览")')
     t("询价函列表上有预览入口", btn.count() > 0, "%d 个" % btn.count())
     btn.first.click()
@@ -321,10 +327,22 @@ def run_plain(pg):
     t("弹窗那一层也能拿到让位（规则命中，非端到端）",
       abs(got - w_before) <= 1, "量到 %s，面板宽 %s" % (got, w_before))
 
-    # 面板开着还能点主区的按钮——点得动才弹得出抽屉
+    # 没有别的层时，Esc 一下就关
+    pg.keyboard.press("Escape")
+    pg.wait_for_timeout(700)
+    t("普通页面上 Esc 一下就关（不用按两次）",
+      pg.locator(".pms-pv").count() == 0)
+    t("Esc 关掉后让位也收回", pad(pg, "#root") == 0, pad(pg, "#root"))
+
+    # ── 和别的层叠在一起时，一次 Esc 只关一层 ──
+    # 面板在最上面，Esc 就该先关面板；要是一下把底下正在填的表单也关了，
+    # 填了半天的东西就没了。这条是真出现过的：两边都收 Esc，一按全关。
+    pg.locator('button:has-text("预览")').first.click()
+    pg.wait_for_selector(".pms-pv", timeout=25000)
+    pg.wait_for_timeout(1200)
     pg.locator('button:has-text("新建函件")').first.click()
     pg.wait_for_selector(".ant-drawer-open", timeout=10000)
-    pg.wait_for_timeout(700)
+    pg.wait_for_timeout(900)
     t("面板开着也能点主区的按钮（表单真弹出来了）",
       pg.locator(".ant-drawer-open").count() > 0)
     dwb = pg.locator(".ant-drawer-content-wrapper").last.bounding_box()
@@ -332,15 +350,18 @@ def run_plain(pg):
     t("这个表单抽屉也挪到了面板左边",
       dwb and dwb["x"] + dwb["width"] <= pvb["x"] + 2,
       "抽屉右缘 %.0f，面板左缘 %.0f" % ((dwb["x"] + dwb["width"]) if dwb else -1, pvb["x"]))
-    # 只是开来看层级，什么都不提交
-    pg.keyboard.press("Escape")
-    pg.wait_for_timeout(900)
-    t("关掉表单后面板还在（两者互不影响）", pg.locator(".pms-pv").count() == 1)
 
     pg.keyboard.press("Escape")
-    pg.wait_for_timeout(600)
-    t("普通页面上 Esc 一下就关（不用按两次）",
-      pg.locator(".pms-pv").count() == 0)
+    pg.wait_for_timeout(900)
+    t("Esc 先关预览，不连带把正在填的表单关掉",
+      pg.locator(".pms-pv").count() == 0
+      and pg.locator(".ant-drawer-open").count() > 0,
+      "面板 %d，抽屉 %d" % (pg.locator(".pms-pv").count(),
+                          pg.locator(".ant-drawer-open").count()))
+    pg.keyboard.press("Escape")
+    pg.wait_for_timeout(900)
+    t("再按一次才轮到表单抽屉（一次 Esc 只关一层）",
+      pg.locator(".ant-drawer-open").count() == 0)
 
 
 def run_images(pg):
@@ -352,8 +373,10 @@ def run_images(pg):
       ② 在面板上翻页时，渲染方式要跟着文件类型换（图片 ↔ PDF）。
          这条最容易漏：状态留在上一件身上，翻过去就白屏或者还显示旧的。
     """
+    pg.goto(BASE + "/project-review", wait_until="domcontentloaded")
+    pg.evaluate("() => localStorage.setItem('pms-pv-w', '620')")
     pg.goto(BASE + "/project-review", wait_until="networkidle")
-    pg.wait_for_timeout(2500)
+    pg.wait_for_selector('button:has-text("上传/查看评审结果")', timeout=40000)
     pg.locator(".ant-tabs-tab", has_text="已审核").click()
     pg.wait_for_timeout(2500)
     btn = pg.locator('button:has-text("上传/查看评审结果")')

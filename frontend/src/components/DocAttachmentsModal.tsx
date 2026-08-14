@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import axios from 'axios'
 import { Modal, Upload, Button, List, Popconfirm, Typography, Alert, Space, Checkbox, Tag, Empty } from 'antd'
 import {
   UploadOutlined, PaperClipOutlined, DownloadOutlined, DeleteOutlined, EyeOutlined,
@@ -14,7 +15,6 @@ import {
   type DocAttachment, type ConfirmKind, type PoolAttachment,
 } from '../services/procurementDoc'
 import FilePreviewModal, { isPreviewable } from './FilePreviewModal'
-import { smartUploadAbs } from '../services/upload'
 
 const { Text } = Typography
 // antd 自定义上传选项类型较繁琐，这里用 any 简化
@@ -103,8 +103,13 @@ export default function DocAttachmentsModal({
     if (!project) return
     const { file, onSuccess, onError } = options
     setUploading(true)
+    const formData = new FormData()
+    formData.append('file', file as Blob)
     try {
-      const res = await smartUploadAbs(uploadDocAttachmentUrl(project.id, kind), file as File)
+      const res = await axios.post(uploadDocAttachmentUrl(project.id, kind), formData, {
+        withCredentials: true,
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
       onSuccess?.(res.data)
       message.success('上传成功')
       load()
