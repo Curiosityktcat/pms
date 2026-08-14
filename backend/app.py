@@ -78,6 +78,7 @@ def create_app():
     from routes.hermes_api import bp as hermes_bp  # 指挥 Hermes 自动填报 rd-web
     from routes.agency_api import bp as agency_bp  # 代理机构信息维护
     from routes.rdweb_contract_api import bp as rdweb_contract_bp  # rd-web 合同审签单直连自动提交
+    from routes.rdweb_approval_api import bp as rdweb_approval_bp  # rd-web 采购项目审批要件推送
     from routes.api_provider_api import bp as api_provider_bp  # 后台 API 管理（大模型台账）
     from routes.agency_assessment_api import bp as agency_assessment_bp  # 代理机构服务质量考核
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
@@ -127,6 +128,7 @@ def create_app():
     app.register_blueprint(hermes_bp)  # Hermes 自动填报
     app.register_blueprint(agency_bp)  # 代理机构信息维护
     app.register_blueprint(rdweb_contract_bp)  # rd-web 合同审签单直连
+    app.register_blueprint(rdweb_approval_bp)  # rd-web 采购项目审批：文件确认函/授权函/结果确认函推送
     app.register_blueprint(api_provider_bp)  # 后台 API 管理
     app.register_blueprint(agency_assessment_bp)
     app.register_blueprint(procurement_plan_bp)  # 采购计划池

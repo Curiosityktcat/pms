@@ -73,6 +73,8 @@ import {
 } from '../services/procurementResult'
 import { getProjects, type Project } from '../services/project'
 import PendingOwnerTag from '../components/PendingOwnerTag'
+import RdwebPushButton from '../components/RdwebPushButton'
+import { autoPushText } from '../services/rdwebApproval'
 import { getProjectRounds } from '../services/procurementDoc'
 import { useAuth } from '../hooks/useAuth'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
@@ -367,6 +369,9 @@ export default function ProcurementResultPage() {
         try {
           const res = await confirmResult(record.id)
           message.success(res.data.message || '已确认')
+          // 确认即自动把采购结果确认函推去 rd-web 盖章
+          const tip = autoPushText((res.data as any)?.rdweb_push)
+          if (tip) message.info(tip)
           loadResults()
           getProjects().then((r) => setProjects(r.data.data || []))
         } catch (err: unknown) {
@@ -515,6 +520,7 @@ export default function ProcurementResultPage() {
           )}
           {/* 确认前要能核对代理上传的报价单/单价附件，所以各状态都给入口 */}
           <Button size="small" icon={<PaperClipOutlined />} onClick={() => setAttachModal({ open: true, result: r })}>附件</Button>
+          {r.status === '已确认' && <RdwebPushButton projectId={r.project_id} kind="result" />}
           {r.status === '待确认' && canConfirm && (
             <>
               {(() => {

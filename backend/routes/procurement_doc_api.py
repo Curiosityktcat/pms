@@ -420,7 +420,12 @@ def set_doc_confirm(pid):
     data_out["package_count"] = db.session.execute(
         db.select(db.func.count()).select_from(Package).filter_by(project_id=pid)
     ).scalar_one()
-    return jsonify({"ok": True, "data": data_out})
+    # 采购文件确认完成 → 自动把「采购文件确认函」推到 rd-web 采购项目审批盖章
+    push_info = {}
+    if kind == "doc" and confirmed:
+        from routes.rdweb_approval_api import auto_push_on_confirm
+        push_info = auto_push_on_confirm(project, "doc_confirm", rnd.round_number or 1)
+    return jsonify({"ok": True, "data": data_out, "rdweb_push": push_info})
 
 
 @bp.route("/<int:pid>/doc-reject", methods=["POST"])

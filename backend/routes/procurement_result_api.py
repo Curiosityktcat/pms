@@ -456,7 +456,12 @@ def confirm_result(rid):
     alog.log(result.project_id, "result", "confirm",
              round_number=result.round_number or 1, target_id=result.id)
     db.session.commit()
-    return jsonify({"ok": True, "message": msg or "已确认"})
+    # 采购结果确认完成 → 自动把「采购结果确认函」推到 rd-web 采购项目审批盖章
+    from routes.rdweb_approval_api import auto_push_on_confirm
+    from models.project import Project as _Prj
+    _p = db.session.get(_Prj, result.project_id)
+    push_info = auto_push_on_confirm(_p, "result", result.round_number or 1) if _p else {}
+    return jsonify({"ok": True, "message": msg or "已确认", "rdweb_push": push_info})
 
 
 @bp.route("/<int:rid>/revoke", methods=["POST"])

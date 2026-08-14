@@ -23,6 +23,7 @@ import {
 } from '../services/project'
 import type { Agency } from '../services/project'
 import { listDistributions, type Distribution } from '../services/projectDistribution'
+import { autoPushText } from '../services/rdwebApproval'
 import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
@@ -277,6 +278,9 @@ export default function ProjectFormPage() {
         res = await createProject(payload)
       }
       message.success(res.data.message)
+      // 立项且选定代理 → 后端已自动把委托代理协议推去 rd-web 审签
+      const pushTip = autoPushText((res.data as any)?.rdweb_push)
+      if (pushTip) message.info(pushTip)
       // 若从需求立项成功，回到需求页面查看已立项状态
       navigate(demandId && action === 'submit' ? '/procurement-demand' : '/flow')
     } catch (err: any) {

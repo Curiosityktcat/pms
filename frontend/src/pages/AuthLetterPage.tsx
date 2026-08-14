@@ -12,6 +12,8 @@ import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import { getBidOpenProjects } from '../services/project'
 import type { Project } from '../services/project'
 import { getSupervisors, getRepresentatives, generateAuthLetter } from '../services/people'
+import RdwebPushButton from '../components/RdwebPushButton'
+import { autoPushText } from '../services/rdwebApproval'
 import type { Person } from '../services/people'
 import {
   listAuthLetterRecords, createAuthLetterRecord, deleteAuthLetterRecord,
@@ -217,7 +219,7 @@ export default function AuthLetterPage() {
       // ── 自动保存授权函记录 ───────────────────────────────────────
       const supervisor = supervisors.find(s => s.id === values.supervisor_id)
       const reps = representatives.filter(r => values.representative_ids.includes(r.id))
-      await createAuthLetterRecord({
+      const _rec = await createAuthLetterRecord({
         project_id: selectedProject.id,
         project_name: selectedProject.name,
         project_number: selectedProject.number || '',
@@ -229,6 +231,9 @@ export default function AuthLetterPage() {
       await loadRecords()
       await loadPendingTasks()   // 出完这一轮，卡片就该消失
       message.success('授权函记录已保存')
+      // 生成即自动把授权函推去 rd-web 盖章（同轮已推成功的不重复推）
+      const tip = autoPushText((_rec?.data as any)?.rdweb_push)
+      if (tip) message.info(tip)
       setActiveTab('done')  // 自动切换到已授权标签
 
     } catch (err: any) {
@@ -333,6 +338,7 @@ export default function AuthLetterPage() {
           loading={downloadingId === row.id} onClick={() => handleDownloadRecord(row)}>
           下载授权函
         </Button>
+        <RdwebPushButton projectId={row.project_id} kind="auth_letter" />
         {canDelete && (
           <Button size="small" icon={<ReloadOutlined />} onClick={() => handleReGenerate(row)}>重新生成</Button>
         )}

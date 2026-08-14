@@ -34,6 +34,7 @@ def list_projects():
         agency_code=session.get("agency_code", ""),
         officer=session.get("display_name", ""),
         show_deleted=show_deleted,
+        dept_code=session.get("dept_code", ""),
     )
     _attach_round_info(rows)
     return jsonify({"ok": True, "data": rows, "total": len(rows)})
@@ -113,12 +114,34 @@ def _attach_round_info(rows):
     attach_pending(rows, "id")
 
 
+def _auto_push_agency_agreement(p):
+    """立项完成且选定了代理公司 → 自动签代理协议并推 rd-web 合同审签单。
+
+    手绘《rd-web 自动化改进计划》①。推送本身是后台线程，这里只负责发起；
+    **任何失败都不能影响立项**，页面上还能到「委托代理协议」手动推。
+    """
+    try:
+        if p.is_draft or not p.agency_code or (p.agency_rdweb_serial_no or ""):
+            return {}
+        from routes.rdweb_approval_api import auto_push_enabled
+        if not auto_push_enabled():
+            return {"auto": False, "reason": "自动推送已关闭"}
+        from routes.agency_agreement_api import submit_agency_agreement_to_rdweb
+        submit_agency_agreement_to_rdweb(p.id)
+        return {"auto": True, "ok": True, "kind": "agency_agreement",
+                "msg": "已开始自动推送委托代理协议到 rd-web 合同审签"}
+    except Exception as e:      # noqa: BLE001
+        return {"auto": True, "ok": False, "kind": "agency_agreement",
+                "msg": f"自动推送未启动：{e}"[:200]}
+
+
 @bp.route("", methods=["POST"])
 @login_required
 def create_project():
     if session["role"] != "officer":
         return jsonify({"ok": False, "error": "仅项目经办人可立项"}), 403
     data = request.get_json(force=True) or {}
+    push_info = {}
     demand_id   = data.pop("demand_id",   None)  # 从采购需求立项时传入
     demand_type = data.pop("demand_type", None)  # 'gov' / 'competition' / 'sole_source' 等
     distribution_id = data.pop("distribution_id", None)  # 从「项目分发」立项时传入
@@ -164,7 +187,10 @@ def create_project():
                         # procurement_doc_api 的 pool-attachments / pool-attachments/import）。
                 except Exception:
                     pass
-        return jsonify({"ok": True, "message": msg, "data": p.to_dict()}), 201
+            # 立项完成、代理公司已定 → 自动签代理协议推 rd-web 审签
+            push_info = _auto_push_agency_agreement(p)
+        return jsonify({"ok": True, "message": msg, "data": p.to_dict(),
+                        "rdweb_push": push_info}), 201
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 

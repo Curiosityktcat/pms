@@ -283,6 +283,31 @@ def preview_file(cid):
     return send_preview(path, c.file_name)
 
 
+def _auto_push_contract_rdweb(c):
+    """合同审核完成 → 自动推 rd-web 合同审签单盖章（手绘计划⑤）。
+
+    已经推成功过（有流水号）的不重复推；推不动也不影响合同状态流转，
+    页面上还有「推送 rd-web」按钮兜底。
+    """
+    try:
+        if (c.rdweb_serial_no or ""):
+            return {}
+        from routes.rdweb_approval_api import auto_push_enabled
+        if not auto_push_enabled():
+            return {"auto": False, "reason": "自动推送已关闭"}
+        resp = submit_to_rdweb(c.id)
+        body = resp[0] if isinstance(resp, tuple) else resp
+        payload = body.get_json(silent=True) or {}
+        if payload.get("ok") is False:
+            return {"auto": True, "ok": False, "kind": "contract",
+                    "msg": payload.get("error", "推送未启动")}
+        return {"auto": True, "ok": True, "kind": "contract",
+                "msg": "已开始自动推送合同到 rd-web 审签"}
+    except Exception as e:      # noqa: BLE001
+        return {"auto": True, "ok": False, "kind": "contract",
+                "msg": f"自动推送未启动：{e}"[:200]}
+
+
 @bp.route("/<int:cid>/submit", methods=["POST"])
 @login_required
 def submit_contract(cid):
@@ -310,7 +335,9 @@ def submit_contract(cid):
     alog.log(c.project_id, "contract",
              "resubmit" if c.reject_reason else "submit", target_id=c.id)
     db.session.commit()
-    return jsonify({"ok": True, "message": msg})
+    # 审核完成这一步是「合同定稿待盖章」，正是该去 rd-web 走审签的时点
+    push_info = _auto_push_contract_rdweb(c) if c.status == "审核完成" else {}
+    return jsonify({"ok": True, "message": msg, "rdweb_push": push_info})
 
 
 # ── 驳回合同（打回修改，写明原因）──────────────────────────────────
@@ -606,6 +633,16 @@ def submit_to_rdweb(cid):
                            "msg": "请先上传合同附件文件，rd-web 审签单要求必须上传附件"}
         return jsonify({"ok": False,
                         "error": "请先上传合同附件文件，rd-web 审签单要求必须上传附件"}), 400
+
+    # 合同名称 = 附件里的真实合同名称 + 项目名称（原来只有项目名称，审签单上
+    # 看不出这是什么合同）。用户在前端显式改过合同名称的，尊重用户填的。
+    if "合同名称" not in overrides:
+        from services.rdweb_contract_name import compose as _compose_cname
+        _cname = _compose_cname(c.contract_name or "",
+                                (project.name if project else "") or "",
+                                attachments_to_upload)
+        if _cname:
+            rdweb_data["合同名称"] = _cname
 
     # 落一条推送记录：之前从合同管理推的失败不写库，排查只能翻系统日志
     from models.rdweb_push_log import RdwebPushLog

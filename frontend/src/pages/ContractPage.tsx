@@ -23,6 +23,7 @@ import {
   type Contract, type ContractAttachment,
 } from '../services/contract'
 import { getProjects, type Project } from '../services/project'
+import { autoPushText } from '../services/rdwebApproval'
 import { useAuth } from '../hooks/useAuth'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
@@ -447,8 +448,11 @@ export default function ContractPage() {
       content: `确认将「${record.contract_name}」提交审核？提交后由经办人审核，合同草案 → 审核完成。`,
       onOk: async () => {
         try {
-          await submitContract(record.id)
+          const resp = await submitContract(record.id)
           message.success('已提交，合同草案 → 审核完成')
+          // 审核完成即合同定稿待盖章，后端已自动推 rd-web 合同审签单
+          const pushTip = autoPushText((resp?.data as any)?.rdweb_push)
+          if (pushTip) message.info(pushTip)
           loadContracts()
           setDraftOpen(false)
         } catch (err: unknown) {

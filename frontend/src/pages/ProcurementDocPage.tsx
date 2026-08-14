@@ -6,6 +6,8 @@ import {
 import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined, PaperClipOutlined, ContactsOutlined, RobotOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
 import PendingOwnerTag from '../components/PendingOwnerTag'
+import RdwebPushButton from '../components/RdwebPushButton'
+import { autoPushText } from '../services/rdwebApproval'
 import {
   generateBidCover, generateContentConfirm, setDocConfirm, saveDocContact,
   getDocConfirmations, type DemandConfirmation,
@@ -202,8 +204,11 @@ export default function ProcurementDocPage() {
 
   const toggleConfirm = async (p: Project) => {
     try {
-      await setDocConfirm(p.id, 'doc', !p.doc_confirmed)
+      const resp = await setDocConfirm(p.id, 'doc', !p.doc_confirmed)
       message.success(p.doc_confirmed ? '已撤销采购文件确认' : '采购文件已确认')
+      // 确认即自动把采购文件确认函推去 rd-web 盖章，结果在卡片按钮上看
+      const tip = autoPushText((resp.data as any)?.rdweb_push)
+      if (tip) message.info(tip)
       load()
     } catch {
       message.error('操作失败')
@@ -241,6 +246,7 @@ export default function ProcurementDocPage() {
             内容确认表
           </Button>
         </Tooltip>
+        {r.doc_confirmed && <RdwebPushButton projectId={r.id} kind="doc_confirm" />}
         {canConfirm && (r.doc_confirmed ? (
           <Popconfirm title="撤销采购文件确认？" onConfirm={() => toggleConfirm(r)} okText="撤销" cancelText="取消">
             <Button size="small" danger>撤销确认</Button>

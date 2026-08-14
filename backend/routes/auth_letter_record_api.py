@@ -146,7 +146,13 @@ def create_record():
     )
     db.session.add(record)
     db.session.commit()
-    return jsonify({"ok": True, "message": "已保存授权函记录", "data": record.to_dict()}), 201
+    # 授权函生成 → 自动推到 rd-web 采购项目审批盖章（同轮已成功推过的不重复推）
+    from routes.rdweb_approval_api import auto_push_on_confirm
+    from models.project import Project as _Prj
+    _p = db.session.get(_Prj, record.project_id)
+    push_info = auto_push_on_confirm(_p, "auth_letter", record.round_number or 1) if _p else {}
+    return jsonify({"ok": True, "message": "已保存授权函记录",
+                    "data": record.to_dict(), "rdweb_push": push_info}), 201
 
 
 @bp.route("/<int:rid>", methods=["DELETE"])
