@@ -417,7 +417,9 @@ def _submit_approval_once(
     manage_dept: str,
     project_name_text: str,    # 填入「项目名称」的文字
     material_type: str,        # 项目资料名称下拉选项（含此文字即可）
-    officer: str,
+    officer: str,              # 采购部经办人（forvalue[0] 文本框）
+    approver: str = "",        # 采购部负责人意见（人员弹窗）= 这张单点给谁审批，
+                               # 空则退回 officer（老行为）
     attachments: list = None,  # [{"path": str, "name": str}]
     loginuser: str = "13029144451",
     password: str  = "whywhy123",
@@ -480,8 +482,12 @@ def _submit_approval_once(
                 detail["upload_count"] = len(attachments)
 
             # 8. 采购部负责人意见（showNames 人员弹窗，也是必填）
-            if officer:
-                _fill_officer(fr, pg, officer)
+            # 这里选的人就是这张单的下一个处理人。采购项目审批**直接点给采购部主任**，
+            # 不经过经办人（合同审签单才是先点给经办人）。
+            _approver = (approver or officer or "").strip()
+            if _approver:
+                _fill_officer(fr, pg, _approver)
+                detail["approver"] = _approver
                 detail["officer"] = officer
                 pg.wait_for_timeout(300)
 

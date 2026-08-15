@@ -312,11 +312,15 @@ def submit_approval_to_rdweb(pid):
                     "无法生成审批附件。请先补齐要件，或在「11. 归档」页确认一键打印能出内容。")
 
             from services.procurement_approval_submit import submit_approval
+            from services.rdweb_approval_push import get_approver
+            with app.app_context():
+                _approver = get_approver()
             res = submit_approval(
                 manage_dept=manage_dept,
                 project_name_text=project_name_text,
                 material_type=material_type,
                 officer=officer,
+                approver=_approver,     # 单子点给采购部主任审批
                 attachments=attachments,
                 loginuser=_rdweb_user,
                 password=_rdweb_pass,

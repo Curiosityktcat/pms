@@ -43,6 +43,24 @@ PUSH_KINDS = {
     },
 }
 
+# 采购项目审批的审批人（采购部主任）。存 SysConfig，换人不用改代码。
+APPROVER_KEY = "rdweb_approval_approver"
+DEFAULT_APPROVER = "曾旌城"
+
+
+def get_approver() -> str:
+    """这张单点给谁审批：采购部主任。"""
+    try:
+        from models import db
+        from models.sys_config import SysConfig
+        row = db.session.get(SysConfig, APPROVER_KEY)
+        if row and (row.value or "").strip():
+            return row.value.strip()
+    except Exception:
+        pass
+    return DEFAULT_APPROVER
+
+
 # 进程内状态：{(pid, kind): {running, ok, serial_no, msg, started_at}}
 _state: dict = {}
 _lock = threading.Lock()
@@ -148,6 +166,7 @@ def start_push(app, project, kind: str, officer: str, loginuser: str, password: 
         return False, "项目没有经办人，无法确定审批填报的经办人", 0
 
     rno = resolve_round(project, round_number)
+    approver = get_approver()
     if skip_if_pushed and already_pushed(project.id, kind, rno):
         return False, f"「{meta['label']}」本轮已成功推送过，未重复推送（可手动重推）", rno
     ok, why = _try_acquire(project.id, kind)
@@ -180,6 +199,7 @@ def start_push(app, project, kind: str, officer: str, loginuser: str, password: 
                         "推送类型": meta["label"], "kind": kind, "项目ID": pid,
                         "轮次": rno, "项目名称": pname_text,
                         "归口管理科室": dept, "经办人": officer,
+                        "审批人": approver,
                         "项目资料名称": meta["material_type"],
                     }, ensure_ascii=False),
                     status="running",
@@ -194,6 +214,7 @@ def start_push(app, project, kind: str, officer: str, loginuser: str, password: 
                 project_name_text=pname_text,
                 material_type=meta["material_type"],
                 officer=officer,
+                approver=approver,
                 attachments=attachments,
                 loginuser=loginuser,
                 password=password,
