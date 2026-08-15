@@ -8,7 +8,10 @@ os.environ["PMS_DB_PATH"] = "/home/huangxb/pms/pms.test.db"
 import requests
 
 BASE = "http://127.0.0.1:1574"
-ADMIN_PW = "TestAdmin!2026"
+# 用「写给用户的那个测试口令」而不是临时口令：脚本会重置 admin 密码，
+# 用别的值会把用户手上的口令冲掉（2026-08-15 已经害他登不进去一次）。
+# 口令同步在 /home/huangxb/files/PMS测试环境访问方式_2026-08-15.md
+ADMIN_PW = "0HBNkSpPJQnQOU"
 ok_count, bad = 0, []
 
 

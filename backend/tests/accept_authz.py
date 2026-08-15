@@ -13,6 +13,9 @@ os.environ["PMS_DB_PATH"] = "/home/huangxb/pms/pms.test.db"
 import requests
 
 BASE = "http://127.0.0.1:1574"
+# 用**专用**验收管理员账号，绝不动 admin 的密码——
+# 2026-08-15 就是因为脚本重置了 admin，把写给用户的测试口令冲掉、害他登不进去。
+ADMIN_USER = "验收管理员"
 ADMIN_PW = "AcceptAuthz!2026"
 DEPT_PW = "DeptHead!2026"
 STAFF_PW = "Staff!2026"
@@ -60,7 +63,7 @@ def set_pw(username, pw, **fields):
 
 with app.app_context():
     assert "pms.test.db" in app.config["SQLALCHEMY_DATABASE_URI"], "保险丝：不是测试库"
-    set_pw("admin", ADMIN_PW)
+    set_pw(ADMIN_USER, ADMIN_PW, role="assistant", display_name="验收管理员")
     head = set_pw("医学装备部", DEPT_PW, role="dept", display_name="医学装备部", dept_code=DEPT_CODE)
     staff = set_pw("装备专员测试", STAFF_PW, role="officer", display_name="装备专员测试", dept_code=DEPT_CODE)
     outsider = set_pw("总务专员测试", STAFF_PW, role="officer", display_name="总务专员测试", dept_code=OTHER_DEPT)
@@ -76,7 +79,7 @@ def login(username, pw):
     return s, r.json()
 
 
-sa, _ = login("admin", ADMIN_PW)
+sa, _ = login(ADMIN_USER, ADMIN_PW)
 sd, dj = login("医学装备部", DEPT_PW)
 check("科室账号能登录", dj.get("ok"), f"perms 含 authz_manage: {'authz_manage' in (dj.get('user') or {}).get('perms', [])}")
 ss, sj = login(staff_name, STAFF_PW)
@@ -208,7 +211,7 @@ with app.app_context():
     for a in db.session.execute(db.select(Authorization).filter(
             Authorization.grantee_username == staff_name)).scalars().all():
         db.session.delete(a)
-    for name in (staff_name, outsider_name):
+    for name in (staff_name, outsider_name, ADMIN_USER):
         u = db.session.execute(db.select(User).filter_by(username=name)).scalar_one_or_none()
         if u:
             db.session.delete(u)
