@@ -58,6 +58,8 @@ const UserAdminPage = lazy(() => import('./pages/UserAdminPage'))
 const LlmUsagePage = lazy(() => import('./pages/LlmUsagePage'))
 const LawLibraryPage = lazy(() => import('./pages/LawLibraryPage'))
 const PortalPage = lazy(() => import('./pages/PortalPage'))
+const AuthorizationPage = lazy(() => import('./pages/AuthorizationPage'))
+const MyAuthorizationPage = lazy(() => import('./pages/MyAuthorizationPage'))
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null | undefined>(undefined)
@@ -314,6 +316,8 @@ export default function App() {
               <Route path="chpwd" element={<ChpwdPage />} />
               <Route path="supervision" element={<SupervisionPage />} />
               <Route path="law-library" element={<LawLibraryPage />} />
+              <Route path="authorizations" element={<AuthorizationPage />} />
+              <Route path="my-authorizations" element={<MyAuthorizationPage />} />
             </Route>
             {/* 后台管理系统 — 与业务系统独立的一套界面，仅管理员可进入 */}
             <Route

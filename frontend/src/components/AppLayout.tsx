@@ -113,6 +113,12 @@ export default function AppLayout() {
       icon: <ProfileOutlined />,
       onClick: () => navigate('/dept-portal'),
     },
+    {
+      key: 'authz_manage',
+      label: '授权管理',
+      icon: <SafetyCertificateOutlined />,
+      onClick: () => navigate('/authorizations'),
+    },
   ]
 
   const menuItems = [
@@ -461,6 +467,12 @@ export default function AppLayout() {
       icon: <AuditOutlined />,
       onClick: () => navigate('/supervision'),
     },
+    {
+      key: 'authz_manage',
+      label: '授权管理',
+      icon: <SafetyCertificateOutlined />,
+      onClick: () => navigate('/authorizations'),
+    },
   ]
 
   // ── 按当前用户权限过滤菜单 ───────────────────────────────────
@@ -471,7 +483,7 @@ export default function AppLayout() {
     'agency-agreement', 'doc',
     'new', 'flow', 'bid', 'bid-board', 'auth-letter', 'announcement',
     'inquiry', 'inquiry-review', 'project-review', 'procurement-result', 'contract', 'archive', 'file-ocr', 'bid-review',
-    'people-manage', 'template-manage',
+    'people-manage', 'template-manage', 'authz_manage',
   ])
   const permSet = new Set(user?.perms || [])
   // 投标文件审核：仅限「黄新博」本人可见，其余账号即便有权限也隐藏
@@ -510,7 +522,7 @@ export default function AppLayout() {
   // ── 工作区拆分：采购流程（1~11）与 工具集合 两套侧栏 ────────────
   // 顶层工具项 key；其余顶层项都属于采购流程
   const TOOL_TOP_KEYS = new Set([
-    'bid-review', 'file-ocr', 'filebox', 'base-data', 'law-library', 'supervision',
+    'bid-review', 'file-ocr', 'filebox', 'base-data', 'law-library', 'supervision', 'authz_manage',
   ])
   // 判断当前页面属于哪个工作区（含工具分组的子项）
   const TOOL_ACTIVE_KEYS = new Set([
@@ -537,6 +549,12 @@ export default function AppLayout() {
 
   const userMenu = {
     items: [
+      {
+        key: 'my-authorizations',
+        label: '我的授权',
+        icon: <SafetyCertificateOutlined />,
+        onClick: () => navigate('/my-authorizations'),
+      },
       {
         key: 'chpwd',
         label: '修改密码',

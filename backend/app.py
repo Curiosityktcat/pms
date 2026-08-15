@@ -88,6 +88,7 @@ def create_app():
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
     from routes.auth_letter_pending_api import bp as auth_letter_pending_bp  # 待出具授权函清单
+    from routes.authorization_api import bp as authorization_bp  # 人员授权链
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -138,6 +139,7 @@ def create_app():
     app.register_blueprint(dept_portal_bp)  # 科室门户
     app.register_blueprint(user_admin_bp)
     app.register_blueprint(dept_admin_bp)
+    app.register_blueprint(authorization_bp)
 
     # ── 科室角色的活动范围闸门 ──────────────────────────────────────────
     # 归口科室账号只能走科室门户。系统里不少老列表接口是「按角色做减法」写的
@@ -158,6 +160,9 @@ def create_app():
             return None                      # 前端页面与静态资源不拦
         if path.startswith("/api/dept/"):
             return None
+        if path.startswith("/api/authorizations"):
+            # 具体记录仍由授权接口按 session.dept_code 二次收口；这里只打开总闸门。
+            return None
         if path in _DEPT_ALLOW_EXACT:
             return None
         return _js({"ok": False, "error": "科室账号仅可使用科室门户"}), 403
@@ -176,6 +181,7 @@ def create_app():
         from models.auth_letter_record import AuthLetterRecord  # noqa: F401
         from models.dept import Dept  # noqa: F401 归口科室字典
         from models.user_audit_log import UserAuditLog  # noqa: F401 登录账号管理留痕
+        from models.authorization import Authorization  # noqa: F401 人员授权链
         from models.procurement_plan import (ProcurementPlan,  # noqa: F401
                                              ProcurementPlanAttachment)
         from models.web_announcement import WebAnnouncement  # noqa: F401 官网公告存档
@@ -339,6 +345,21 @@ def create_app():
                 print("[dept] 播种科室 %d 个" % _n, flush=True)
         except Exception as _e:
             print("[dept] 科室播种失败：", _e, flush=True)
+
+        # depts 表补 dept_type / head_name（《2026-8-15 人员和权限设计》：
+        # 行后科室=归口管理科室(采购部除外)，科室负责人姓名用于「科室+人名」显示，
+        # 以及授权链里「科长换人则其授出的权限失效」的判定）
+        try:
+            from sqlalchemy import text as _text_dpt
+            with db.engine.connect() as _c_dpt:
+                _dcols = {r[1] for r in _c_dpt.execute(_text_dpt("PRAGMA table_info(depts)"))}
+                for _col, _typ in (("dept_type", "TEXT DEFAULT "), ("head_name", "TEXT DEFAULT ")):
+                    if _col not in _dcols:
+                        _c_dpt.execute(_text_dpt(f"ALTER TABLE depts ADD COLUMN {_col} {_typ}"))
+                        _c_dpt.commit()
+                        print(f"[dept] depts.{_col} 已补", flush=True)
+        except Exception as _e:
+            print("[dept] depts 列迁移失败：", _e, flush=True)
 
         # users 表补 dept_code（科室账号绑定科室）
         try:

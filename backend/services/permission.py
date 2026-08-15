@@ -105,6 +105,7 @@ PERMISSION_CATALOG = [
         "group": "系统管理",
         "items": [
             {"key": "user_manage", "label": "用户管理"},
+            {"key": "authz_manage", "label": "授权管理"},
         ],
     },
 ]
@@ -164,7 +165,14 @@ def get_user_perms(username, role):
     """
     if is_admin_user(username):
         return list(ALL_PERM_KEYS)
-    return get_role_perms(role)
+    base = get_role_perms(role)
+    # 授权管理是本阶段新增的系统能力，既有 role_permissions 不能改；采购部助理
+    # 和科室账号按制度固定参与授权链，因此在运行时补入，不回写已上线的角色配置。
+    if role in ("assistant", "dept") and "authz_manage" not in base:
+        base.append("authz_manage")
+    from services.authorization import effective_permissions
+    granted = effective_permissions(username)
+    return base + [key for key in granted if key in _ALL_PERM_SET and key not in base]
 
 
 def get_role_perms(role):
