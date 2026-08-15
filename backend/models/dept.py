@@ -30,7 +30,11 @@ class Dept(db.Model):
     code = db.Column(db.String(20), unique=True, nullable=False)   # 科室码，如 SBK
     name = db.Column(db.String(50), nullable=False)                # 现用名（展示用）
     aliases = db.Column(db.Text, default="")                       # 曾用名/别名，逗号分隔
-    category = db.Column(db.String(20), default="")                # 归口 / 需求
+    category = db.Column(db.String(20), default="")                # 归口/需求/实施/职能/监督/法务，可多值
+    # 行后 / 临床医技。依据《2026-8-15 人员和权限设计》：所有科室都是需求科室，
+    # 所有行后科室都是归口管理科室，**唯独采购部不是**（采管分离，岗位不兼容）。
+    dept_type = db.Column(db.String(20), default="")
+    head_name = db.Column(db.String(50), default="")               # 科室主要负责人
     active = db.Column(db.Integer, default=1)
     sort_no = db.Column(db.Integer, default=0)
     note = db.Column(db.Text, default="")
@@ -54,6 +58,9 @@ class Dept(db.Model):
             "name": self.name,
             "aliases": _split(self.aliases),
             "category": self.category or "",
+            "dept_type": self.dept_type or "",
+            "head_name": self.head_name or "",
+            "is_manage_dept": bool((self.dept_type or "") == "行后" and self.code != "CGB"),
             "active": self.active,
             "sort_no": self.sort_no or 0,
             "note": self.note or "",
