@@ -101,6 +101,12 @@ PERMISSION_CATALOG = [
             {"key": "scraper-settings", "label": "13.4 抓取模型设置"},
         ],
     },
+    {
+        "group": "系统管理",
+        "items": [
+            {"key": "user_manage", "label": "用户管理"},
+        ],
+    },
 ]
 
 ALL_PERM_KEYS = [item["key"] for grp in PERMISSION_CATALOG for item in grp["items"]]
@@ -130,7 +136,8 @@ DEFAULT_ROLE_PERMS = {
         "file-ocr", "bid-review",
     ],
     # 采购部负责人：全部业务权限
-    "leader": list(ALL_PERM_KEYS),
+    # 用户管理只给用户名 admin 的特判账号，任何业务角色都不播种该权限。
+    "leader": [k for k in ALL_PERM_KEYS if k != "user_manage"],
     # 代理机构：协办相关。可见 4(项目流程/开标管理/开标看板/授权函)、5采购文件编制、
     # 6采购公告、9采购结果、10合同；发布/确认类动作由经办人完成（见各 API 角色校验）。
     "agency": [

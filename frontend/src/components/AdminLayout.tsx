@@ -46,6 +46,12 @@ export default function AdminLayout() {
       icon: <ControlOutlined />,
       children: [
         {
+          key: 'users',
+          icon: <UserOutlined />,
+          label: '用户管理',
+          onClick: () => navigate('/admin/users'),
+        },
+        {
           key: 'permissions',
           icon: <SafetyOutlined />,
           label: '权限管理',

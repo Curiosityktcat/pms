@@ -82,6 +82,8 @@ def create_app():
     from routes.api_provider_api import bp as api_provider_bp  # 后台 API 管理（大模型台账）
     from routes.agency_assessment_api import bp as agency_assessment_bp  # 代理机构服务质量考核
     from routes.dept_portal_api import bp as dept_portal_bp             # 科室门户（归口科室自助查询）
+    from routes.user_admin_api import bp as user_admin_bp               # 登录账号管理（仅系统管理员）
+    from routes.dept_admin_api import bp as dept_admin_bp               # 科室字典管理（仅系统管理员）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
@@ -134,6 +136,8 @@ def create_app():
     app.register_blueprint(agency_assessment_bp)
     app.register_blueprint(procurement_plan_bp)  # 采购计划池
     app.register_blueprint(dept_portal_bp)  # 科室门户
+    app.register_blueprint(user_admin_bp)
+    app.register_blueprint(dept_admin_bp)
 
     # ── 科室角色的活动范围闸门 ──────────────────────────────────────────
     # 归口科室账号只能走科室门户。系统里不少老列表接口是「按角色做减法」写的
@@ -171,6 +175,7 @@ def create_app():
         from models.agency_template import AgencyTemplate  # noqa: F401
         from models.auth_letter_record import AuthLetterRecord  # noqa: F401
         from models.dept import Dept  # noqa: F401 归口科室字典
+        from models.user_audit_log import UserAuditLog  # noqa: F401 登录账号管理留痕
         from models.procurement_plan import (ProcurementPlan,  # noqa: F401
                                              ProcurementPlanAttachment)
         from models.web_announcement import WebAnnouncement  # noqa: F401 官网公告存档

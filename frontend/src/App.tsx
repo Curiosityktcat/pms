@@ -54,6 +54,7 @@ const DataPipeBoardPage = lazy(() => import('./pages/DataPipeBoardPage'))
 const EmailSettingsPage = lazy(() => import('./pages/EmailSettingsPage'))
 const ScraperSettingsPage = lazy(() => import('./pages/ScraperSettingsPage'))
 const PermissionManagePage = lazy(() => import('./pages/PermissionManagePage'))
+const UserAdminPage = lazy(() => import('./pages/UserAdminPage'))
 const LlmUsagePage = lazy(() => import('./pages/LlmUsagePage'))
 const LawLibraryPage = lazy(() => import('./pages/LawLibraryPage'))
 const PortalPage = lazy(() => import('./pages/PortalPage'))
@@ -325,6 +326,7 @@ export default function App() {
             >
               <Route index element={<Navigate to="permissions" replace />} />
               <Route path="permissions" element={<PermissionManagePage />} />
+              <Route path="users" element={<UserAdminPage />} />
               <Route path="model" element={<ScraperSettingsPage />} />
               <Route path="api" element={<ApiManagePage />} />
               <Route path="usage" element={<LlmUsagePage />} />
