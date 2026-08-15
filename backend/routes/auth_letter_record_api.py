@@ -7,6 +7,7 @@ from models import db
 from models.auth_letter_record import AuthLetterRecord
 from models.project import Project
 from routes.utils import login_required
+from services.dept_scope import assert_can_view_project, scope_by_project
 
 bp = Blueprint("auth_letter_record", __name__, url_prefix="/api/auth-letter-records")
 
@@ -25,7 +26,9 @@ def _can_view_project(project):
 @login_required
 def list_records():
     """列出所有授权函记录（已授权）"""
-    query = db.select(AuthLetterRecord).order_by(AuthLetterRecord.id.desc())
+    query = scope_by_project(
+        db.select(AuthLetterRecord), AuthLetterRecord
+    ).order_by(AuthLetterRecord.id.desc())
     rows = db.session.execute(query).scalars().all()
 
     result = []
@@ -54,6 +57,7 @@ def download_record_word(rid):
     if not rec:
         return jsonify({"ok": False, "error": "记录不存在"}), 404
 
+    assert_can_view_project(rec.project_id)
     project = db.session.get(Project, rec.project_id)
     if not _can_view_project(project):
         return jsonify({"ok": False, "error": "无权查看该授权函"}), 403

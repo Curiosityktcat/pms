@@ -16,6 +16,7 @@ import {
   internalBidDemandWordUrl,
   type InternalBidDemand, type BidItem, type BidPackage, type ReviewFactor,
 } from '../services/internalBidDemand'
+import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
 
@@ -108,6 +109,9 @@ function makeDefault(): Partial<InternalBidDemand> {
 
 export default function InternalBidDemandPage() {
   const { message, modal } = App.useApp()
+  const { user } = useAuth()
+  const isDeptRole = ['dept', 'dept_manage', 'dept_demand'].includes(user?.role || '')
+  const canWriteDemand = !isDeptRole || !!user?.perms.includes('internal-bid-demand')
 
   const [demands, setDemands] = useState<InternalBidDemand[]>([])
   const [loading, setLoading] = useState(false)
@@ -153,7 +157,7 @@ export default function InternalBidDemandPage() {
     setPackages([emptyPackage()])
     setReviewFactors(defaultReviewFactors())
     form.resetFields()
-    form.setFieldsValue(makeDefault())
+    form.setFieldsValue({ ...makeDefault(), demand_dept: user?.dept_name || '' })
     setDrawerOpen(true)
   }
 
@@ -331,8 +335,8 @@ export default function InternalBidDemandPage() {
     ],
     actions: (
       <>
-        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)} disabled={record.status === '定稿'}>编辑</Button>
-        {record.status === '定稿' && (
+        {canWriteDemand && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)} disabled={record.status === '定稿'}>编辑</Button>}
+        {canWriteDemand && record.status === '定稿' && (
           <Button size="small" icon={<FileWordOutlined />} type="primary" ghost
             onClick={() => window.open(internalBidDemandWordUrl(record.id), '_blank')}>下载Word</Button>
         )}
@@ -341,7 +345,7 @@ export default function InternalBidDemandPage() {
             <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
           </Popconfirm>
         )}
-        {record.status === '初稿' && (
+        {canWriteDemand && record.status === '初稿' && (
           <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -360,9 +364,9 @@ export default function InternalBidDemandPage() {
         marginBottom: 16,
       }}>
         <div style={{ fontSize: 18, fontWeight: 600 }}>院内竞选需求编制</div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+        {canWriteDemand && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           新建需求表
-        </Button>
+        </Button>}
       </div>
 
       <Tabs

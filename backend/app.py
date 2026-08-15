@@ -142,18 +142,30 @@ def create_app():
     app.register_blueprint(authorization_bp)
 
     # ── 科室角色的活动范围闸门 ──────────────────────────────────────────
-    # 归口科室账号只能走科室门户。系统里不少老列表接口是「按角色做减法」写的
-    # （认识 officer/agency 就过滤，遇到没列到的角色默认放行全部），给新角色
-    # 逐个打补丁必然会漏；这里反过来默认拒绝，要放行必须显式写进白名单。
+    # 归口科室账号仍按「默认拒绝」收口。这里只列阶段 C 已逐接口补过科室隔离的
+    # 业务前缀；即使后续新增蓝图，也不会因为遗漏权限判断而自动暴露给科室账号。
     _DEPT_ALLOW_EXACT = {
         "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/chpwd",
         "/api/auth/captcha",
     }
+    _DEPT_READONLY_PREFIXES = (
+        "/api/projects", "/api/bid", "/api/bid-board",
+        "/api/auth-letter-records", "/api/announcements",
+        "/api/procurement-demands", "/api/internal-bid-demands",
+        "/api/procurement-results", "/api/contracts",
+        "/api/inquiries", "/api/inquiry-reviews", "/api/inquiry-templates",
+        "/api/project-review",
+        "/api/ocr",
+    )
+    _DEPT_WRITABLE_PREFIXES = (
+        "/api/procurement-demands", "/api/internal-bid-demands",
+    )
 
     @app.before_request
     def _confine_dept_role():
         from flask import request as _rq, session as _ss, jsonify as _js
-        if _ss.get("role") != "dept":
+        from services.dept_scope import is_dept_role
+        if not is_dept_role(_ss.get("role")):
             return None
         path = _rq.path
         if not path.startswith("/api/"):
@@ -165,7 +177,21 @@ def create_app():
             return None
         if path in _DEPT_ALLOW_EXACT:
             return None
-        return _js({"ok": False, "error": "科室账号仅可使用科室门户"}), 403
+        # 必须按路径段匹配；直接 startswith("/api/bid") 会把明确未开放的
+        # /api/bid-review 也误放进来。
+        if any(path == prefix or path.startswith(prefix + "/")
+               for prefix in _DEPT_READONLY_PREFIXES):
+            if _rq.method == "GET":
+                return None
+            if any(path == prefix or path.startswith(prefix + "/")
+                   for prefix in _DEPT_WRITABLE_PREFIXES):
+                from services.dept_scope import WRITABLE_PERMS
+                from services.permission import get_user_perms
+                _perms = set(get_user_perms(_ss.get("user", ""), _ss.get("role", "")))
+                if _perms.intersection(WRITABLE_PERMS):
+                    return None
+            return _js({"ok": False, "error": "科室账号在本环节只有查看权限"}), 403
+        return _js({"ok": False, "error": "科室账号在本环节只有查看权限"}), 403
 
     app.register_blueprint(web_announcement_bp)  # 官网公告存档
     app.register_blueprint(doc_intake_attach_bp)  # 资料智能归档 → 自动挂载到业务模块
@@ -382,6 +408,15 @@ def create_app():
                 ).first()
                 if not _has:
                     db.session.add(_RP(role=_role, perm_key=_perm))
+        # 两个新角色必须各自拥有一份权限记录；只补缺项，不覆盖其它角色的人工配置。
+        from services.permission import DEFAULT_ROLE_PERMS as _DEFAULT_ROLE_PERMS
+        for _dept_role in ("dept_manage", "dept_demand"):
+            for _perm in _DEFAULT_ROLE_PERMS[_dept_role]:
+                _has = db.session.execute(
+                    db.select(_RP).filter_by(role=_dept_role, perm_key=_perm)
+                ).first()
+                if not _has:
+                    db.session.add(_RP(role=_dept_role, perm_key=_perm))
         db.session.commit()
 
         # 预填默认邮件配置

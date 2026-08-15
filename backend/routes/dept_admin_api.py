@@ -29,6 +29,9 @@ def _values(data, current=None):
         return None, "科室名称不能为空"
     if any(category not in CATEGORIES for category in categories):
         return None, "科室分类不正确"
+    dept_type = (data.get("dept_type", getattr(current, "dept_type", "")) or "").strip()
+    if dept_type not in ("", "行后", "临床医技"):
+        return None, "科室类型只能是行后或临床医技"
     try:
         sort_no = int(data.get("sort_no", getattr(current, "sort_no", 0)) or 0)
     except (TypeError, ValueError):
@@ -36,7 +39,9 @@ def _values(data, current=None):
     return {"code": code, "name": name, "aliases": aliases,
             "category": ",".join(categories),
             "active": 1 if data.get("active", getattr(current, "active", 1)) in (1, True, "1") else 0,
-            "sort_no": sort_no, "note": (data.get("note", getattr(current, "note", "")) or "").strip()}, ""
+            "sort_no": sort_no, "dept_type": dept_type,
+            "head_name": (data.get("head_name", getattr(current, "head_name", "")) or "").strip(),
+            "note": (data.get("note", getattr(current, "note", "")) or "").strip()}, ""
 
 
 @bp.route("", methods=["GET"])

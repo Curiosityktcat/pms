@@ -18,6 +18,7 @@ from routes.utils import login_required, can_view_project
 from services import approval_log as alog
 from services.permission import is_admin_user
 from services.project_progress import stage_map
+from services.dept_scope import assert_can_view_project, scope_projects
 
 bp = Blueprint("project_review", __name__, url_prefix="/api/project-review")
 
@@ -79,7 +80,7 @@ def review_result_uploaded(pid, rnd):
 @bp.route("/projects", methods=["GET"])
 @login_required
 def list_projects():
-    rows = db.session.execute(db.select(Project).where(
+    rows = db.session.execute(scope_projects(db.select(Project)).where(
         Project.method.in_(METHODS),
         db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)),
         db.or_(Project.is_draft == 0, Project.is_draft.is_(None)),
@@ -290,6 +291,7 @@ def upload(pid):
 
 
 def _get_att(pid, aid):
+    assert_can_view_project(pid)
     att = db.session.get(ProcurementDocAttachment, aid)
     if not att or att.project_id != pid or att.kind != KIND:
         return None

@@ -3,12 +3,12 @@ import {
   App, Button, Card, Drawer, Form, Input, InputNumber, Modal,
   Popconfirm, Select, Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd'
-import { CopyOutlined, DeleteOutlined, EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, TeamOutlined } from '@ant-design/icons'
 import { listAgencies, type AgencyInfo } from '../services/agency'
 import {
-  createDept, createUser, deleteDept, deleteUser, getUserAudit, listDepts, listRoles,
+  bulkDeptAccounts, createDept, createUser, deleteDept, deleteUser, getUserAudit, listDepts, listRoles,
   listUsers, resetUserPassword, toggleUser, updateDept, updateUser,
-  type AdminUser, type AuditInfo, type DeptInfo, type RoleInfo,
+  type AdminUser, type AuditInfo, type BulkDeptAccount, type DeptInfo, type RoleInfo,
 } from '../services/userAdmin'
 
 const { Text, Title } = Typography
@@ -117,10 +117,55 @@ export default function UserAdminPage() {
     } catch (err) { message.error(errorText(err)) }
   }
 
+  const accountText = (rows: BulkDeptAccount[]) => rows
+    .map(row => `${row.username}\t${row.password || ''}\t${row.role}\t${row.dept_code}`).join('\n')
+
+  const downloadAccounts = (rows: BulkDeptAccount[]) => {
+    const quote = (value: string) => `"${value.replace(/"/g, '""')}"`
+    const csv = ['用户名,一次性密码,角色,科室编码,科室类型', ...rows.map(row =>
+      [row.username, row.password || '', row.role, row.dept_code, row.dept_type].map(quote).join(','))].join('\r\n')
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a'); link.href = url; link.download = '科室账号.csv'; link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const showBulkResult = (rows: BulkDeptAccount[]) => modal.info({
+    title: `已创建 ${rows.length} 个科室账号`, width: 760, okText: '我已保存，关闭',
+    content: <Space direction="vertical" style={{ width: '100%' }}>
+      <Text type="danger">明文密码关闭后不可再查看，请立即复制或下载并安全保管。</Text>
+      <Space>
+        <Button icon={<CopyOutlined />} onClick={() => void navigator.clipboard.writeText(accountText(rows)).then(() => message.success('已复制全部'))}>复制全部</Button>
+        <Button icon={<DownloadOutlined />} onClick={() => downloadAccounts(rows)}>下载 CSV</Button>
+      </Space>
+      <Table size="small" rowKey="dept_code" pagination={{ pageSize: 10 }} dataSource={rows} columns={[
+        { title: '用户名', dataIndex: 'username' }, { title: '一次性密码', dataIndex: 'password' },
+        { title: '角色', dataIndex: 'role' }, { title: '科室编码', dataIndex: 'dept_code' },
+      ]} />
+    </Space>,
+  })
+
+  const previewBulk = async () => {
+    try {
+      const rows = (await bulkDeptAccounts(true)).data.pending
+      if (!rows.length) { message.info('所有启用科室都已有账号'); return }
+      modal.confirm({
+        title: `将创建 ${rows.length} 个科室账号`, width: 680, okText: '确认创建',
+        content: <Table size="small" rowKey="dept_code" pagination={{ pageSize: 8 }} dataSource={rows} columns={[
+          { title: '科室', dataIndex: 'username' }, { title: '类型', dataIndex: 'dept_type' },
+          { title: '角色', dataIndex: 'role' }, { title: '编码', dataIndex: 'dept_code' },
+        ]} />,
+        onOk: async () => {
+          const created = (await bulkDeptAccounts(false)).data.created
+          await Promise.all([loadUsers(), loadDictionaries()]); showBulkResult(created)
+        },
+      })
+    } catch (err) { message.error(errorText(err, '批量建号失败')) }
+  }
+
   const userColumns = [
     { title: '用户名', dataIndex: 'username' }, { title: '姓名', dataIndex: 'display_name' },
     { title: '角色', dataIndex: 'role', render: (value: string) => <Tag color="blue">{roles.find(r => r.role === value)?.role_cn || value}</Tag> },
-    { title: '所属科室 / 代理', render: (_: unknown, user: AdminUser) => user.dept_code ? (depts.find(d => d.code === user.dept_code)?.name || user.dept_code) : user.agency_code ? (agencies.find(a => a.code === user.agency_code)?.name || user.agency_code) : '-' },
+    { title: '所属科室 / 代理', render: (_: unknown, user: AdminUser) => user.dept_code ? <Space direction="vertical" size={0}><span>{user.dept?.name || user.dept_code}</span><Text type="secondary">{user.dept?.dept_type || '类型未设置'} · {user.dept?.is_manage_dept ? '归口管理科室' : '需求科室'}</Text></Space> : user.agency_code ? (agencies.find(a => a.code === user.agency_code)?.name || user.agency_code) : '-' },
     { title: '状态', dataIndex: 'active', render: (value: number) => <Tag color={value ? 'green' : 'default'}>{value ? '启用' : '停用'}</Tag> },
     { title: '操作', width: 390, render: (_: unknown, user: AdminUser) => <Space wrap>
       <Button size="small" icon={<EditOutlined />} onClick={() => openUser(user)}>编辑</Button>
@@ -133,6 +178,8 @@ export default function UserAdminPage() {
 
   const deptColumns = [
     { title: '编码', dataIndex: 'code' }, { title: '名称', dataIndex: 'name' },
+    { title: '科室类型', dataIndex: 'dept_type', render: (v: string) => v || '-' },
+    { title: '负责人', dataIndex: 'head_name', render: (v: string) => v || '-' },
     { title: '别名', dataIndex: 'aliases', render: (v: string[]) => v?.join('、') || '-' },
     { title: '分类', dataIndex: 'category', render: (v: string) => v ? v.split(',').map(x => <Tag key={x}>{x}</Tag>) : '-' },
     { title: '状态', dataIndex: 'active', render: (v: number) => <Tag color={v ? 'green' : 'default'}>{v ? '启用' : '停用'}</Tag> },
@@ -152,6 +199,7 @@ export default function UserAdminPage() {
           <Select allowClear placeholder="角色" style={{ width: 180 }} options={roles.map(r => ({ value: r.role, label: `${r.role_cn}（${r.count}）` }))} onChange={role => { setPage(1); setFilters(v => ({ ...v, role: role || '' })) }} />
           <Select allowClear placeholder="状态" style={{ width: 120 }} options={[{ value: '1', label: '启用' }, { value: '0', label: '停用' }]} onChange={active => { setPage(1); setFilters(v => ({ ...v, active: active || '' })) }} />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openUser()}>新建账号</Button>
+          <Button icon={<TeamOutlined />} onClick={() => void previewBulk()}>批量建科室账号</Button>
         </Space>
         <Table rowKey="id" loading={loading} columns={userColumns} dataSource={users} scroll={{ x: 1100 }} pagination={{ current: page, pageSize: size, total, showSizeChanger: true, onChange: (p, s) => { setPage(p); setSize(s) } }} />
       </> },
@@ -166,7 +214,7 @@ export default function UserAdminPage() {
         {!editing && <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}><Input /></Form.Item>}
         <Form.Item name="display_name" label="姓名" extra="姓名会被项目、推送和待办按字符串引用，修改前请确认。" rules={[{ required: true, message: '请输入姓名' }]}><Input /></Form.Item>
         <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.role, label: r.role_cn }))} /></Form.Item>
-        {watchedRole === 'dept' && <Form.Item name="dept_code" label="所属科室" rules={[{ required: true, message: '请选择科室' }]}><Select showSearch optionFilterProp="label" options={depts.filter(d => d.active).map(d => ({ value: d.code, label: `${d.name}（${d.code}）` }))} /></Form.Item>}
+        {['dept', 'dept_manage', 'dept_demand'].includes(watchedRole) && <Form.Item name="dept_code" label="所属科室" rules={[{ required: true, message: '请选择科室' }]}><Select showSearch optionFilterProp="label" options={depts.filter(d => d.active).map(d => ({ value: d.code, label: `${d.name}（${d.code}）` }))} /></Form.Item>}
         {watchedRole === 'agency' && <Form.Item name="agency_code" label="所属代理机构" rules={[{ required: true, message: '请选择代理机构' }]}><Select showSearch optionFilterProp="label" options={agencies.filter(a => a.active).map(a => ({ value: a.code, label: a.name }))} /></Form.Item>}
         {!editing && <Form.Item name="password" label="初始密码" extra="不填则自动生成 12 位随机密码，只展示一次。"><Input.Password /></Form.Item>}
         {editing && <Form.Item name="active" label="启用状态" valuePropName="checked"><Switch /></Form.Item>}
@@ -187,6 +235,8 @@ export default function UserAdminPage() {
         <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="aliases" label="别名" extra="多个别名用逗号分隔"><Input /></Form.Item>
         <Form.Item name="category" label="分类"><Select mode="multiple" options={CATEGORY_OPTIONS} /></Form.Item>
+        <Form.Item name="dept_type" label="科室类型"><Select allowClear options={[{ value: '行后', label: '行后' }, { value: '临床医技', label: '临床医技' }]} /></Form.Item>
+        <Form.Item name="head_name" label="科室主要负责人"><Input /></Form.Item>
         <Form.Item name="sort_no" label="排序"><InputNumber style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="note" label="备注"><Input.TextArea /></Form.Item>
         <Form.Item name="active" label="启用状态" valuePropName="checked"><Switch /></Form.Item>

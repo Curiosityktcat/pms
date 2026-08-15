@@ -6,6 +6,7 @@ from models.internal_bid_demand import InternalBidDemand
 from models.project import Project
 from routes.utils import login_required
 from services.permission import is_admin_user
+from services.dept_scope import assert_can_write_demand, assert_has_writable_perm, is_dept_role, scope_by_project
 
 bp = Blueprint("internal_bid_demand", __name__, url_prefix="/api/internal-bid-demands")
 
@@ -35,6 +36,10 @@ def _scoped(did):
     demand = db.session.get(InternalBidDemand, did)
     if not demand:
         return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if is_dept_role():
+        assert_has_writable_perm("internal-bid-demand")
+        assert_can_write_demand(demand.demand_dept, demand.project_id)
+        return demand, None
     if not _scope_ok(demand):
         return None, (jsonify({"ok": False, "error": "无权访问该院内招标需求"}), 403)
     return demand, None
@@ -59,14 +64,17 @@ def list_demands():
     project_id = request.args.get("project_id", type=int)
     status_filter = request.args.get("status", "")
 
-    q = db.select(InternalBidDemand).order_by(InternalBidDemand.id.desc())
+    q = scope_by_project(
+        db.select(InternalBidDemand), InternalBidDemand
+    ).order_by(InternalBidDemand.id.desc())
     if project_id:
         q = q.where(InternalBidDemand.project_id == project_id)
     if status_filter:
         q = q.where(InternalBidDemand.status == status_filter)
 
     rows = db.session.execute(q).scalars().all()
-    rows = [r for r in rows if _scope_ok(r)]   # 隔离：只看本人起草/本人项目的
+    if not is_dept_role():
+        rows = [r for r in rows if _scope_ok(r)]   # 既有角色仍按本人起草/本人项目隔离
     return jsonify({"ok": True, "data": [_enrich(r) for r in rows]})
 
 
@@ -75,6 +83,8 @@ def list_demands():
 @login_required
 def create_demand():
     data = request.get_json(force=True) or {}
+    assert_has_writable_perm("internal-bid-demand")
+    assert_can_write_demand(data.get("demand_dept"))
     now = _now()
 
     allowed = {c.name for c in InternalBidDemand.__table__.columns}
@@ -114,6 +124,8 @@ def update_demand(did):
         return jsonify({"ok": False, "error": "定稿状态不可修改，请先撤回"}), 400
 
     data = request.get_json(force=True) or {}
+    if "demand_dept" in data:
+        assert_can_write_demand(data.get("demand_dept"))
     locked = {"id", "created_by", "created_at", "status"}
     for k, v in data.items():
         if hasattr(demand, k) and k not in locked:

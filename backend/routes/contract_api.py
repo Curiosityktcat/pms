@@ -13,6 +13,7 @@ from models.project import Project
 from services import approval_log as alog
 from routes.utils import login_required, can_view_project
 from services import upload_relay
+from services.dept_scope import assert_can_view_project, scope_by_project
 
 # ── rd-web 合同审签单直连提交状态（按合同 id 隔离）────────────────
 _rdweb: dict = {}   # {cid: {running, ok, serial_no, msg, started_at}}
@@ -54,6 +55,8 @@ def _scoped(cid):
     c = db.session.get(Contract, cid)
     if not c:
         return None, None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
+        assert_can_view_project(c.project_id)
     project = db.session.get(Project, c.project_id)
     if not can_view_project(project):
         return None, None, (jsonify({"ok": False, "error": "无权访问该合同"}), 403)
@@ -95,14 +98,14 @@ def _validate_amount(amount, project):
 @login_required
 def list_contracts():
     project_id = request.args.get("project_id", type=int)
-    q = db.select(Contract)
+    q = scope_by_project(db.select(Contract), Contract)
     if project_id:
         q = q.where(Contract.project_id == project_id)
     rows = db.session.execute(q.order_by(Contract.id.desc())).scalars().all()
     # 隔离：agency 本机构、officer 本人经办、助理/负责人/管理员全部
     result = []
     for c in rows:
-        if not can_view_project(db.session.get(Project, c.project_id)):
+        if session.get("role") not in ("dept", "dept_manage", "dept_demand") and not can_view_project(db.session.get(Project, c.project_id)):
             continue
         result.append(_enrich(c))
     from services.pending_owner import attach_pending

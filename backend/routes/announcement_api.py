@@ -12,6 +12,7 @@ from models.announcement_attachment import AnnouncementAttachment
 from services import announcement as svc
 from services import approval_log as alog
 from services.permission import is_admin_user
+from services.dept_scope import scope_by_project, scope_projects, visible_project_ids
 from routes.utils import login_required
 from services import upload_relay
 
@@ -74,6 +75,8 @@ def _scope_ok(project) -> bool:
     if not project:
         return False
     role = session.get("role", "")
+    if role in ("dept", "dept_manage", "dept_demand"):
+        return project.id in (visible_project_ids() or set())
     if role == "agency":
         return (project.agency_code or "") == session.get("agency_code", "")
     if role == "officer":
@@ -368,7 +371,7 @@ def public_announcement_html(aid):
 def list_announcements():
     ann_type = request.args.get("type", "procurement")
     rows = db.session.execute(
-        db.select(Announcement)
+        scope_by_project(db.select(Announcement), Announcement)
         .where(Announcement.ann_type == ann_type)
         .order_by(Announcement.id.desc())
     ).scalars().all()
@@ -872,7 +875,7 @@ def eligible_projects():
         from services.bid import _parse_cn_deadline
         from datetime import datetime as _dtnow
         pairs = db.session.execute(
-            db.select(Project, Announcement)
+            scope_projects(db.select(Project, Announcement))
             .join(Announcement, db.and_(
                 Announcement.project_id == Project.id,
                 Announcement.ann_type == "procurement",
@@ -908,7 +911,8 @@ def eligible_projects():
         # 调研公告发生在采购需求论证阶段，单一来源公示发生在确定方式之后、
         # 采购文件确认之前——两者都**不能**要求「采购文件已确认」，
         # 否则下拉永远是空的。这里只要求项目本身有效。
-        q = (db.select(Project)
+        q = scope_projects(db.select(Project))
+        q = (q
              .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
              .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None))))
         if ann_type == "single_source":
@@ -918,7 +922,7 @@ def eligible_projects():
         rows = db.session.execute(q.order_by(Project.id.desc())).scalars().all()
     else:
         rows = db.session.execute(
-            db.select(Project)
+            scope_projects(db.select(Project))
             .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
             .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
             .where(Project.agency_code != "")

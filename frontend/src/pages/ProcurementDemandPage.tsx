@@ -129,6 +129,13 @@ export default function ProcurementDemandPage() {
   const role        = user?.role || ''
   const isAssistant = role === 'assistant' || role === 'leader'
   const isOfficer   = role === 'officer'
+  const isDeptRole = ['dept', 'dept_manage', 'dept_demand'].includes(role)
+  const permByType: Partial<Record<DemandType, string>> = {
+    gov: 'procurement-demand-gov', sole_source: 'procurement-demand-sole',
+    inquiry: 'procurement-demand-inquiry', emergency: 'procurement-demand-emergency',
+  }
+  const canWriteDemand = !isDeptRole || !!(permByType[demandType as DemandType]
+    && user?.perms.includes(permByType[demandType as DemandType]!))
 
   const [demands,  setDemands]  = useState<ProcurementDemand[]>([])
   const [agencies, setAgencies] = useState<{ code: string; name: string }[]>([])
@@ -182,7 +189,7 @@ export default function ProcurementDemandPage() {
     setItems([emptyItem()])
     setAttachName('')
     form.resetFields()
-    form.setFieldsValue(makeDefault(demandType))
+    form.setFieldsValue({ ...makeDefault(demandType), demand_dept: user?.dept_name || '' })
     setShowSurvey(isGov)
     setDrawerOpen(true)
   }
@@ -347,15 +354,15 @@ export default function ProcurementDemandPage() {
   // ── 操作列 ───────────────────────────────────────────────────────
   const demandActions = (record: ProcurementDemand, status: DemandStatus) => (
     <>
-      {(status === '草稿' || status === '已分发') && (
+      {canWriteDemand && (status === '草稿' || status === '已分发') && (
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
       )}
-      {status === '草稿' && (
+      {canWriteDemand && status === '草稿' && (
         <Popconfirm title="提交后等待采购部分发，确认？" onConfirm={() => handleSubmit(record.id)}>
           <Button size="small" type="primary" icon={<SendOutlined />}>提交</Button>
         </Popconfirm>
       )}
-      {status === '待分发' && (
+      {canWriteDemand && status === '待分发' && (
         <Popconfirm title="撤回为草稿？" onConfirm={() => handleRecall(record.id)}>
           <Button size="small" icon={<RollbackOutlined />}>撤回</Button>
         </Popconfirm>
@@ -382,7 +389,7 @@ export default function ProcurementDemandPage() {
           <Button size="small" icon={<FileWordOutlined />} onClick={() => window.open(demandWordUrl(record.id), '_blank')}>Word</Button>
         </Tooltip>
       )}
-      {status === '草稿' && (
+      {canWriteDemand && status === '草稿' && (
         <Popconfirm title="确认删除？" onConfirm={() => handleDelete(record.id)}>
           <Button size="small" danger icon={<DeleteOutlined />} />
         </Popconfirm>
@@ -458,7 +465,7 @@ export default function ProcurementDemandPage() {
           </Space>
         }
         extra={
-          isTyped && (
+          isTyped && canWriteDemand && (
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建{meta?.label}{isEmergency ? '登记' : '需求'}
             </Button>

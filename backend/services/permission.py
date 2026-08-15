@@ -145,9 +145,31 @@ DEFAULT_ROLE_PERMS = {
         "flow", "bid", "bid-board", "auth-letter",
         "doc", "announcement", "project-review", "procurement-result", "contract",
     ],
-    # 归口科室：只有科室门户一个权限。门户是只读的，且所有数据都从 /api/dept/* 出，
-    # 那些接口自己按科室收口——不给任何老权限键，避免踩「老接口对陌生角色默认放行」。
-    "dept": ["dept-portal"],
+    # 两类科室当前权限相同，但必须独立保存，后续归口科室增加履约操作时才不会影响需求科室。
+    "dept_manage": [
+        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
+        "procurement-demand-inquiry", "procurement-demand-emergency",
+        "new", "flow", "bid", "bid-board", "auth-letter",
+        "agency-agreement", "doc", "announcement",
+        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
+        "file-ocr", "dept-portal",
+    ],
+    "dept_demand": [
+        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
+        "procurement-demand-inquiry", "procurement-demand-emergency",
+        "new", "flow", "bid", "bid-board", "auth-letter",
+        "agency-agreement", "doc", "announcement",
+        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
+        "file-ocr", "dept-portal",
+    ],
+    # 旧角色只为迁移前兼容，不出现在新的权限矩阵中。
+    "dept": [
+        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
+        "procurement-demand-inquiry", "procurement-demand-emergency", "new", "flow",
+        "bid", "bid-board", "auth-letter", "agency-agreement", "doc", "announcement",
+        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
+        "file-ocr", "dept-portal",
+    ],
     # 监督：开标相关
     "supervisor": ["flow", "bid", "bid-board"],
 }
@@ -168,7 +190,7 @@ def get_user_perms(username, role):
     base = get_role_perms(role)
     # 授权管理是本阶段新增的系统能力，既有 role_permissions 不能改；采购部助理
     # 和科室账号按制度固定参与授权链，因此在运行时补入，不回写已上线的角色配置。
-    if role in ("assistant", "dept") and "authz_manage" not in base:
+    if role in ("assistant", "dept", "dept_manage", "dept_demand") and "authz_manage" not in base:
         base.append("authz_manage")
     from services.authorization import effective_permissions
     granted = effective_permissions(username)

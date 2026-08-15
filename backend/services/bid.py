@@ -8,6 +8,7 @@ from models.announcement import Announcement
 from models.procurement_round import ProcurementRound
 from models.package import Package
 from models.round_package import RoundPackage
+from services.dept_scope import scope_by_project, scope_projects
 
 
 def get_agency_name(code):
@@ -42,7 +43,7 @@ def list_bid_projects(role, agency_code=None, officer=None):
     """
     # 获取所有已确认的采购公告
     confirmed_anns = db.session.execute(
-        db.select(Announcement)
+        scope_by_project(db.select(Announcement), Announcement)
         .where(Announcement.status == "已确认")
         .where(Announcement.ann_type == "procurement")
     ).scalars().all()
@@ -70,6 +71,7 @@ def list_bid_projects(role, agency_code=None, officer=None):
         .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
         .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
     )
+    base = scope_projects(base)
 
     if role == "agency":
         base = base.where(Project.agency_code == agency_code)

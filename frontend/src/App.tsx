@@ -267,7 +267,7 @@ export default function App() {
                 index
                 element={
                   /* 科室账号直接落到科室门户——/portal 是采购部工作台，科室进去只有空壳 */
-                  <Navigate to={user?.role === 'dept' ? "/dept-portal" : "/portal"} replace />
+                  <Navigate to={['dept', 'dept_manage', 'dept_demand'].includes(user?.role || '') ? "/dept-portal" : "/portal"} replace />
                 }
               />
               <Route path="portal" element={<PortalPage />} />

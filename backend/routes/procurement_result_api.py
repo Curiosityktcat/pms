@@ -14,6 +14,7 @@ from models.round_package import RoundPackage
 from services import approval_log as alog
 from routes.utils import login_required
 from services import upload_relay
+from services.dept_scope import assert_can_view_project, scope_by_project, visible_project_ids
 
 bp = Blueprint("procurement_result", __name__, url_prefix="/api/procurement-results")
 
@@ -54,6 +55,8 @@ def _scope_ok(project_id) -> bool:
     与项目列表口径一致：agency 只看本机构、officer 只看本人经办，
     assistant/leader/admin 全部可见。"""
     role = session.get("role", "")
+    if role in ("dept", "dept_manage", "dept_demand"):
+        return project_id in (visible_project_ids() or set())
     if role == "agency":
         return _project_agency(project_id) == session.get("agency_code", "")
     if role == "officer":
@@ -68,6 +71,9 @@ def _scoped_result(rid):
     result = db.session.get(ProcurementResult, rid)
     if not result:
         return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
+        assert_can_view_project(result.project_id)
+        return result, None
     if not _scope_ok(result.project_id):
         return None, (jsonify({"ok": False, "error": "无权访问该采购结果"}), 403)
     return result, None
@@ -163,7 +169,7 @@ def _apply_result_to_cycle(result):
 @login_required
 def list_results():
     project_id = request.args.get("project_id", type=int)
-    q = db.select(ProcurementResult)
+    q = scope_by_project(db.select(ProcurementResult), ProcurementResult)
     if project_id:
         q = q.where(ProcurementResult.project_id == project_id)
     # 权限分离：按角色收窄可见范围，与项目列表一致（避免看到他人项目）

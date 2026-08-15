@@ -22,6 +22,7 @@ from models.inquiry_review import InquiryReview, InquirySupplierFile
 from models.project import Project
 from routes.utils import login_required, can_view_project
 from services import upload_relay
+from services.dept_scope import assert_can_view_project, scope_by_project
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -46,6 +47,9 @@ def _scoped_letter(lid):
     letter = db.session.get(InquiryLetter, lid)
     if not letter:
         return None, (jsonify({"ok": False, "error": "函件不存在"}), 404)
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
+        assert_can_view_project(letter.project_id)
+        return letter, None
     if not can_view_project(db.session.get(Project, letter.project_id)):
         return None, (jsonify({"ok": False, "error": "无权访问该询/议价评审"}), 403)
     return letter, None
@@ -127,7 +131,8 @@ def _review_dict(review, letter, sups=None):
 @login_required
 def list_reviews():
     letters = db.session.execute(
-        db.select(InquiryLetter).order_by(InquiryLetter.id.desc())
+        scope_by_project(db.select(InquiryLetter), InquiryLetter)
+        .order_by(InquiryLetter.id.desc())
     ).scalars().all()
     reviews = {r.inquiry_id: r for r in db.session.execute(
         db.select(InquiryReview)).scalars().all()}
@@ -140,7 +145,7 @@ def list_reviews():
             continue
         proj = db.session.get(Project, l.project_id)
         # 数据级隔离：经办人只看本人项目、代理只看本机构（与项目列表口径一致）
-        if not can_view_project(proj):
+        if session.get("role") not in ("dept", "dept_manage", "dept_demand") and not can_view_project(proj):
             continue
         sups = _suppliers(l.id)
         rows.append({

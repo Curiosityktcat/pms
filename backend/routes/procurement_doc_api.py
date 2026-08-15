@@ -14,6 +14,7 @@ from models.round_package import RoundPackage
 from services import approval_log as alog
 from routes.utils import login_required
 from services import upload_relay
+from services.dept_scope import assert_can_view_project
 
 bp = Blueprint("procurement_doc", __name__, url_prefix="/api/projects")
 
@@ -33,6 +34,7 @@ def _check_project_access(project):
     """返回 (ok, error_json, status)；校验项目可用且当前用户有权操作。"""
     if not project:
         return False, {"ok": False, "error": "项目不存在"}, 404
+    assert_can_view_project(project.id)
     if project.is_draft:
         return False, {"ok": False, "error": "草稿项目无法生成采购文件"}, 400
     if not project.agency_code:
@@ -250,6 +252,7 @@ def _confirmation_history(kind):
         agency_code=session.get("agency_code", ""),
         officer=session.get("display_name", ""),
         show_deleted=False,
+        dept_code=session.get("dept_code", ""),
     )
     proj_meta = {r["id"]: r for r in rows if r.get("agency_code") and not r.get("is_draft")}
     ids = list(proj_meta.keys())
@@ -969,5 +972,6 @@ def ai_generate_doc(pid):
 @bp.route("/<int:pid>/ai-generate-doc/status")
 @login_required
 def ai_generate_doc_status(pid):
+    assert_can_view_project(pid)
     return jsonify({"ok": True, "data": _aigen.get(pid, {
         "running": False, "ok": None, "msg": ""})})

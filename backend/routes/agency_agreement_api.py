@@ -12,6 +12,7 @@ from models.project import Project
 from models.agency import Agency
 from routes.utils import login_required
 from services import upload_relay
+from services.dept_scope import assert_can_view_project
 
 bp = Blueprint("agency_agreement", __name__, url_prefix="/api/projects")
 
@@ -40,6 +41,7 @@ def _safe_name(name: str) -> str:
 
 def _check_project_access(project):
     """经办人仅限本人项目，代理机构仅限本机构项目。返回错误响应或 None。"""
+    assert_can_view_project(project.id)
     role = session.get("role", "")
     if role == "officer" and project.officer != session.get("display_name", ""):
         return jsonify({"ok": False, "error": "无权操作该项目"}), 403
@@ -331,6 +333,7 @@ def submit_agency_agreement_to_rdweb(pid):
 @bp.route("/<int:pid>/agency-agreement/rdweb-status")
 @login_required
 def agency_agreement_rdweb_status(pid):
+    assert_can_view_project(pid)
     return jsonify({"ok": True, "data": _rdweb.get(pid, {
         "running": False, "ok": None, "serial_no": "", "msg": ""
     })})

@@ -63,7 +63,7 @@ def list_projects(role, agency_code=None, officer=None, show_deleted=False, dept
             .where(deleted_filter)
             .order_by(Project.id.desc())
         )
-    elif role == "dept":
+    elif role in ("dept", "dept_manage", "dept_demand"):
         # 归口科室账号：本科室归口 ∪ 本科室提需求的项目，草稿不给看。
         # 科室名可能改过（设备科→医学装备部），故按别名展开成名字集合匹配。
         from services import dept as _dept_svc

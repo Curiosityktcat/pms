@@ -103,23 +103,60 @@ export default function AppLayout() {
   // 菜单手风琴：同一时间只展开一个分组，减少视觉杂乱
   const [openKeys, setOpenKeys] = useState<string[]>(getDefaultOpenKeys())
 
-  // 归口科室账号：侧栏只留科室门户一项。
-  // 不能沿用下面那套 CONTROLLED_KEYS 过滤——它是「不在受控表里就显示」的白名单反向逻辑，
-  // 科室账号会看到一大片点进去 403 的菜单。后端闸门已经把这些接口关掉了，前端得对上。
+  // 归口科室账号只展示阶段 C 已做数据隔离的只读页面。这里仍按后端发回的 perms
+  // 逐项过滤，避免管理员撤掉某项权限后侧栏还残留一个必然 403 的入口。
+  const deptPerms = new Set(user?.perms || [])
+  const deptItem = (key: string, label: string, path: string) =>
+    deptPerms.has(key) ? { key, label, onClick: () => navigate(path) } : null
   const DEPT_ONLY_MENU = [
-    {
+    deptPerms.has('dept-portal') ? {
       key: 'dept-portal',
       label: '我的科室项目',
       icon: <ProfileOutlined />,
       onClick: () => navigate('/dept-portal'),
-    },
+    } : null,
     {
+      key: 'dept-demand', label: '1. 采购需求编制', icon: <FormOutlined />,
+      children: [
+        deptItem('procurement-demand-gov', '1.1 政府采购需求', '/procurement-demand/gov'),
+        deptItem('internal-bid-demand', '1.2 院内竞选需求编制', '/internal-bid-demand'),
+        deptItem('procurement-demand-sole', '1.3 单一来源需求', '/procurement-demand/sole_source'),
+        deptItem('procurement-demand-inquiry', '1.4 询议价需求', '/procurement-demand/inquiry'),
+        deptItem('procurement-demand-emergency', '1.5 紧急采购登记', '/procurement-demand/emergency'),
+      ].filter(Boolean),
+    },
+    deptItem('agency-agreement', '3. 代理协议', '/agency-agreement'),
+    {
+      key: 'dept-pm', label: '4. 采购部项目管理', icon: <FolderOpenOutlined />,
+      children: [
+        deptItem('new', '4.1 项目立项', '/new'),
+        deptItem('flow', '4.2 项目流程', '/flow'),
+        deptItem('bid', '开标管理', '/bid'),
+        deptItem('bid-board', '开标看板', '/bid-board'),
+        deptItem('auth-letter', '授权函', '/auth-letter'),
+      ].filter(Boolean),
+    },
+    deptItem('doc', '5. 采购文件编制', '/procurement-doc/demand'),
+    deptItem('announcement', '6.1 采购公告', '/announcement'),
+    deptItem('inquiry', '7. 询/议价函', '/inquiry'),
+    deptItem('inquiry-review', '8.1 询议价评审', '/inquiry-review'),
+    deptItem('project-review', '8.5 项目评审资料', '/project-review'),
+    deptItem('procurement-result', '9. 采购结果确认', '/procurement-result'),
+    deptItem('contract', '10. 合同管理', '/contract'),
+    deptItem('file-ocr', '文件识别', '/file-ocr'),
+    deptPerms.has('authz_manage') ? {
       key: 'authz_manage',
       label: '授权管理',
       icon: <SafetyCertificateOutlined />,
       onClick: () => navigate('/authorizations'),
-    },
-  ]
+    } : null,
+  ].filter((item) => {
+    // 过滤掉空分组。不能写 !('children' in item) || item.children.length：
+    // TS 不会因为 in 判断就把 item 收窄成带 children 的类型，会报 possibly undefined。
+    if (!item) return false
+    const children = (item as { children?: unknown[] }).children
+    return children === undefined || children.length > 0
+  })
 
   const menuItems = [
     // ─── 1. 采购需求编制 ────────────────────────────────────────
@@ -501,7 +538,8 @@ export default function AppLayout() {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const filteredMenuItems = user?.role === 'dept' ? DEPT_ONLY_MENU : (menuItems as any[])
+  const isDeptRole = ['dept', 'dept_manage', 'dept_demand'].includes(user?.role || '')
+  const filteredMenuItems = isDeptRole ? DEPT_ONLY_MENU : (menuItems as any[])
     .map((item) => {
       if (!item.children) {
         // 顶层叶子：受控且无权限则隐藏；占位/非受控保留

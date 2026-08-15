@@ -8,12 +8,17 @@ from models.agency import Agency
 from routes.utils import login_required
 from services.permission import is_admin_user
 from services import upload_relay
+from services.dept_scope import assert_can_write_demand, assert_has_writable_perm, is_dept_role, scope_by_project
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'emergency')
 
 bp = Blueprint("procurement_demand", __name__, url_prefix="/api/procurement-demands")
 
 FLOW = ["草稿", "待分发", "已分发", "已立项"]
+DEMAND_PERMS = {
+    "gov": "procurement-demand-gov", "sole_source": "procurement-demand-sole",
+    "inquiry": "procurement-demand-inquiry", "emergency": "procurement-demand-emergency",
+}
 
 
 def _scope_ok(demand) -> bool:
@@ -32,6 +37,10 @@ def _scoped(did):
     demand = db.session.get(ProcurementDemand, did)
     if not demand:
         return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if is_dept_role():
+        assert_has_writable_perm(DEMAND_PERMS.get(demand.demand_type, ""))
+        assert_can_write_demand(demand.demand_dept, demand.project_id)
+        return demand, None
     if not _scope_ok(demand):
         return None, (jsonify({"ok": False, "error": "无权访问该采购需求"}), 403)
     return demand, None
@@ -68,7 +77,9 @@ def list_demands():
     status_filter  = request.args.get("status", "")
     demand_type    = request.args.get("demand_type", "")  # gov/competition/sole_source/inquiry
 
-    q = db.select(ProcurementDemand).order_by(ProcurementDemand.id.desc())
+    q = scope_by_project(
+        db.select(ProcurementDemand), ProcurementDemand
+    ).order_by(ProcurementDemand.id.desc())
 
     if role == "agency":
         return jsonify({"ok": True, "data": []})
@@ -103,6 +114,8 @@ def create_demand():
     if session["role"] == "agency":
         return jsonify({"ok": False, "error": "无权限"}), 403
     data = request.get_json(force=True) or {}
+    assert_has_writable_perm(DEMAND_PERMS.get(data.get("demand_type"), ""))
+    assert_can_write_demand(data.get("demand_dept"))
     now = _now()
     items = data.pop("items", [])
     # 去掉不属于模型的字段
@@ -145,6 +158,8 @@ def update_demand(did):
         return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
 
     data = request.get_json(force=True) or {}
+    if "demand_dept" in data:
+        assert_can_write_demand(data.get("demand_dept"))
     items = data.pop("items", None)
     if items is not None:
         demand.items_json = json.dumps(items, ensure_ascii=False)

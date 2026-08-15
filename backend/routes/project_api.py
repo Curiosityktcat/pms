@@ -6,6 +6,7 @@ from services import project as svc
 from services.numbering import M_YIJIA, M_XUNJIA, M_JINGXUAN, M_SOLE, M_JINGJI
 from services.project_progress import build_progress
 from routes.utils import login_required
+from services.dept_scope import assert_can_view_project
 
 bp = Blueprint("project", __name__, url_prefix="/api/projects")
 
@@ -55,7 +56,9 @@ def bid_open_projects():
     都能看并据此生成授权函；代理机构仅本机构。
     """
     role = session.get("role", "")
-    if role == "agency":
+    if role in ("dept", "dept_manage", "dept_demand"):
+        rows = svc.list_projects(role=role, dept_code=session.get("dept_code", ""))
+    elif role == "agency":
         rows = svc.list_projects(role="agency", agency_code=session.get("agency_code", ""))
     else:
         rows = svc.list_projects(role="__all__")  # 采购部：全部可见
@@ -70,6 +73,7 @@ def bid_open_projects():
 @login_required
 def project_progress(pid):
     """项目进展图：逐轮逐节点的状态/时间/操作人（见 services.project_progress）。"""
+    assert_can_view_project(pid)
     project = db.session.get(Project, pid)
     if not project:
         return jsonify({"ok": False, "error": "项目不存在"}), 404
@@ -198,6 +202,7 @@ def create_project():
 @bp.route("/<int:pid>", methods=["GET"])
 @login_required
 def get_project(pid):
+    assert_can_view_project(pid)
     try:
         p = svc.get_project(
             pid,

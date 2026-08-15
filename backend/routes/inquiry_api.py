@@ -18,6 +18,7 @@ from models.project import Project
 from models.sys_config import SysConfig
 from routes.utils import login_required, admin_required, can_view_project
 from services import upload_relay
+from services.dept_scope import assert_can_view_project, scope_by_project
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PMS_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -66,6 +67,9 @@ def _scoped_letter(lid):
     letter = db.session.get(InquiryLetter, lid)
     if not letter:
         return None, (jsonify({"ok": False, "error": "不存在"}), 404)
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
+        assert_can_view_project(letter.project_id)
+        return letter, None
     if not can_view_project(db.session.get(Project, letter.project_id)):
         return None, (jsonify({"ok": False, "error": "无权访问该询/议价函"}), 403)
     return letter, None
@@ -100,7 +104,7 @@ def _enrich_letter(letter: InquiryLetter) -> dict:
 def list_inquiries():
     project_id = request.args.get("project_id", type=int)
     # 排除已被软删除项目的函——项目删除后其询/议价函不再展示、不可操作
-    q = (db.select(InquiryLetter)
+    q = (scope_by_project(db.select(InquiryLetter), InquiryLetter)
          .join(Project, Project.id == InquiryLetter.project_id)
          .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
          .order_by(InquiryLetter.id.desc()))
@@ -108,7 +112,8 @@ def list_inquiries():
         q = q.filter(InquiryLetter.project_id == project_id)
     rows = db.session.execute(q).scalars().all()
     # 数据级隔离：经办人只看本人项目的函、代理只看本机构（与项目列表口径一致）
-    rows = [r for r in rows if can_view_project(db.session.get(Project, r.project_id))]
+    if session.get("role") not in ("dept", "dept_manage", "dept_demand"):
+        rows = [r for r in rows if can_view_project(db.session.get(Project, r.project_id))]
     return jsonify({"ok": True, "data": [_enrich_letter(r) for r in rows]})
 
 

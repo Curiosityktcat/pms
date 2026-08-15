@@ -38,7 +38,7 @@ export default function AuthorizationPage() {
   const [filters, setFilters] = useState({ dept_code: '', grantee: '', status: '', source: '' })
   const [form] = Form.useForm()
   const source = Form.useWatch('source', form)
-  const isDept = user?.role === 'dept'
+  const isDept = ['dept', 'dept_manage', 'dept_demand'].includes(user?.role || '')
 
   const load = useCallback(async () => {
     setLoading(true)

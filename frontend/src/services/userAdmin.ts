@@ -8,12 +8,18 @@ export interface AdminUser {
   active: number
   dept_code: string
   agency_code: string
+  dept?: DeptInfo | null
 }
 
 export interface RoleInfo { role: string; role_cn: string; count: number }
 export interface DeptInfo {
   id: number; code: string; name: string; aliases: string[]; category: string
-  active: number; sort_no: number; note: string
+  active: number; sort_no: number; note: string; dept_type: string; head_name: string
+  is_manage_dept: boolean
+}
+export interface BulkDeptAccount {
+  username: string; display_name: string; role: string; dept_code: string
+  dept_type: string; password?: string
 }
 export interface AuditInfo {
   id: number; actor: string; actor_name: string; action: string
@@ -33,6 +39,9 @@ export const toggleUser = (id: number) => api.post(`/admin/users/${id}/toggle-ac
 export const deleteUser = (id: number) => api.delete(`/admin/users/${id}`)
 export const getUserAudit = (id: number) =>
   api.get<{ ok: boolean; data: AuditInfo[] }>(`/admin/users/${id}/audit`)
+export const bulkDeptAccounts = (dry_run: boolean) =>
+  api.post<{ ok: boolean; dry_run: boolean; created: BulkDeptAccount[]; pending: BulkDeptAccount[];
+    created_count: number; pending_count: number }>('/admin/users/bulk-dept-accounts', { dry_run })
 
 export const listDepts = () => api.get<{ ok: boolean; data: DeptInfo[] }>('/admin/depts')
 export const createDept = (data: Partial<DeptInfo>) => api.post('/admin/depts', data)

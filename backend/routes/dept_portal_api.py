@@ -47,7 +47,7 @@ def _is_admin():
 def _current_dept_code():
     """本次请求要看哪个科室。科室账号锁死在自己科室，采购部角色可用 ?dept= 指定。"""
     role = session.get("role", "")
-    if role == "dept":
+    if role in ("dept", "dept_manage", "dept_demand"):
         return session.get("dept_code", "") or ""
     if role in _OVERSEER_ROLES or _is_admin():
         return (request.args.get("dept") or "").strip()

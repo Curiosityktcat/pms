@@ -28,7 +28,7 @@ def _error(message, status=400):
 
 
 def _can_manage():
-    return is_admin_user(session.get("user", "")) or session.get("role") in ("assistant", "dept")
+    return is_admin_user(session.get("user", "")) or session.get("role") in ("assistant", "dept", "dept_manage", "dept_demand")
 
 
 def _full_hospital():
@@ -115,7 +115,7 @@ def _audit(action, auth, detail):
 @_manage_required
 def list_authorizations():
     stmt = db.select(Authorization)
-    if session.get("role") == "dept":
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
         stmt = stmt.where(Authorization.grantee_dept_code == session.get("dept_code", ""))
     dept_code = (request.args.get("dept_code") or "").strip().upper()
     grantee = (request.args.get("grantee") or "").strip()
@@ -165,7 +165,7 @@ def create_authorization():
     source = (data.get("source") or "").strip()
     if source not in _SOURCES:
         return _error("授权来源不正确")
-    if source == "delegate" and session.get("role") != "dept":
+    if source == "delegate" and session.get("role") not in ("dept", "dept_manage", "dept_demand"):
         return _error("委托授权只能由科室账号发起", 403)
     if source == "resolution" and not _full_hospital():
         return _error("决议授权只能由系统管理员或采购部助理发起", 403)
@@ -241,7 +241,7 @@ def revoke_authorization(auth_id):
     auth = db.session.get(Authorization, auth_id)
     if not auth:
         return _error("授权记录不存在", 404)
-    if session.get("role") == "dept" and auth.granter_dept_code != session.get("dept_code", ""):
+    if session.get("role") in ("dept", "dept_manage", "dept_demand") and auth.granter_dept_code != session.get("dept_code", ""):
         return _error("只能撤销本科室发出的授权", 403)
     if auth.status == "revoked":
         return _error("该授权已经撤销")
@@ -278,7 +278,7 @@ def perm_catalog():
 @_manage_required
 def eligible_users():
     stmt = db.select(User).where(User.active == 1)
-    if session.get("role") == "dept":
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
         stmt = stmt.where(User.dept_code == session.get("dept_code", ""))
     rows = db.session.execute(stmt.order_by(User.display_name, User.username)).scalars().all()
     return jsonify({"ok": True, "data": [row.to_dict() for row in rows]})
@@ -288,7 +288,7 @@ def eligible_users():
 @_manage_required
 def active_depts():
     stmt = db.select(Dept).where(Dept.active == 1)
-    if session.get("role") == "dept":
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
         stmt = stmt.where(Dept.code == session.get("dept_code", ""))
     rows = db.session.execute(stmt.order_by(Dept.sort_no, Dept.id)).scalars().all()
     return jsonify({"ok": True, "data": [row.to_dict() for row in rows]})
@@ -302,7 +302,7 @@ def download_document(auth_id):
         return _error("授权记录不存在", 404)
     is_grantee = auth.grantee_username == session.get("user")
     can_manage_row = _full_hospital() or (
-        session.get("role") == "dept" and auth.grantee_dept_code == session.get("dept_code", "")
+        session.get("role") in ("dept", "dept_manage", "dept_demand") and auth.grantee_dept_code == session.get("dept_code", "")
     )
     if not is_grantee and not can_manage_row:
         return _error("无权限", 403)

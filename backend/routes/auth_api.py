@@ -53,6 +53,7 @@ def login():
     session["display_name"] = user.display_name
     session["agency_code"] = user.agency_code or ""
     session["dept_code"] = user.dept_code or ""
+    from services.dept import dept_display
     return jsonify({"ok": True, "user": {
         "username": user.username,
         "role": user.role,
@@ -60,6 +61,7 @@ def login():
         "display_name": user.display_name,
         "agency_code": user.agency_code or "",
         "dept_code": user.dept_code or "",
+        "dept_name": dept_display(user.dept_code),
         "perms": get_user_perms(user.username, user.role),
         "is_admin": user.username == "admin",
     }})
@@ -74,12 +76,14 @@ def logout():
 @bp.route("/me", methods=["GET"])
 @login_required
 def me():
+    from services.dept import dept_display
     return jsonify({"ok": True, "user": {
         "username": session["user"],
         "role": session["role"],
         "role_cn": ROLE_CN.get(session["role"], session["role"]),
         "display_name": session["display_name"],
         "dept_code": session.get("dept_code", ""),
+        "dept_name": dept_display(session.get("dept_code", "")),
         "agency_code": session.get("agency_code", ""),
         "perms": get_user_perms(session["user"], session["role"]),
         "is_admin": session["user"] == "admin",

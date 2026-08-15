@@ -2,12 +2,14 @@ import time
 import datetime
 import threading
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, session, jsonify, current_app
 
 from models import db
 from models.bid_board_project import BidBoardProject
 from models.people import People
 from models.sys_config import SysConfig
+from models.project import Project
+from services.dept_scope import scope_projects
 from services.bid_board_scraper import (
     run_scrape, WINDOW_DAYS,
     CFG_MODEL_API, CFG_MODEL_NAME, CFG_API_KEY,
@@ -55,8 +57,15 @@ def _do_scrape():
 def data():
     now = datetime.datetime.now().isoformat()
     end = (datetime.datetime.now() + datetime.timedelta(days=WINDOW_DAYS)).isoformat()
+    query = db.select(BidBoardProject)
+    if session.get("role") in ("dept", "dept_manage", "dept_demand"):
+        # 看板表来自官网抓取，没有 project_id；只能按唯一项目编号连接正式项目。
+        # 编号匹配不到的记录对科室隐藏，避免在归属不明时误放行。
+        query = scope_projects(query.join(
+            Project, Project.number == BidBoardProject.number
+        ))
     rows = db.session.execute(
-        db.select(BidBoardProject)
+        query
         .where(BidBoardProject.deadline_iso >= now)
         .where(BidBoardProject.deadline_iso <= end)
         .order_by(BidBoardProject.deadline_iso.asc())
