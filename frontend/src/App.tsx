@@ -19,6 +19,7 @@ const ChpwdPage = lazy(() => import('./pages/ChpwdPage'))
 const SupervisionPage = lazy(() => import('./pages/SupervisionPage'))  // 投诉质疑数据库
 const AuthLetterPage = lazy(() => import('./pages/AuthLetterPage'))
 const ProcurementPlanPage = lazy(() => import('./pages/ProcurementPlanPage'))  // 1.0 采购计划池
+const DeptPortalPage = lazy(() => import('./pages/DeptPortalPage'))  // 科室门户（归口科室只读）
 const AgencyManagePage = lazy(() => import('./pages/AgencyManagePage'))
 const AgencyAssessmentPage = lazy(() => import('./pages/AgencyAssessmentPage'))
 const SurveySingleSourcePage = lazy(() => import('./pages/SurveySingleSourcePage'))
@@ -259,7 +260,13 @@ export default function App() {
                 </RequireAuth>
               }
             >
-              <Route index element={<Navigate to="/portal" replace />} />
+              <Route
+                index
+                element={
+                  /* 科室账号直接落到科室门户——/portal 是采购部工作台，科室进去只有空壳 */
+                  <Navigate to={user?.role === 'dept' ? "/dept-portal" : "/portal"} replace />
+                }
+              />
               <Route path="portal" element={<PortalPage />} />
               <Route path="flow" element={<ProjectFlowPage />} />
               <Route path="new" element={<ProjectFormPage />} />
@@ -290,6 +297,7 @@ export default function App() {
               <Route path="agency-manage" element={<AgencyManagePage />} />
               <Route path="agency-assessment" element={<AgencyAssessmentPage />} />
               <Route path="procurement-plan" element={<ProcurementPlanPage />} />
+              <Route path="dept-portal" element={<DeptPortalPage />} />
               <Route path="procurement-doc" element={<ProcurementDocPage />} />
               <Route path="procurement-doc/demand" element={<ProcurementDemandConfirmPage />} />
               <Route path="procurement-doc/file" element={<ProcurementDocPage />} />

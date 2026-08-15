@@ -58,3 +58,6 @@ laws_export.json
 
 # 对象存储凭据（绝不进 git）
 .oss.env
+
+# 科室门户账号明文密码，只留在服务器本地（600），绝不入库
+data/dept_accounts.txt

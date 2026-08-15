@@ -52,12 +52,14 @@ def login():
     session["role"] = user.role
     session["display_name"] = user.display_name
     session["agency_code"] = user.agency_code or ""
+    session["dept_code"] = user.dept_code or ""
     return jsonify({"ok": True, "user": {
         "username": user.username,
         "role": user.role,
         "role_cn": ROLE_CN.get(user.role, user.role),
         "display_name": user.display_name,
         "agency_code": user.agency_code or "",
+        "dept_code": user.dept_code or "",
         "perms": get_user_perms(user.username, user.role),
         "is_admin": user.username == "admin",
     }})
@@ -77,6 +79,7 @@ def me():
         "role": session["role"],
         "role_cn": ROLE_CN.get(session["role"], session["role"]),
         "display_name": session["display_name"],
+        "dept_code": session.get("dept_code", ""),
         "agency_code": session.get("agency_code", ""),
         "perms": get_user_perms(session["user"], session["role"]),
         "is_admin": session["user"] == "admin",

@@ -8,6 +8,7 @@ ROLE_CN = {
     "leader": "采购部负责人",
     "agency": "代理机构",
     "supervisor": "监督",
+    "dept": "归口科室",
 }
 
 
@@ -33,6 +34,14 @@ def can_view_project(proj):
         return proj.agency_code == session.get("agency_code", "")
     if role == "officer":
         return proj.officer == session.get("display_name", "")
+    if role == "dept":
+        # 科室只看本科室（归口或需求）的项目。注意本函数对不认识的角色是
+        # 「默认放行」的，新角色必须在这里显式收口，否则会从各子表接口漏看全部。
+        from services import dept as _dept_svc
+        _names = _dept_svc.dept_names(session.get("dept_code", ""))
+        if not _names:
+            return False
+        return (proj.manage_dept or "") in _names or (proj.demand_dept or "") in _names
     return True
 
 

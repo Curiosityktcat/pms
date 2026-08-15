@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Layout, Menu, Dropdown, Space, Button, Tooltip, Grid, Drawer } from 'antd'
-import { HomeOutlined, BookOutlined, MenuOutlined } from '@ant-design/icons'
+import { HomeOutlined, BookOutlined, MenuOutlined, ProfileOutlined }from '@ant-design/icons'
 import {
   FolderOpenOutlined,
   EditOutlined,
@@ -102,6 +102,18 @@ export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 菜单手风琴：同一时间只展开一个分组，减少视觉杂乱
   const [openKeys, setOpenKeys] = useState<string[]>(getDefaultOpenKeys())
+
+  // 归口科室账号：侧栏只留科室门户一项。
+  // 不能沿用下面那套 CONTROLLED_KEYS 过滤——它是「不在受控表里就显示」的白名单反向逻辑，
+  // 科室账号会看到一大片点进去 403 的菜单。后端闸门已经把这些接口关掉了，前端得对上。
+  const DEPT_ONLY_MENU = [
+    {
+      key: 'dept-portal',
+      label: '我的科室项目',
+      icon: <ProfileOutlined />,
+      onClick: () => navigate('/dept-portal'),
+    },
+  ]
 
   const menuItems = [
     // ─── 1. 采购需求编制 ────────────────────────────────────────
@@ -477,7 +489,7 @@ export default function AppLayout() {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const filteredMenuItems = (menuItems as any[])
+  const filteredMenuItems = user?.role === 'dept' ? DEPT_ONLY_MENU : (menuItems as any[])
     .map((item) => {
       if (!item.children) {
         // 顶层叶子：受控且无权限则隐藏；占位/非受控保留

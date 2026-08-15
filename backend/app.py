@@ -81,6 +81,7 @@ def create_app():
     from routes.rdweb_approval_api import bp as rdweb_approval_bp  # rd-web 采购项目审批要件推送
     from routes.api_provider_api import bp as api_provider_bp  # 后台 API 管理（大模型台账）
     from routes.agency_assessment_api import bp as agency_assessment_bp  # 代理机构服务质量考核
+    from routes.dept_portal_api import bp as dept_portal_bp             # 科室门户（归口科室自助查询）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
@@ -132,6 +133,31 @@ def create_app():
     app.register_blueprint(api_provider_bp)  # 后台 API 管理
     app.register_blueprint(agency_assessment_bp)
     app.register_blueprint(procurement_plan_bp)  # 采购计划池
+    app.register_blueprint(dept_portal_bp)  # 科室门户
+
+    # ── 科室角色的活动范围闸门 ──────────────────────────────────────────
+    # 归口科室账号只能走科室门户。系统里不少老列表接口是「按角色做减法」写的
+    # （认识 officer/agency 就过滤，遇到没列到的角色默认放行全部），给新角色
+    # 逐个打补丁必然会漏；这里反过来默认拒绝，要放行必须显式写进白名单。
+    _DEPT_ALLOW_EXACT = {
+        "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/chpwd",
+        "/api/auth/captcha",
+    }
+
+    @app.before_request
+    def _confine_dept_role():
+        from flask import request as _rq, session as _ss, jsonify as _js
+        if _ss.get("role") != "dept":
+            return None
+        path = _rq.path
+        if not path.startswith("/api/"):
+            return None                      # 前端页面与静态资源不拦
+        if path.startswith("/api/dept/"):
+            return None
+        if path in _DEPT_ALLOW_EXACT:
+            return None
+        return _js({"ok": False, "error": "科室账号仅可使用科室门户"}), 403
+
     app.register_blueprint(web_announcement_bp)  # 官网公告存档
     app.register_blueprint(doc_intake_attach_bp)  # 资料智能归档 → 自动挂载到业务模块
     app.register_blueprint(auth_letter_pending_bp)  # 授权函任务清单
@@ -144,6 +170,7 @@ def create_app():
         from models.announcement_attachment import AnnouncementAttachment  # noqa: F401
         from models.agency_template import AgencyTemplate  # noqa: F401
         from models.auth_letter_record import AuthLetterRecord  # noqa: F401
+        from models.dept import Dept  # noqa: F401 归口科室字典
         from models.procurement_plan import (ProcurementPlan,  # noqa: F401
                                              ProcurementPlanAttachment)
         from models.web_announcement import WebAnnouncement  # noqa: F401 官网公告存档
@@ -298,6 +325,27 @@ def create_app():
         # 首次写入各角色默认权限（表为空时）
         from services.permission import seed_default_perms
         seed_default_perms()
+
+        # 归口科室字典：幂等播种，人工改过的名字/别名不会被覆盖
+        try:
+            from services.dept import seed_depts
+            _n = seed_depts()
+            if _n:
+                print("[dept] 播种科室 %d 个" % _n, flush=True)
+        except Exception as _e:
+            print("[dept] 科室播种失败：", _e, flush=True)
+
+        # users 表补 dept_code（科室账号绑定科室）
+        try:
+            from sqlalchemy import text as _text_dept
+            with db.engine.connect() as _c_dept:
+                _cols = {r[1] for r in _c_dept.execute(_text_dept("PRAGMA table_info(users)"))}
+                if "dept_code" not in _cols:
+                    _c_dept.execute(_text_dept("ALTER TABLE users ADD COLUMN dept_code TEXT DEFAULT ''"))
+                    _c_dept.commit()
+                    print("[dept] users.dept_code 已补", flush=True)
+        except Exception as _e:
+            print("[dept] users.dept_code 迁移失败：", _e, flush=True)
 
         # 幂等回填：为存量库补新增权限（seed 只在空表时跑，新增权限需单独补）
         from models.role_permission import RolePermission as _RP

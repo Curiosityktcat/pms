@@ -52,9 +52,9 @@ def list_archive():
 
     result = []
     for p in rows:
-        if role == "officer" and p.officer != officer:
-            continue
-        if role == "agency" and p.agency_code != agency_code:
+        # 统一走 can_view_project：原先在这里手写 officer/agency 两条规则，
+        # 等于对没列到的角色默认放行——新增归口科室角色时这里会整库泄露。
+        if not can_view_project(p):
             continue
         result.append({
             "id": p.id,

@@ -12,7 +12,7 @@ from services.permission import (
 bp = Blueprint("permission", __name__, url_prefix="/api/permissions")
 
 # 可配置权限的业务角色（admin 账号自身拥有全部，不在此列）
-MANAGED_ROLES = ["assistant", "officer", "leader", "agency", "supervisor"]
+MANAGED_ROLES = ["assistant", "officer", "leader", "agency", "supervisor", "dept"]
 
 
 def admin_required(f):

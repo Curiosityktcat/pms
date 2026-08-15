@@ -47,7 +47,7 @@ def _agency_map():
                      "agency_address": r.address or ""} for r in rows}
 
 
-def list_projects(role, agency_code=None, officer=None, show_deleted=False):
+def list_projects(role, agency_code=None, officer=None, show_deleted=False, dept_code=None):
     """按角色过滤并返回项目列表（含 agency_name）。
     show_deleted=True 时只返回已软删除的项目。
     """
@@ -59,6 +59,20 @@ def list_projects(role, agency_code=None, officer=None, show_deleted=False):
         stmt = (
             db.select(Project)
             .where(Project.agency_code == agency_code)
+            .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
+            .where(deleted_filter)
+            .order_by(Project.id.desc())
+        )
+    elif role == "dept":
+        # 归口科室账号：本科室归口 ∪ 本科室提需求的项目，草稿不给看。
+        # 科室名可能改过（设备科→医学装备部），故按别名展开成名字集合匹配。
+        from services import dept as _dept_svc
+        _names = _dept_svc.dept_names(dept_code or "")
+        stmt = (
+            db.select(Project)
+            .where(db.or_(Project.manage_dept.in_(_names),
+                          Project.demand_dept.in_(_names))
+                   if _names else db.false())
             .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
             .where(deleted_filter)
             .order_by(Project.id.desc())

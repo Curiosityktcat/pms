@@ -15,6 +15,12 @@ ADMIN_USERNAME = "admin"
 # 权限目录：分组 → 菜单项。前端据此渲染权限矩阵，顺序即展示顺序。
 PERMISSION_CATALOG = [
     {
+        "group": "科室门户",
+        "items": [
+            {"key": "dept-portal", "label": "0. 我的科室项目"},
+        ],
+    },
+    {
         "group": "采购需求编制",
         "items": [
             {"key": "procurement-demand-gov", "label": "1.1 政府采购需求"},
@@ -131,6 +137,9 @@ DEFAULT_ROLE_PERMS = {
         "flow", "bid", "bid-board", "auth-letter",
         "doc", "announcement", "project-review", "procurement-result", "contract",
     ],
+    # 归口科室：只有科室门户一个权限。门户是只读的，且所有数据都从 /api/dept/* 出，
+    # 那些接口自己按科室收口——不给任何老权限键，避免踩「老接口对陌生角色默认放行」。
+    "dept": ["dept-portal"],
     # 监督：开标相关
     "supervisor": ["flow", "bid", "bid-board"],
 }
