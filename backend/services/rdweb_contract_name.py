@@ -29,7 +29,14 @@ def _clean(name: str) -> str:
     name = (name or "").strip()
     name = re.sub(r"\.(docx?|pdf|wps|jpe?g|png|zip)$", "", name, flags=re.I)
     name = _PREFIX.sub("", name)
-    return re.sub(r"[\s　]+", "", name).strip("-_（）() ")
+    name = re.sub(r"[\s　]+", "", name).strip("-_ ")
+    # 别把成对括号的右半边当垃圾字符剥掉：「医用耗材购销协议(电切环)」被剥成
+    # 「医用耗材购销协议(电切环」是 2026-08-15 实测踩到的。只有左右不配对时才去。
+    while name and name[-1] in "（(" :
+        name = name[:-1].strip("-_ ")
+    if name.count("(") + name.count("（") < name.count(")") + name.count("）"):
+        name = name.rstrip(")）").strip("-_ ")
+    return name
 
 
 def _looks_like_title(text: str) -> bool:

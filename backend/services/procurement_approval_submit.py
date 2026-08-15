@@ -1,12 +1,12 @@
 """rd-web 采购项目审批流程 自动提交。
 
 表单字段（实测）：
-  forvalue[0] → 采购部经办人（人员选择框触发 input）
+  forvalue[0] → 采购部经办人（普通文本框，必填）
   forvalue[1] → 归口管理科室
   forvalue[2] → 项目名称
   button.item-drop-box-btn → 项目资料名称（自定义下拉）
   添加附件 → 资料上传
-  经办人 showNames 人员弹窗 → 采购部经办人
+  showNames 人员弹窗 → 采购部负责人意见（必填）
 
 APP_MARK: 65fb995ac1478c1a9b75064c
 """
@@ -169,7 +169,11 @@ def _select_material_type(fr, pg, option_text):
 
 
 def _fill_officer(fr, pg, officer):
-    """填写采购部经办人：点开人员选择框 → 展开部门树 → 点 selectPersonBtn → 确定。
+    """填写**采购部负责人意见**（人员弹窗）：点开 → 展开部门树 → 点 selectPersonBtn → 确定。
+
+    名字叫 _fill_officer 是历史遗留：这个 showNames 弹窗填的其实是
+    「采购部负责人意见」，「采购部经办人」是上面 forvalue[0] 那个文本框
+    （2026-08-14 探针实测，见 _submit_approval_once 步骤 3.5）。
 
     这里原来点的是 forvalue[0]（普通文本输入框），**根本不是人员选择框的触发器**，
     所以弹框永远不出来、卡在等待「输入查找的姓名」超时——这就是「采购项目审批填报
@@ -446,6 +450,16 @@ def _submit_approval_once(
             _open_form(fr, pg)
             pg.wait_for_timeout(800)
 
+            # 3.5 采购部经办人（forvalue[0]，普通文本框，**必填**）
+            # 2026-08-14 探针实测的字段真相：可见的三个 ng-model=forvalue 依次是
+            # 「采购部经办人」「归口管理科室」「项目名称」，而 ng-model=showNames
+            # 那个人员弹窗是**「采购部负责人意见」**，不是经办人。
+            # 原来只填了 1、2 两个，经办人一直空着——它带 * 必填，所以点提交后
+            # 表单不关、报「可能存在校验错误」，这条链路从来没成功过。
+            if officer:
+                _fill_forvalue(fr, pg, 0, officer)
+                detail["officer_text"] = officer
+
             # 4. 归口管理科室（forvalue[1]）
             if manage_dept:
                 _fill_forvalue(fr, pg, 1, manage_dept)
@@ -465,7 +479,7 @@ def _submit_approval_once(
                 _upload_attachments(fr, pg, attachments)
                 detail["upload_count"] = len(attachments)
 
-            # 8. 采购部经办人（人员选择）
+            # 8. 采购部负责人意见（showNames 人员弹窗，也是必填）
             if officer:
                 _fill_officer(fr, pg, officer)
                 detail["officer"] = officer
@@ -493,6 +507,10 @@ def _submit_approval_once(
 
 
 _SESSION_BROKEN = (
+    # 页面在 evaluate 期间跳转（常驻会话被站点自己刷掉）——丢弃会话重来即可，
+    # 2026-08-14 实测复现过一次
+    "Execution context was destroyed",
+    "Target page, context or browser has been closed",
     "部门树为空",
     "人员选择框中未找到",
     "未找到「采购项目审批流程」菜单",
