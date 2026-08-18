@@ -21,6 +21,12 @@ PERMISSION_CATALOG = [
         ],
     },
     {
+        "group": "项目进度",
+        "items": [
+            {"key": "project-monitor", "label": "项目管理器"},
+        ],
+    },
+    {
         "group": "采购需求编制",
         "items": [
             {"key": "procurement-demand-gov", "label": "1.1 政府采购需求"},
@@ -117,6 +123,7 @@ _ALL_PERM_SET = set(ALL_PERM_KEYS)
 DEFAULT_ROLE_PERMS = {
     # 采购部助理：分发与日常业务，立项除外
     "assistant": [
+        "project-monitor",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
         "agency-agreement", "doc",
@@ -129,6 +136,7 @@ DEFAULT_ROLE_PERMS = {
     "pd_assistant": ["dispatch", "archive", "flow"],
     # 项目经办人：立项及项目执行
     "officer": [
+        "project-monitor",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
         "agency-agreement", "doc",
@@ -147,6 +155,7 @@ DEFAULT_ROLE_PERMS = {
     ],
     # 两类科室当前权限相同，但必须独立保存，后续归口科室增加履约操作时才不会影响需求科室。
     "dept_manage": [
+        "project-monitor",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
         "new", "flow", "bid", "bid-board", "auth-letter",
@@ -155,6 +164,7 @@ DEFAULT_ROLE_PERMS = {
         "file-ocr", "dept-portal",
     ],
     "dept_demand": [
+        "project-monitor",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
         "new", "flow", "bid", "bid-board", "auth-letter",

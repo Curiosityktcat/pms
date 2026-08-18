@@ -85,6 +85,7 @@ def create_app():
     from routes.user_admin_api import bp as user_admin_bp               # 登录账号管理（仅系统管理员）
     from routes.dept_admin_api import bp as dept_admin_bp               # 科室字典管理（仅系统管理员）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
+    from routes.project_monitor_api import bp as project_monitor_bp       # 项目管理器（只读进度看板）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
     from routes.auth_letter_pending_api import bp as auth_letter_pending_bp  # 待出具授权函清单
@@ -136,6 +137,7 @@ def create_app():
     app.register_blueprint(api_provider_bp)  # 后台 API 管理
     app.register_blueprint(agency_assessment_bp)
     app.register_blueprint(procurement_plan_bp)  # 采购计划池
+    app.register_blueprint(project_monitor_bp)  # 项目管理器
     app.register_blueprint(dept_portal_bp)  # 科室门户
     app.register_blueprint(user_admin_bp)
     app.register_blueprint(dept_admin_bp)
@@ -155,6 +157,7 @@ def create_app():
         "/api/procurement-results", "/api/contracts",
         "/api/inquiries", "/api/inquiry-reviews", "/api/inquiry-templates",
         "/api/project-review",
+        "/api/project-monitor",
         "/api/ocr",
     )
     _DEPT_WRITABLE_PREFIXES = (
@@ -417,6 +420,14 @@ def create_app():
                 ).first()
                 if not _has:
                     db.session.add(_RP(role=_dept_role, perm_key=_perm))
+        # 项目管理器是新增菜单：存量库的权限表早已非空，不能指望首次播种补上。
+        # 这里只补任务书指定的角色，绝不把只读看板顺带开放给代理机构。
+        for _monitor_role in ("dept_manage", "dept_demand", "officer", "leader", "assistant"):
+            _has = db.session.execute(
+                db.select(_RP).filter_by(role=_monitor_role, perm_key="project-monitor")
+            ).first()
+            if not _has:
+                db.session.add(_RP(role=_monitor_role, perm_key="project-monitor"))
         db.session.commit()
 
         # 预填默认邮件配置

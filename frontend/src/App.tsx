@@ -12,6 +12,7 @@ import AdminLayout from './components/AdminLayout'
 import LoginPage from './pages/LoginPage'
 // 业务页按路由懒加载，缩小首屏包体（移动端尤其受益）
 const ProjectFlowPage = lazy(() => import('./pages/ProjectFlowPage'))
+const ProjectMonitorPage = lazy(() => import('./pages/ProjectMonitorPage'))
 const ProjectFormPage = lazy(() => import('./pages/ProjectFormPage'))
 const BidManagePage = lazy(() => import('./pages/BidManagePage'))
 const BidBoardPage = lazy(() => import('./pages/BidBoardPage'))
@@ -271,6 +272,7 @@ export default function App() {
                 }
               />
               <Route path="portal" element={<PortalPage />} />
+              <Route path="project-monitor" element={<ProjectMonitorPage />} />
               <Route path="flow" element={<ProjectFlowPage />} />
               <Route path="new" element={<ProjectFormPage />} />
               <Route path="project/:id" element={<ProjectFormPage />} />

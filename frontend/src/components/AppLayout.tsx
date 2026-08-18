@@ -109,6 +109,12 @@ export default function AppLayout() {
   const deptItem = (key: string, label: string, path: string) =>
     deptPerms.has(key) ? { key, label, onClick: () => navigate(path) } : null
   const DEPT_ONLY_MENU = [
+    deptPerms.has('project-monitor') ? {
+      key: 'project-monitor',
+      label: '项目管理器',
+      icon: <BarChartOutlined />,
+      onClick: () => navigate('/project-monitor'),
+    } : null,
     deptPerms.has('dept-portal') ? {
       key: 'dept-portal',
       label: '我的科室项目',
@@ -159,6 +165,13 @@ export default function AppLayout() {
   })
 
   const menuItems = [
+    // 独立只读看板：汇聚各环节进度，不属于任何一个录入流程。
+    {
+      key: 'project-monitor',
+      label: '项目管理器',
+      icon: <BarChartOutlined />,
+      onClick: () => navigate('/project-monitor'),
+    },
     // ─── 1. 采购需求编制 ────────────────────────────────────────
     {
       key: 'procurement-req',
@@ -515,6 +528,7 @@ export default function AppLayout() {
   // ── 按当前用户权限过滤菜单 ───────────────────────────────────
   // 受控菜单 key（与后端 PERMISSION_CATALOG 一致）；其余为"开发中"占位项，始终保留。
   const CONTROLLED_KEYS = new Set([
+    'project-monitor',
     'procurement-demand-gov', 'internal-bid-demand', 'procurement-demand-sole',
     'procurement-demand-inquiry', 'procurement-demand-emergency', 'dispatch',
     'agency-agreement', 'doc',
