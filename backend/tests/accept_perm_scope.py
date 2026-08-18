@@ -39,8 +39,10 @@ DEMAND_KEYS = {"procurement-demand-gov", "internal-bid-demand", "procurement-dem
 print("── 三档范围 ──")
 check("① 需求科室只有「我的科室项目」+ 项目管理器",
       DEMAND_SET == {"dept-portal", "project-monitor"}, f"{sorted(DEMAND_SET)}")
-check("① 归口 = 需求 + 采购需求编制",
-      MANAGE_SET == DEMAND_SET | DEMAND_KEYS, f"多出 {sorted(MANAGE_SET - DEMAND_SET)}")
+# 归口科室还多一个「1.0 采购计划池」：计划是他们自己报的，得让他们自己维护和关联
+check("① 归口 = 需求 + 采购需求编制 + 计划池",
+      MANAGE_SET == DEMAND_SET | DEMAND_KEYS | {"procurement-plan"},
+      f"多出 {sorted(MANAGE_SET - DEMAND_SET)}")
 check("① 监督 = 归口 + 开标管理 + 授权函",
       SUPER_SET == MANAGE_SET | {"bid", "auth-letter"}, f"多出 {sorted(SUPER_SET - MANAGE_SET)}")
 for name, ks in (("需求科室", DEMAND_SET), ("归口科室", MANAGE_SET), ("监督", SUPER_SET)):

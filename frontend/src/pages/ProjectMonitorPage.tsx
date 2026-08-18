@@ -4,17 +4,21 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import {
-  App, Button, Card, Col, Empty, Input, Row, Segmented, Select, Space,
-  Statistic, Steps, Table, Tabs, Tag, Tooltip, Typography,
+  App, Button, Card, Col, Empty, Input, List, Popconfirm, Row, Segmented,
+  Select, Space, Spin, Statistic, Steps, Table, Tabs, Tag, Tooltip, Typography,
+  Upload,
 } from 'antd'
 import {
   DownloadOutlined, ReloadOutlined, SearchOutlined,
+  FolderOpenOutlined, InboxOutlined, DeleteOutlined, EyeOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import PendingOwnerTag from '../components/PendingOwnerTag'
 import {
   getMonitorMeta, getMonitorStats, getMonitorTimeline, listMonitorPlans,
   listMonitorProjects, monitorExportUrl,
+  getProjectFiles, uploadProjectFiles, deleteProjectFile,
+  type MonitorFileFolder,
   type MonitorFilters, type MonitorMeta, type MonitorPlan, type MonitorProject,
   type MonitorStats, type MonitorTimeline,
 } from '../services/projectMonitor'
@@ -71,6 +75,130 @@ function ProjectTimeline({ projectId }: { projectId: number }) {
     </div>
   )
 }
+
+/**
+ * 项目资料：把这个项目在各环节产生的文件都摆出来，能看、能下、能补传。
+ *
+ * 用户原话（《黄新博回应-WPS小团队搬入PMS方案》）：
+ *   「项目资料（可以点击后自动调取归档文件夹内的相关文件，还可以查看上传和删除，
+ *     上传还可以通过拖拽文件直接操作）」
+ * 文件夹分组直接用归档那边整理好的结构，这里不另立一套。
+ */
+function ProjectFiles({ projectId }: { projectId: number }) {
+  const { message } = App.useApp()
+  const [folders, setFolders] = useState<MonitorFileFolder[]>([])
+  const [total, setTotal] = useState(0)
+  const [canUpload, setCanUpload] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    getProjectFiles(projectId)
+      .then(res => {
+        setFolders(res.data.data || [])
+        setTotal(res.data.total || 0)
+        setCanUpload(!!res.data.can_upload)
+      })
+      .catch(() => message.error('读取项目资料失败'))
+      .finally(() => setLoading(false))
+  }, [projectId, message])
+
+  useEffect(() => { load() }, [load])
+
+  const doUpload = async (files: File[]) => {
+    if (!files.length) return
+    setBusy(true)
+    try {
+      const res = await uploadProjectFiles(projectId, files)
+      message.success(res.data.message || '已上传')
+      load()
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '上传失败')
+    } finally { setBusy(false) }
+  }
+
+  const doDelete = async (fid: number) => {
+    try {
+      const res = await deleteProjectFile(projectId, fid)
+      message.success(res.data.message || '已删除')
+      load()
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '删除失败')
+    }
+  }
+
+  const fmtSize = (n: number) =>
+    !n ? '' : n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`
+
+  if (loading) return <div style={{ padding: 24, textAlign: 'center' }}><Spin /> 正在读取项目资料…</div>
+
+  return (
+    // 资料多的项目有几十个文件，展开后会把下面的行推到看不见的地方，
+    // 所以面板自己滚，不撑开整张表。
+    <div style={{ padding: '4px 12px 12px', maxHeight: 460, overflowY: 'auto' }}>
+      {canUpload && (
+        <Upload.Dragger
+          multiple showUploadList={false} disabled={busy}
+          beforeUpload={(_f, list) => { doUpload(list as File[]); return false }}
+          style={{ marginBottom: 12, padding: '6px 0' }}
+        >
+          <p style={{ margin: 0, fontSize: 22, color: '#1a73e8' }}><InboxOutlined /></p>
+          <p style={{ margin: '4px 0 0', fontSize: 13 }}>
+            {busy ? '正在上传…' : '把文件拖到这里，或点一下选文件'}
+          </p>
+          <p style={{ margin: 0, fontSize: 12, color: '#5f6368' }}>
+            可一次拖多个。支持 PDF / Word / Excel / 图片 / 压缩包，单个不超过 100MB
+          </p>
+        </Upload.Dragger>
+      )}
+
+      {total === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={canUpload ? '这个项目还没有资料，可以拖文件进来' : '这个项目还没有资料'} />
+      ) : folders.map(f => (
+        <Card key={f.folder} size="small" style={{ marginBottom: 10 }}
+          title={<Space size={6}><FolderOpenOutlined style={{ color: '#f9ab00' }} />
+            <span style={{ fontSize: 13 }}>{f.folder}</span>
+            <Tag>{f.items.length}</Tag></Space>}
+          styles={{ body: { padding: '4px 12px' } }}
+        >
+          <List size="small" dataSource={f.items} rowKey={(i) => i.url}
+            renderItem={(item) => (
+              <List.Item
+                actions={[
+                  item.preview_url
+                    ? <a key="v" href={item.preview_url} target="_blank" rel="noreferrer">
+                        <EyeOutlined /> 查看</a>
+                    : null,
+                  <a key="d" href={item.url}><DownloadOutlined /> 下载</a>,
+                  item.can_delete && item.id
+                    ? <Popconfirm key="x" title={`删除「${item.name}」？`}
+                        onConfirm={() => doDelete(item.id!)}>
+                        <a style={{ color: '#d93025' }}><DeleteOutlined /> 删除</a>
+                      </Popconfirm>
+                    : null,
+                ].filter(Boolean)}
+              >
+                <Space size={6} wrap>
+                  <span>{item.name}</span>
+                  {!!item.size && <Text type="secondary" style={{ fontSize: 12 }}>{fmtSize(item.size)}</Text>}
+                  {item.uploaded_by && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {item.uploaded_by} 传于 {item.uploaded_at}
+                    </Text>
+                  )}
+                </Space>
+              </List.Item>
+            )} />
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 
 export default function ProjectMonitorPage() {
   const { message } = App.useApp()
@@ -251,7 +379,14 @@ export default function ProjectMonitorPage() {
               : '当前没有在办项目。历史项目已归档，把右上角「只看在办」改成「含已归档」即可查看。'
           } />
         ) }}
-        expandable={{ expandedRowRender: (row) => <ProjectTimeline projectId={row.id} /> }}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Tabs size="small" style={{ marginInlineStart: 8 }} items={[
+              { key: 'tl', label: '进度时间线', children: <ProjectTimeline projectId={row.id} /> },
+              { key: 'files', label: '项目资料', children: <ProjectFiles projectId={row.id} /> },
+            ]} />
+          ),
+        }}
         pagination={{ current: page, pageSize, total, showSizeChanger: true,
           showTotal: (n) => `共 ${n} 个${filters.archived === '1' ? '项目（含已归档）' : '在办项目'}`,
           onChange: (next, size) => { setPage(next); setPageSize(size) } }}

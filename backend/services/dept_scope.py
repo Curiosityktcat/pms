@@ -14,6 +14,8 @@ DEPT_ROLES = ("dept", "dept_manage", "dept_demand")
 WRITABLE_PERMS = {
     "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
     "procurement-demand-inquiry", "procurement-demand-emergency",
+    # 归口科室自己维护本科室的年度计划（《WPS小团队搬入PMS方案》里的「科室自助」）
+    "procurement-plan",
 }
 
 

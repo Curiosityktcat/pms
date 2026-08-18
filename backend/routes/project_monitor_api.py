@@ -3,7 +3,9 @@
 import calendar
 import datetime
 import io
+import os
 import re
+import secrets
 from functools import wraps
 
 from flask import Blueprint, jsonify, request, send_file, session
@@ -12,6 +14,7 @@ from sqlalchemy import case
 from models import db
 from models.procurement_plan import NOT_PROCURED, ProcurementPlan
 from models.procurement_round import ProcurementRound
+from models.project_file import ProjectFile
 from models.project import Project
 from models.sys_config import SysConfig
 from routes.utils import login_required
@@ -374,6 +377,160 @@ def timeline(pid):
     data = dict(progress)
     data["rounds"] = rounds
     return jsonify({"ok": True, "data": data})
+
+
+# ══════════════════════════════════════════════════════════════════
+# 项目资料：点开就能看这个项目归档文件夹里的东西
+#
+# 用户在《黄新博回应-WPS小团队搬入PMS方案》里写的：
+#   「项目资料（可以点击后自动调取归档文件夹内的相关文件，还可以查看上传和删除，
+#     上传还可以通过拖拽文件直接操作）」
+# 复用 services.archive_print.list_archive_tree —— 归档那边早就把各模块的文件
+# 按文件夹整理好了，这里不另收一套，否则两处口径会漂。
+#
+# 注意：这**不是**把「11. 归档」模块开放给科室。归档是流程的最后一步（要审要签），
+# 这里只是让人看得到项目已经有哪些材料，是只读看板的一部分。
+# ══════════════════════════════════════════════════════════════════
+
+# 谁能往项目资料里传文件、删文件。科室和监督是只读的——
+# 用户 2026-08-18 已把科室收成「除需求编制外只读」，上传删除属于写操作。
+FILE_WRITE_ROLES = ("officer", "assistant", "leader", "admin")
+# 补传的材料放这里，与各业务模块自己的目录分开，删起来不会误伤业务文件
+MONITOR_UPLOAD_DIR = os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+    "uploads", "project_files")
+ALLOWED_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+               ".jpg", ".jpeg", ".png", ".gif", ".zip", ".rar", ".txt", ".csv"}
+MAX_UPLOAD_MB = 100
+
+
+def _can_write_files():
+    role = session.get("role", "")
+    return role in FILE_WRITE_ROLES or is_admin_user(session.get("user", ""))
+
+
+@bp.route("/projects/<int:pid>/files", methods=["GET"])
+@_monitor_required
+def project_files(pid):
+    """这个项目的全部资料，按文件夹分组。"""
+    p, err = _assert_visible_project(pid)
+    if err:
+        return err
+    from services.archive_print import list_archive_tree
+    try:
+        folders = list_archive_tree(p)
+    except Exception as e:                                   # noqa: BLE001
+        # 某个环节的文件坏了不能让整个面板打不开
+        folders = []
+        print(f"[项目资料] 项目 {pid} 归档树读取失败：{e}", flush=True)
+
+    extra = []
+    for row in db.session.execute(
+            db.select(ProjectFile).filter_by(project_id=pid)
+            .order_by(ProjectFile.id.desc())).scalars():
+        extra.append({
+            "id": row.id,
+            "name": row.original_name or row.saved_name or "",
+            "size": row.size or 0,
+            "uploaded_by": row.uploaded_by or "",
+            "uploaded_at": _norm_date(row.uploaded_at),
+            "url": f"/api/project-monitor/projects/{pid}/files/{row.id}?download=1",
+            "preview_url": f"/api/project-monitor/projects/{pid}/files/{row.id}",
+            "can_delete": _can_write_files(),
+        })
+    if extra:
+        folders = list(folders) + [{"folder": "补充材料（在项目管理器里传的）", "items": extra}]
+
+    total = sum(len(f.get("items") or []) for f in folders)
+    return jsonify({"ok": True, "data": folders, "total": total,
+                    "can_upload": _can_write_files()})
+
+
+@bp.route("/projects/<int:pid>/files", methods=["POST"])
+@_monitor_required
+def upload_project_file(pid):
+    """补传材料（支持拖拽，前端一次可以丢多个文件进来）。"""
+    if not _can_write_files():
+        return jsonify({"ok": False, "error": "只有采购部可以上传项目资料"}), 403
+    p, err = _assert_visible_project(pid)
+    if err:
+        return err
+    files = request.files.getlist("file") or request.files.getlist("files")
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({"ok": False, "error": "没有收到文件"}), 400
+
+    os.makedirs(os.path.join(MONITOR_UPLOAD_DIR, str(pid)), exist_ok=True)
+    saved, rejected = [], []
+    for f in files:
+        name = os.path.basename(f.filename)
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in ALLOWED_EXT:
+            rejected.append(f"{name}（不支持的格式 {ext or '无扩展名'}）")
+            continue
+        blob = f.read()
+        if len(blob) > MAX_UPLOAD_MB * 1024 * 1024:
+            rejected.append(f"{name}（超过 {MAX_UPLOAD_MB}MB）")
+            continue
+        # 存盘名带随机串，避免同名互相覆盖；原名单独存，界面上显示原名
+        stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        saved_name = f"{stamp}_{secrets.token_hex(4)}{ext}"
+        with open(os.path.join(MONITOR_UPLOAD_DIR, str(pid), saved_name), "wb") as fh:
+            fh.write(blob)
+        row = ProjectFile(project_id=pid, original_name=name, saved_name=saved_name,
+                          size=len(blob), uploaded_by=session.get("display_name", ""),
+                          uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"))
+        db.session.add(row)
+        saved.append(name)
+    db.session.commit()
+    if not saved:
+        return jsonify({"ok": False, "error": "；".join(rejected) or "没有文件被保存"}), 400
+    msg = f"已上传 {len(saved)} 个文件"
+    if rejected:
+        msg += f"；{len(rejected)} 个未收：" + "；".join(rejected)
+    return jsonify({"ok": True, "message": msg, "saved": saved, "rejected": rejected})
+
+
+@bp.route("/projects/<int:pid>/files/<int:fid>", methods=["GET"])
+@_monitor_required
+def get_project_file(pid, fid):
+    p, err = _assert_visible_project(pid)
+    if err:
+        return err
+    row = db.session.get(ProjectFile, fid)
+    if not row or row.project_id != pid:
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    path = os.path.join(MONITOR_UPLOAD_DIR, str(pid), row.saved_name or "")
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": "文件已丢失"}), 404
+    if request.args.get("download") == "1":
+        return send_file(path, as_attachment=True,
+                         download_name=row.original_name or row.saved_name)
+    from services.office_convert import send_preview
+    return send_preview(path, row.original_name or row.saved_name)
+
+
+@bp.route("/projects/<int:pid>/files/<int:fid>", methods=["DELETE"])
+@_monitor_required
+def delete_project_file(pid, fid):
+    if not _can_write_files():
+        return jsonify({"ok": False, "error": "只有采购部可以删除项目资料"}), 403
+    p, err = _assert_visible_project(pid)
+    if err:
+        return err
+    row = db.session.get(ProjectFile, fid)
+    if not row or row.project_id != pid:
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    path = os.path.join(MONITOR_UPLOAD_DIR, str(pid), row.saved_name or "")
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError as e:                                 # noqa: BLE001
+            print(f"[项目资料] 删文件失败 {path}: {e}", flush=True)
+    name = row.original_name
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"ok": True, "message": f"已删除「{name}」"})
 
 
 def _deadline_date(raw, default_year=None):

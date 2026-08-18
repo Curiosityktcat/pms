@@ -122,3 +122,34 @@ export const monitorExportUrl = (filters: MonitorFilters) => {
   const suffix = query.toString()
   return `/api/project-monitor/export${suffix ? `?${suffix}` : ''}`
 }
+
+// ── 项目资料：归档文件夹里的东西 + 在这里补传的材料 ──────────────
+export interface MonitorFileItem {
+  id?: number                 // 只有「补充材料」有 id（能删）
+  name: string
+  size: number
+  url: string
+  preview_url?: string
+  uploaded_by?: string
+  uploaded_at?: string
+  can_delete?: boolean
+}
+export interface MonitorFileFolder {
+  folder: string
+  items: MonitorFileItem[]
+}
+
+export const getProjectFiles = (pid: number) =>
+  api.get<{ ok: boolean; data: MonitorFileFolder[]; total: number; can_upload: boolean }>(
+    `/project-monitor/projects/${pid}/files`)
+
+export const uploadProjectFiles = (pid: number, files: File[]) => {
+  const fd = new FormData()
+  files.forEach(f => fd.append('file', f))
+  return api.post<{ ok: boolean; message: string }>(
+    `/project-monitor/projects/${pid}/files`, fd)
+}
+
+export const deleteProjectFile = (pid: number, fid: number) =>
+  api.delete<{ ok: boolean; message: string }>(
+    `/project-monitor/projects/${pid}/files/${fid}`)

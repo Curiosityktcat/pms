@@ -86,6 +86,7 @@ def create_app():
     from routes.user_admin_api import bp as user_admin_bp               # 登录账号管理（仅系统管理员）
     from routes.dept_admin_api import bp as dept_admin_bp               # 科室字典管理（仅系统管理员）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
+    from models.project_file import ProjectFile                          # noqa: F401 建表用
     from routes.project_monitor_api import bp as project_monitor_bp       # 项目管理器（只读进度看板）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
@@ -159,10 +160,14 @@ def create_app():
         "/api/inquiries", "/api/inquiry-reviews", "/api/inquiry-templates",
         "/api/project-review",
         "/api/project-monitor",
+        "/api/procurement-plans",
         "/api/ocr",
     )
     _DEPT_WRITABLE_PREFIXES = (
+        # 计划池要可写：归口科室自己登记、更新、关联到项目，
+        # 否则「小团队搬进 PMS」这件事等于没搬（还是采购部在两边录）。
         "/api/procurement-demands", "/api/internal-bid-demands",
+        "/api/procurement-plans",
     )
     # ── 接口 → 需要的权限 ───────────────────────────────────────────
     # 2026-08-18：原来闸门只判「是不是科室角色」，白名单里的接口一律放行 GET。
@@ -187,6 +192,7 @@ def create_app():
         "/api/auth-letter-records":  {"auth-letter"},
         "/api/ocr":                  {"file-ocr"},
         "/api/project-monitor":      {"project-monitor"},
+        "/api/procurement-plans":    {"procurement-plan"},
         # 下面这些科室角色本来就被默认拒绝挡住了，列出来是为了让**监督**这类
         # 非科室角色也走同一套判断，别再有「闸门不管我」的角色。
         "/api/archive":              {"archive"},
@@ -498,9 +504,19 @@ def create_app():
         # 用 SysConfig 打标只跑一次，否则管理员在界面上的调整每次重启都会被冲掉。
         from models.sys_config import SysConfig as _SC
         _FLAG = "perm_scope_20260818"
-        if db.session.get(_SC, _FLAG) is None:
-            from services.permission import (DEPT_DEMAND_PERMS, DEPT_MANAGE_PERMS,
-                                             SUPERVISOR_PERMS)
+        from services.permission import (DEPT_DEMAND_PERMS, DEPT_MANAGE_PERMS,
+                                         SUPERVISOR_PERMS)
+        # 标记里存的是「范围内容的指纹」，不是一个布尔。
+        # 原来只要跑过一次就再也不同步，结果后来往范围里加了「1.0 采购计划池」，
+        # 科室照样进不去（2026-08-18 验收当场撞到）。
+        # 改成内容变了就重新同步一次：这几个角色的范围是制度定的基线，
+        # 以代码为准；管理员在界面上的临时调整会在基线变更时被拉回。
+        import hashlib as _hl
+        _scope_src = repr([sorted(DEPT_DEMAND_PERMS), sorted(DEPT_MANAGE_PERMS),
+                           sorted(SUPERVISOR_PERMS)])
+        _fp = _hl.sha256(_scope_src.encode("utf-8")).hexdigest()[:16]
+        _cur = db.session.get(_SC, _FLAG)
+        if _cur is None or (_cur.value or "").split()[0] != _fp:
             from models.dept import Dept as _Dept
             from models.user import User as _U
             _scopes = {
@@ -526,10 +542,13 @@ def create_app():
                            if (_d.dept_type or "") == "行后" and _d.code != "CGB"
                            else "dept_demand")
                 _moved += 1
-            db.session.add(_SC(key=_FLAG,
-                               value=f"done moved={_moved}"))
+            if _cur is None:
+                db.session.add(_SC(key=_FLAG, value=f"{_fp} moved={_moved}"))
+            else:
+                _cur.value = f"{_fp} moved={_moved}"
             db.session.commit()
-            print(f"[迁移] 科室权限已收到新范围；{_moved} 个老 dept 账号已归位", flush=True)
+            print(f"[迁移] 科室权限已同步到当前范围（{_fp}）；{_moved} 个老 dept 账号已归位",
+                  flush=True)
 
         # 预填默认邮件配置
         import datetime as _dt_cfg

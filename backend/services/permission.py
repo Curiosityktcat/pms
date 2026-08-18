@@ -29,6 +29,10 @@ PERMISSION_CATALOG = [
     {
         "group": "采购需求编制",
         "items": [
+            # 计划池原来不在权限目录里：菜单永远显示、也授不了权，
+            # 而接口又被科室闸门默认拒绝——归口科室根本进不去自己报的计划，
+            # 这就是「计划关联 0 条」的根因。
+            {"key": "procurement-plan", "label": "1.0 采购计划池"},
             {"key": "procurement-demand-gov", "label": "1.1 政府采购需求"},
             {"key": "internal-bid-demand", "label": "1.2 院内竞选需求编制"},
             {"key": "procurement-demand-sole", "label": "1.3 单一来源需求"},
@@ -123,6 +127,9 @@ _ALL_PERM_SET = set(ALL_PERM_KEYS)
 # 三档科室范围的基底，供 DEFAULT_ROLE_PERMS 和一次性迁移共用，避免两处写重复。
 DEPT_DEMAND_PERMS = ["dept-portal", "project-monitor"]
 DEPT_MANAGE_PERMS = DEPT_DEMAND_PERMS + [
+    # 计划是归口科室自己报的，得让他们自己维护、自己关联到项目上；
+    # 需求科室不给——那不是他们的活。
+    "procurement-plan",
     "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
     "procurement-demand-inquiry", "procurement-demand-emergency",
 ]
@@ -132,6 +139,7 @@ DEFAULT_ROLE_PERMS = {
     # 采购部助理：分发与日常业务，立项除外
     "assistant": [
         "project-monitor",
+        "procurement-plan",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency", "dispatch",
         "agency-agreement", "doc",
@@ -145,6 +153,7 @@ DEFAULT_ROLE_PERMS = {
     # 项目经办人：立项及项目执行
     "officer": [
         "project-monitor",
+        "procurement-plan",
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
         "agency-agreement", "doc",
