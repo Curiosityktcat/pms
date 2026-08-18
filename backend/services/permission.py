@@ -120,6 +120,14 @@ ALL_PERM_KEYS = [item["key"] for grp in PERMISSION_CATALOG for item in grp["item
 _ALL_PERM_SET = set(ALL_PERM_KEYS)
 
 # 各业务角色的默认权限（仅在 role_permissions 表为空时一次性写入）
+# 三档科室范围的基底，供 DEFAULT_ROLE_PERMS 和一次性迁移共用，避免两处写重复。
+DEPT_DEMAND_PERMS = ["dept-portal", "project-monitor"]
+DEPT_MANAGE_PERMS = DEPT_DEMAND_PERMS + [
+    "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
+    "procurement-demand-inquiry", "procurement-demand-emergency",
+]
+SUPERVISOR_PERMS = DEPT_MANAGE_PERMS + ["bid", "auth-letter"]
+
 DEFAULT_ROLE_PERMS = {
     # 采购部助理：分发与日常业务，立项除外
     "assistant": [
@@ -154,34 +162,25 @@ DEFAULT_ROLE_PERMS = {
         "doc", "announcement", "project-review", "procurement-result", "contract",
     ],
     # 两类科室当前权限相同，但必须独立保存，后续归口科室增加履约操作时才不会影响需求科室。
-    "dept_manage": [
-        "project-monitor",
+    # ── 2026-08-18 用户重新划定三档范围（原话）────────────────────────
+    #   「需求科室只能看 0. 我的科室项目，其余不给权限。
+    #     归口管理科室在需求科室的基础之上增加采购需求编制。
+    #     监督在归口基础之上可以看开标管理和授权书。」
+    # 这一条收紧了 8-15 那版（当时是「除归档外都能看」），以后者为准。
+    # project-monitor 保留：他要项目管理器时明确说「主要是归口科室和需求科室
+    # 以及采购部经办人和主任看项目进度」，那正是这个模块存在的理由。
+    # 归口管理科室 = 需求科室 + 采购需求编制
+    "dept_manage": DEPT_DEMAND_PERMS + [
         "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
         "procurement-demand-inquiry", "procurement-demand-emergency",
-        "new", "flow", "bid", "bid-board", "auth-letter",
-        "agency-agreement", "doc", "announcement",
-        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
-        "file-ocr", "dept-portal",
     ],
-    "dept_demand": [
-        "project-monitor",
-        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
-        "procurement-demand-inquiry", "procurement-demand-emergency",
-        "new", "flow", "bid", "bid-board", "auth-letter",
-        "agency-agreement", "doc", "announcement",
-        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
-        "file-ocr", "dept-portal",
-    ],
-    # 旧角色只为迁移前兼容，不出现在新的权限矩阵中。
-    "dept": [
-        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
-        "procurement-demand-inquiry", "procurement-demand-emergency", "new", "flow",
-        "bid", "bid-board", "auth-letter", "agency-agreement", "doc", "announcement",
-        "inquiry", "inquiry-review", "project-review", "procurement-result", "contract",
-        "file-ocr", "dept-portal",
-    ],
-    # 监督：开标相关
-    "supervisor": ["flow", "bid", "bid-board"],
+    # 需求科室：只有「0. 我的科室项目」和项目管理器
+    "dept_demand": list(DEPT_DEMAND_PERMS),
+    # 旧角色只为迁移前兼容，不出现在新的权限矩阵中；口径跟需求科室一致，
+    # 免得还没迁过去的账号在这段时间里权限比新角色还大。
+    "dept": list(DEPT_DEMAND_PERMS),
+    # 监督 = 归口 + 开标管理 + 授权函
+    "supervisor": DEPT_MANAGE_PERMS + ["bid", "auth-letter"],
 }
 
 

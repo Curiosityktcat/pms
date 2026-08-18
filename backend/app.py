@@ -82,6 +82,7 @@ def create_app():
     from routes.api_provider_api import bp as api_provider_bp  # 后台 API 管理（大模型台账）
     from routes.agency_assessment_api import bp as agency_assessment_bp  # 代理机构服务质量考核
     from routes.dept_portal_api import bp as dept_portal_bp             # 科室门户（归口科室自助查询）
+    from routes.utils import RdwebNoAccount
     from routes.user_admin_api import bp as user_admin_bp               # 登录账号管理（仅系统管理员）
     from routes.dept_admin_api import bp as dept_admin_bp               # 科室字典管理（仅系统管理员）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
@@ -163,12 +164,72 @@ def create_app():
     _DEPT_WRITABLE_PREFIXES = (
         "/api/procurement-demands", "/api/internal-bid-demands",
     )
+    # ── 接口 → 需要的权限 ───────────────────────────────────────────
+    # 2026-08-18：原来闸门只判「是不是科室角色」，白名单里的接口一律放行 GET。
+    # 结果收紧菜单之后，科室账号菜单上看不见合同/采购结果，直接调接口照样读得到
+    # （用户原话：「权限没有细化」）。改成按**具体权限**判：
+    # 名下没有这个权限的，接口层就进不来，而不是只在前端藏菜单。
+    # 值是「满足其一即可」的权限集合。
+    _API_PERM = {
+        "/api/procurement-demands": {"procurement-demand-gov", "procurement-demand-sole",
+                                     "procurement-demand-inquiry",
+                                     "procurement-demand-emergency"},
+        "/api/internal-bid-demands": {"internal-bid-demand"},
+        "/api/contracts":            {"contract"},
+        "/api/procurement-results":  {"procurement-result"},
+        "/api/inquiries":            {"inquiry"},
+        "/api/inquiry-reviews":      {"inquiry-review"},
+        "/api/inquiry-templates":    {"inquiry"},
+        "/api/project-review":       {"project-review"},
+        "/api/announcements":        {"announcement"},
+        "/api/bid":                  {"bid"},
+        "/api/bid-board":            {"bid-board"},
+        "/api/auth-letter-records":  {"auth-letter"},
+        "/api/ocr":                  {"file-ocr"},
+        "/api/project-monitor":      {"project-monitor"},
+        # 下面这些科室角色本来就被默认拒绝挡住了，列出来是为了让**监督**这类
+        # 非科室角色也走同一套判断，别再有「闸门不管我」的角色。
+        "/api/archive":              {"archive"},
+        "/api/distributions":        {"dispatch"},
+        "/api/bid-review":           {"bid-review"},
+        # /api/projects 不进这张表：科室门户和项目管理器都要靠它取项目详情，
+        # 而它本身已经被 dept_scope 按科室收过口，看到的只有自己科室的。
+    }
+
+    # 没配 rd-web 账号时给一句人话，而不是 500。
+    # 这个异常是「宁可推不动也不冒名」的出口，页面上必须让人看懂该去哪配账号。
+    @app.errorhandler(RdwebNoAccount)
+    def _no_rdweb_account(e):
+        from flask import jsonify as _js
+        return _js({"ok": False, "error": str(e), "need_rdweb_account": True}), 400
+
+    def _perm_gate(path):
+        """按对照表判当前账号有没有这个模块的权限。没有 → 403，有 → 放行。"""
+        from flask import session as _ss, jsonify as _js
+        need = None
+        for _prefix, _keys in _API_PERM.items():
+            if path == _prefix or path.startswith(_prefix + "/"):
+                need = _keys
+                break
+        if need is None:
+            return None
+        from services.permission import get_user_perms
+        if set(get_user_perms(_ss.get("user", ""), _ss.get("role", ""))) & need:
+            return None
+        return _js({"ok": False, "error": "本模块未对你的账号开放"}), 403
+
+    # 监督（supervisor）不是科室角色，原来完全不过闸门，等于他的权限配置只是
+    # 前端菜单的摆设。他的范围同样是被限定的，必须一起纳进来按权限判。
+    _SCOPED_ROLES = ("supervisor",)
 
     @app.before_request
     def _confine_dept_role():
         from flask import request as _rq, session as _ss, jsonify as _js
         from services.dept_scope import is_dept_role
-        if not is_dept_role(_ss.get("role")):
+        _role = _ss.get("role")
+        if not is_dept_role(_role):
+            if _role in _SCOPED_ROLES and _rq.path.startswith("/api/"):
+                return _perm_gate(_rq.path)
             return None
         path = _rq.path
         if not path.startswith("/api/"):
@@ -185,7 +246,7 @@ def create_app():
         if any(path == prefix or path.startswith(prefix + "/")
                for prefix in _DEPT_READONLY_PREFIXES):
             if _rq.method == "GET":
-                return None
+                return _perm_gate(path)
             if any(path == prefix or path.startswith(prefix + "/")
                    for prefix in _DEPT_WRITABLE_PREFIXES):
                 from services.dept_scope import WRITABLE_PERMS
@@ -430,6 +491,46 @@ def create_app():
                 db.session.add(_RP(role=_monitor_role, perm_key="project-monitor"))
         db.session.commit()
 
+        # ── 2026-08-18 一次性：把科室三档权限收到用户新划的范围，并迁走老 dept 角色 ──
+        # 为什么要单独做：seed_default_perms 只在权限表**为空**时播种，改默认值对
+        # 已上线的库没有任何作用。而生产库里还有 18 个账号挂在老的 "dept" 角色上，
+        # 权限表里又没有 dept 这一行——那些人能登录但一个菜单都看不到。
+        # 用 SysConfig 打标只跑一次，否则管理员在界面上的调整每次重启都会被冲掉。
+        from models.sys_config import SysConfig as _SC
+        _FLAG = "perm_scope_20260818"
+        if db.session.get(_SC, _FLAG) is None:
+            from services.permission import (DEPT_DEMAND_PERMS, DEPT_MANAGE_PERMS,
+                                             SUPERVISOR_PERMS)
+            from models.dept import Dept as _Dept
+            from models.user import User as _U
+            _scopes = {
+                "dept_demand": DEPT_DEMAND_PERMS,
+                "dept_manage": DEPT_MANAGE_PERMS,
+                "dept":        DEPT_DEMAND_PERMS,
+                "supervisor":  SUPERVISOR_PERMS,
+            }
+            for _role, _keys in _scopes.items():
+                db.session.execute(db.delete(_RP).filter_by(role=_role))
+                for _k in _keys:
+                    db.session.add(_RP(role=_role, perm_key=_k))
+
+            # 老 dept 账号按科室类型归到正确角色：行后（采购部除外）=归口，其余=需求
+            _moved = 0
+            for _u in db.session.execute(
+                    db.select(_U).filter_by(role="dept")).scalars().all():
+                _d = db.session.execute(
+                    db.select(_Dept).filter_by(code=_u.dept_code)).scalar_one_or_none()
+                if _d is None:
+                    continue
+                _u.role = ("dept_manage"
+                           if (_d.dept_type or "") == "行后" and _d.code != "CGB"
+                           else "dept_demand")
+                _moved += 1
+            db.session.add(_SC(key=_FLAG,
+                               value=f"done moved={_moved}"))
+            db.session.commit()
+            print(f"[迁移] 科室权限已收到新范围；{_moved} 个老 dept 账号已归位", flush=True)
+
         # 预填默认邮件配置
         import datetime as _dt_cfg
         _now_cfg = _dt_cfg.datetime.now().isoformat(timespec="seconds")
@@ -479,6 +580,9 @@ def create_app():
             for _col, _typedef in [
                 ("rdweb_serial_no",    "TEXT DEFAULT ''"),
                 ("rdweb_submitted_at", "TEXT DEFAULT ''"),
+                ("contract_type",      "TEXT DEFAULT ''"),
+                ("reviewed_by",        "TEXT DEFAULT ''"),
+                ("reviewed_at",        "TEXT DEFAULT ''"),
             ]:
                 if _col not in _existing_ct:
                     _conn_ct.execute(_text2(
