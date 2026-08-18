@@ -3,12 +3,16 @@ import os
 import sys
 
 sys.path.insert(0, ".")
+# 进程内直打，顺带关掉本进程的滑块——不动 1574 那个挂着公网的实例
+os.environ["PMS_CAPTCHA_ON"] = "0"
 os.environ["PMS_DB_PATH"] = "/home/huangxb/pms/pms.test.db"
 
-import requests
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _requests_shim as requests
 import secrets
 
-BASE = "http://127.0.0.1:1574"
+BASE = ""   # 进程内 test_client，不再走 HTTP
 ADMIN_PW = "0HBNkSpPJQnQOU"      # 与写给用户的口令一致，跑完不改变
 OFF_PW = "OfficerReg!2026"
 ok, bad = 0, []
@@ -31,6 +35,7 @@ from models.dept import Dept
 from services.auth import hash_pw
 
 app = create_app()
+requests.bind(app)
 with app.app_context():
     assert "pms.test.db" in app.config["SQLALCHEMY_DATABASE_URI"], "保险丝：不是测试库"
     # 回归要用「真的负责着项目的经办人」才有意义：新账号本来就没有项目，看到 0 是对的。
@@ -50,10 +55,15 @@ with app.app_context():
     total_projects = db.session.execute(db.select(db.func.count()).select_from(
         db.select(db.text("id")).select_from(db.text("projects")).subquery())).scalar_one()
     dept_total = db.session.execute(db.select(db.func.count()).select_from(Dept).filter_by(active=1)).scalar_one()
+    # 只数**启用**科室：停用科室（院办/预保科/资产管理组）名下还挂着老账号，
+    # 把它们算进覆盖数会让 missing 少算，甚至算出负数。
+    active_codes = {r[0] for r in db.session.execute(
+        db.select(Dept.code).filter_by(active=1)).all() if r[0]}
     have_acct = {r[0] for r in db.session.execute(db.select(User.dept_code).where(
-        User.role.in_(("dept", "dept_manage", "dept_demand")))).all() if r[0]}
-    missing = dept_total - len(have_acct)
-    print(f"库里项目 {total_projects} 个；科室 {dept_total} 个，其中 {missing} 个没有账号")
+        User.role.in_(("dept", "dept_manage", "dept_demand")))).all()
+        if r[0] and r[0] in active_codes}
+    missing = len(active_codes) - len(have_acct)
+    print(f"库里项目 {total_projects} 个；启用科室 {len(active_codes)} 个，其中 {missing} 个没有账号")
     print(f"回归用经办人：{OFFICER_NAME}，名下 {OFFICER_PROJECTS} 个项目")
     # 把上一轮批量建的账号清掉，好把「批量建号」再完整验一遍
     from models.user_audit_log import UserAuditLog
@@ -66,8 +76,9 @@ with app.app_context():
     db.session.commit()
     print("清掉上一轮批量建的账号:", removed)
     have_acct = {r[0] for r in db.session.execute(db.select(User.dept_code).where(
-        User.role.in_(("dept", "dept_manage", "dept_demand")))).all() if r[0]}
-    missing = dept_total - len(have_acct)
+        User.role.in_(("dept", "dept_manage", "dept_demand")))).all()
+        if r[0] and r[0] in active_codes}
+    missing = len(active_codes) - len(have_acct)
 
 so = requests.Session()
 so.post(f"{BASE}/api/auth/login", json={"username": "回归经办人", "password": OFF_PW}, timeout=10)

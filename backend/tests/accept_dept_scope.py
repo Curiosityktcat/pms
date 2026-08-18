@@ -7,11 +7,15 @@ import os
 import sys
 
 sys.path.insert(0, ".")
+# 进程内直打，顺带关掉本进程的滑块——不动 1574 那个挂着公网的实例
+os.environ["PMS_CAPTCHA_ON"] = "0"
 os.environ["PMS_DB_PATH"] = "/home/huangxb/pms/pms.test.db"
 
-import requests
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _requests_shim as requests
 
-BASE = "http://127.0.0.1:1574"
+BASE = ""   # 进程内 test_client，不再走 HTTP
 PW = "DeptScope!2026"
 ok_count, bad = 0, []
 
@@ -34,6 +38,7 @@ from services.auth import hash_pw
 import secrets
 
 app = create_app()
+requests.bind(app)
 A_CODE, B_CODE = "SBK", "ZWK"      # 医学装备部 / 总务科
 DEPT_ROLES = ("dept", "dept_manage", "dept_demand")
 
@@ -43,7 +48,10 @@ def ensure_dept_account(code):
     u = db.session.execute(db.select(User).filter_by(dept_code=code).where(
         User.role.in_(DEPT_ROLES))).scalars().first()
     if u is None:
-        u = User(username=d.name, display_name=d.name, role="dept", dept_code=code,
+        # 「dept」是已废弃的老角色（2026-08-18 全部迁走了），新建必须按科室类型
+        # 给正确角色，否则建出来的账号连项目管理器的角色白名单都过不去。
+        from routes.user_admin_api import _dept_role
+        u = User(username=d.name, display_name=d.name, role=_dept_role(d), dept_code=code,
                  active=1, agency_code="", salt="", pw_hash="")
         db.session.add(u)
     salt = secrets.token_hex(16)
@@ -69,9 +77,14 @@ sa, ua = login(a_user)
 sb, ub = login(b_user)
 check("① 两个科室账号都能登录", bool(ua) and bool(ub), f"{ua.get('role')} / {ub.get('role')}")
 perms_a = set(ua.get("perms", []))
-check("① 拿到业务权限", "flow" in perms_a and "contract" in perms_a, f"{len(perms_a)} 项")
+# 2026-08-18 用户把科室范围收紧了：需求科室只有「我的科室项目」，
+# 归口科室多一个采购需求编制。合同/流程这些不再对科室开放（原断言已过时）。
+check("① 拿到科室门户与项目管理器权限",
+      {"dept-portal", "project-monitor"} <= perms_a, f"{sorted(perms_a)}")
 check("① 没有归档权限", "archive" not in perms_a)
-check("① 有需求编制权限", "procurement-demand-gov" in perms_a)
+check("① 没有合同权限", "contract" not in perms_a)
+check("① 归口科室有需求编制权限", "procurement-demand-gov" in perms_a,
+      f"角色 {a_role}")
 
 
 def ids(sess, path, key="id"):

@@ -50,7 +50,10 @@ def ensure_dept_account(code):
     u = db.session.execute(db.select(User).filter_by(dept_code=code).where(
         User.role.in_(DEPT_ROLES))).scalars().first()
     if u is None:
-        u = User(username=d.name, display_name=d.name, role="dept", dept_code=code,
+        # 「dept」是已废弃的老角色（2026-08-18 全部迁走了），新建必须按科室类型
+        # 给正确角色，否则建出来的账号连项目管理器的角色白名单都过不去。
+        from routes.user_admin_api import _dept_role
+        u = User(username=d.name, display_name=d.name, role=_dept_role(d), dept_code=code,
                  active=1, agency_code="", salt="", pw_hash="")
         db.session.add(u)
     setpw(u)

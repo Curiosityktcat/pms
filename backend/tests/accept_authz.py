@@ -8,11 +8,15 @@ import sys
 from datetime import date, timedelta
 
 sys.path.insert(0, ".")
+# 进程内直打，顺带关掉本进程的滑块——不动 1574 那个挂着公网的实例
+os.environ["PMS_CAPTCHA_ON"] = "0"
 os.environ["PMS_DB_PATH"] = "/home/huangxb/pms/pms.test.db"
 
-import requests
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _requests_shim as requests
 
-BASE = "http://127.0.0.1:1574"
+BASE = ""   # 进程内 test_client，不再走 HTTP
 # 用**专用**验收管理员账号，绝不动 admin 的密码——
 # 2026-08-15 就是因为脚本重置了 admin，把写给用户的测试口令冲掉、害他登不进去。
 ADMIN_USER = "验收管理员"
@@ -41,6 +45,7 @@ from services.auth import hash_pw
 import secrets
 
 app = create_app()
+requests.bind(app)
 DEPT_CODE = "SBK"          # 医学装备部（负责人 甘锐）
 OTHER_DEPT = "ZWK"         # 总务科，用来验跨科室隔离
 
@@ -64,7 +69,13 @@ def set_pw(username, pw, **fields):
 with app.app_context():
     assert "pms.test.db" in app.config["SQLALCHEMY_DATABASE_URI"], "保险丝：不是测试库"
     set_pw(ADMIN_USER, ADMIN_PW, role="assistant", display_name="验收管理员")
-    head = set_pw("医学装备部", DEPT_PW, role="dept", display_name="医学装备部", dept_code=DEPT_CODE)
+    # 不能再写死 "dept"：那是 2026-08-18 迁走的老角色，写回去会让这个账号
+    # 在别的验收里失去项目管理器等权限（跑完这个脚本，别的脚本就挂）。
+    from models.dept import Dept as _D
+    from routes.user_admin_api import _dept_role
+    _d = db.session.execute(db.select(_D).filter_by(code=DEPT_CODE)).scalar_one()
+    head = set_pw("医学装备部", DEPT_PW, role=_dept_role(_d),
+                  display_name="医学装备部", dept_code=DEPT_CODE)
     staff = set_pw("装备专员测试", STAFF_PW, role="officer", display_name="装备专员测试", dept_code=DEPT_CODE)
     outsider = set_pw("总务专员测试", STAFF_PW, role="officer", display_name="总务专员测试", dept_code=OTHER_DEPT)
     dept = db.session.execute(db.select(Dept).filter_by(code=DEPT_CODE)).scalar_one()
