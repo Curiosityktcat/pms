@@ -44,6 +44,25 @@ def _file_dir(cid: int) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
+from services.rdweb_contract_name import (COMMON_CONTRACT_TYPES, compose_name,
+                                          guess_contract_type)
+
+
+def _guess_contract_type(c) -> str:
+    """给审核弹窗猜个默认的合同类型，猜不出就留空让经办人自己填。
+
+    只在附件名/合同名里认「购销协议」「服务合同」这类**词根**，
+    绝不把整个文件名当类型名——那是 2026-08-18 实测踩过的坑。
+    """
+    names = [a.original_name or a.saved_name or "" for a in db.session.execute(
+        db.select(ContractAttachment).filter_by(contract_id=c.id)).scalars()]
+    return guess_contract_type(*names, c.file_name or "", c.contract_name or "")
+
+
+def compose_rdweb_contract_name(contract_type, project_name, package_no) -> str:
+    return compose_name(contract_type, project_name, package_no)
+
+
 def _can_confirm() -> bool:
     """确认合同（草案→合同上传）/撤回仅限采购人方；代理机构只能上传合同草案。"""
     return session.get("role", "") in ("officer", "assistant", "leader")
@@ -318,15 +337,17 @@ def submit_contract(cid):
     if err:
         return err
     is_agency = session.get("role", "") == "agency"
-    # 多步状态机：合同草案 →(代理机构拟好提交)→ 审核完成 →(经办人核完/传盖章件)→ 合同上传(归档)
+    # 多步状态机：
+    #   合同草案 →(代理机构拟好提交)→ 待审核 →(经办人审核通过)→ 审核完成 →(传盖章件)→ 合同上传
     #
-    # 第一步允许代理机构做——合同本来就是代理拟的，让经办人替他点提交没有道理；
-    # 第二步（定稿归档）仍只限采购人方。
+    # 2026-08-18 修：原来代理机构一提交就直接置「审核完成」并**当场推 rd-web**，
+    # 结果三盈交了合同、经办人根本没看，审签单就已经发出去了。
+    # 「审核完成」这四个字必须是经办人审完才配写上，代理提交只能到「待审核」。
     if c.status == "合同草案":
         if not (is_agency or _can_confirm()):
             return jsonify({"ok": False, "error": "无权提交该合同"}), 403
-        c.status = "审核完成"
-        msg = "已提交，转经办人审核"
+        c.status = "待审核"
+        msg = "已提交，等经办人审核"
     elif c.status == "审核完成":
         if not _can_confirm():
             return jsonify({"ok": False, "error": "仅项目经办人或负责人可完成合同归档"}), 403
@@ -338,9 +359,69 @@ def submit_contract(cid):
     alog.log(c.project_id, "contract",
              "resubmit" if c.reject_reason else "submit", target_id=c.id)
     db.session.commit()
-    # 审核完成这一步是「合同定稿待盖章」，正是该去 rd-web 走审签的时点
-    push_info = _auto_push_contract_rdweb(c) if c.status == "审核完成" else {}
-    return jsonify({"ok": True, "message": msg, "rdweb_push": push_info})
+    # 这里不再推 rd-web：推送只发生在经办人「审核通过」那一步（见 review_contract）。
+    return jsonify({"ok": True, "message": msg})
+
+
+# ── 经办人审核合同（这一步才是「审核完成」，也只有这一步会推 rd-web）──────
+@bp.route("/<int:cid>/review", methods=["POST"])
+@login_required
+def review_contract(cid):
+    """经办人审核代理机构提交的合同：通过 → 置「审核完成」并推 rd-web 审签单。
+
+    合同名称在这里定稿：**合同类型名 + 项目名称 + 包号**。
+    类型名不再靠猜附件文件名（实测把「内江市第一人民医院服务合同_NJYYJX-SY-2607010
+    （第二次）-蓉旭阳」整个当成了类型名），改成经办人在审核时确认——他本来就要看这份合同。
+    """
+    c, project, err = _scoped(cid)
+    if err:
+        return err
+    if session.get("role", "") == "agency":
+        return jsonify({"ok": False, "error": "代理机构不能审核自己提交的合同"}), 403
+    if not _can_confirm():
+        return jsonify({"ok": False, "error": "仅采购部经办人或负责人可审核合同"}), 403
+    if c.status != "待审核":
+        return jsonify({"ok": False,
+                        "error": f"当前状态「{c.status}」不可审核，只有「待审核」的合同能审"}), 400
+
+    data = request.get_json(silent=True) or {}
+    ctype = (data.get("contract_type") or "").strip()
+    if ctype:
+        c.contract_type = ctype
+    if not (c.contract_type or "").strip():
+        return jsonify({"ok": False,
+                        "error": "请先确认合同类型名称（如「医用耗材购销协议」「医疗器械购销协议」"
+                                 "「服务合同」），审签单的合同名称要靠它拼出来"}), 400
+
+    who = session.get("display_name", "")
+    c.status = "审核完成"
+    c.reviewed_by = who
+    c.reviewed_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    c.updated_at = c.reviewed_at
+    alog.log(c.project_id, "contract", "review_pass", target_id=c.id)
+    db.session.commit()
+
+    push_info = _auto_push_contract_rdweb(c)
+    return jsonify({"ok": True, "message": f"审核通过（{who}）", "rdweb_push": push_info})
+
+
+@bp.route("/<int:cid>/review-preview", methods=["GET"])
+@login_required
+def review_preview(cid):
+    """审核弹窗要显示的内容：猜出来的合同类型 + 拼好的合同名称，供经办人过目改。"""
+    c, project, err = _scoped(cid)
+    if err:
+        return err
+    guess = (c.contract_type or "").strip() or _guess_contract_type(c)
+    return jsonify({"ok": True, "data": {
+        "contract_type": guess,
+        "contract_type_guessed": not (c.contract_type or "").strip(),
+        "composed_name": compose_rdweb_contract_name(guess, project.name if project else "",
+                                                     c.package_no),
+        "project_name": (project.name if project else "") or "",
+        "package_no": c.package_no or "1",
+        "common_types": COMMON_CONTRACT_TYPES,
+    }})
 
 
 # ── 驳回合同（打回修改，写明原因）──────────────────────────────────
@@ -383,6 +464,10 @@ def revoke_contract(cid):
         c.status = "审核完成"
         msg = "已撤回：合同上传 → 审核完成"
     elif c.status == "审核完成":
+        # 撤回审核 → 退回「待审核」，而不是一路打到草案：
+        # 代理已经交过一次了，退到草案等于让他重交一遍，白折腾。
+        c.status = "待审核"
+    elif c.status == "待审核":
         c.status = "合同草案"
         msg = "已撤回：审核完成 → 合同草案"
     else:
@@ -637,13 +722,14 @@ def submit_to_rdweb(cid):
         return jsonify({"ok": False,
                         "error": "请先上传合同附件文件，rd-web 审签单要求必须上传附件"}), 400
 
-    # 合同名称 = 附件里的真实合同名称 + 项目名称（原来只有项目名称，审签单上
-    # 看不出这是什么合同）。用户在前端显式改过合同名称的，尊重用户填的。
+    # 合同名称 = 合同类型名 + 项目名称 + 包号（用户 2026-08-18 明确的口径）。
+    # 类型名用经办人审核时确认的 contract_type；他没确认过才退回猜测。
+    # 前端显式改过合同名称的，尊重用户填的。
     if "合同名称" not in overrides:
-        from services.rdweb_contract_name import compose as _compose_cname
-        _cname = _compose_cname(c.contract_name or "",
-                                (project.name if project else "") or "",
-                                attachments_to_upload)
+        _ctype = (c.contract_type or "").strip() or _guess_contract_type(c)
+        _cname = compose_rdweb_contract_name(_ctype,
+                                             (project.name if project else "") or "",
+                                             c.package_no)
         if _cname:
             rdweb_data["合同名称"] = _cname
 

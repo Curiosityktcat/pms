@@ -52,17 +52,36 @@ _RDWEB_FALLBACK_USER = "13029144451"
 _RDWEB_FALLBACK_PASS = "whywhy123"
 
 
-def get_rdweb_creds(display_name: str = "") -> tuple[str, str]:
+class RdwebNoAccount(RuntimeError):
+    """当前操作人没有自己的 rd-web 执行账号。"""
+
+
+def get_rdweb_creds(display_name: str = "", *, strict: bool = True) -> tuple[str, str]:
     """根据 PMS 用户姓名查对应的 rd-web 账号（owner=display_name, usage=执行）。
-    找不到时回退到系统默认账号。"""
+
+    **查不到就报错，绝不回退到别人的账号。**
+    原来找不到会静默退回系统默认账号（那是黄新博的号），后果是：代理机构提交合同
+    触发的推送、以及任何没配账号的人的推送，在 rd-web 上全都显示成黄新博干的
+    （2026-08-18 用户实测发现，推送日志里推送人赫然是「四川三盈招标代理有限公司」）。
+    以他人身份在审批系统里提交单据是不能接受的，宁可推不动也不能推错人。
+
+    strict=False 只留给确实该用系统账号的后台任务（如公告抓取），业务推送一律 strict。
+    """
     from models.project_distribution import RdwebAccount
     from models import db
-    if display_name:
+    name = (display_name or "").strip()
+    if name:
         row = db.session.execute(
-            db.select(RdwebAccount).filter_by(owner=display_name, usage="执行")
+            db.select(RdwebAccount).filter_by(owner=name, usage="执行")
         ).scalar_one_or_none()
         if row and row.phone and row.password:
             return row.phone, row.password
+    if strict:
+        who = f"「{name}」" if name else "当前登录账号"
+        raise RdwebNoAccount(
+            f"{who}还没有配 rd-web 执行账号，不能替别人推送。"
+            "请在「2. 采购项目分发 → rd-web 账号」里配好本人的账号后重试。"
+        )
     return _RDWEB_FALLBACK_USER, _RDWEB_FALLBACK_PASS
 
 

@@ -17,6 +17,7 @@ import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } fr
 import {
   listContracts, createContract, updateContract, deleteContract,
   submitContract, revokeContract, rejectContract,
+  getReviewPreview, reviewContract, type ReviewPreview,
   contractFileUrl, contractFilePreviewUrl, uploadContractFile,
   listAttachments, uploadAttachment, deleteAttachment,
   attachmentDownloadUrl, attachmentPreviewUrl,
@@ -222,7 +223,13 @@ export default function ContractPage() {
   const [contracts, setContracts] = useState<Contract[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
-  const [tabStatus, setTabStatus] = useState<'合同草案' | '审核完成' | '合同上传'>('合同草案')
+  const [tabStatus, setTabStatus] = useState<'合同草案' | '待审核' | '审核完成' | '合同上传'>('合同草案')
+  // 审核弹窗（待审核 → 审核完成）：经办人在这里确认合同类型，确认后才推 rd-web
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [reviewRec, setReviewRec] = useState<Contract | null>(null)
+  const [reviewData, setReviewData] = useState<ReviewPreview | null>(null)
+  const [reviewType, setReviewType] = useState('')
+  const [reviewBusy, setReviewBusy] = useState(false)
   // 驳回弹窗（审核完成 → 打回合同草案）
   const [rejectRow, setRejectRow] = useState<Contract | null>(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -395,7 +402,7 @@ export default function ContractPage() {
   useFocusTarget(!loading && projects.length > 0, (id) => {
     const existing = contracts.find(c => c.project_id === id)
     if (existing) {
-      setTabStatus(existing.status as '合同草案' | '审核完成' | '合同上传')
+      setTabStatus(existing.status as '合同草案' | '待审核' | '审核完成' | '合同上传')
       flashRow(existing.id)
     } else {
       openDraftCreate()
@@ -445,14 +452,12 @@ export default function ContractPage() {
   const handleSubmitDraft = (record: Contract) => {
     modal.confirm({
       title: '提交审核',
-      content: `确认将「${record.contract_name}」提交审核？提交后由经办人审核，合同草案 → 审核完成。`,
+      content: `确认将「${record.contract_name}」提交审核？提交后进入「待我审核」，
+        由项目经办人审核通过后才会推送 rd-web 审签单。`,
       onOk: async () => {
         try {
-          const resp = await submitContract(record.id)
-          message.success('已提交，合同草案 → 审核完成')
-          // 审核完成即合同定稿待盖章，后端已自动推 rd-web 合同审签单
-          const pushTip = autoPushText((resp?.data as any)?.rdweb_push)
-          if (pushTip) message.info(pushTip)
+          await submitContract(record.id)
+          message.success('已提交，等经办人审核')
           loadContracts()
           setDraftOpen(false)
         } catch (err: unknown) {
@@ -461,6 +466,35 @@ export default function ContractPage() {
         }
       },
     })
+  }
+
+  // ── 经办人审核（待审核 → 审核完成）：确认合同类型，通过后才推 rd-web ─────
+  const openReview = async (record: Contract) => {
+    setReviewRec(record); setReviewData(null); setReviewType(''); setReviewOpen(true)
+    try {
+      const resp = await getReviewPreview(record.id)
+      const d = resp.data.data
+      setReviewData(d); setReviewType(d.contract_type || '')
+    } catch {
+      message.error('取审核信息失败，请重试')
+    }
+  }
+
+  const doReview = async () => {
+    if (!reviewRec) return
+    if (!reviewType.trim()) { message.warning('请先确认合同类型名称'); return }
+    setReviewBusy(true)
+    try {
+      const resp = await reviewContract(reviewRec.id, reviewType.trim())
+      message.success('审核通过')
+      const pushTip = autoPushText((resp?.data as any)?.rdweb_push)
+      if (pushTip) message.info(pushTip)
+      setReviewOpen(false)
+      loadContracts()
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '审核失败')
+    } finally { setReviewBusy(false) }
   }
 
   // ── 完成归档（审核完成 → 合同上传）：上传盖章合同后确认 ─────────
@@ -557,8 +591,8 @@ export default function ContractPage() {
   }
 
   // ── 合同 → 卡片数据 ──────────────────────────────────────────
-  const ACCENT: Record<string, string> = { 合同草案: '#1a73e8', 审核完成: '#f9ab00', 合同上传: '#34a853' }
-  const STATUS_COLOR: Record<string, string> = { 合同草案: 'blue', 审核完成: 'gold', 合同上传: 'green' }
+  const ACCENT: Record<string, string> = { 合同草案: '#1a73e8', 待审核: '#d93025', 审核完成: '#f9ab00', 合同上传: '#34a853' }
+  const STATUS_COLOR: Record<string, string> = { 合同草案: 'blue', 待审核: 'red', 审核完成: 'gold', 合同上传: 'green' }
   const contractToCard = (r: Contract) => {
     const isDraft = tabStatus === '合同草案'
     const fields = isDraft
@@ -631,6 +665,18 @@ export default function ContractPage() {
             {r.file_name ? '重新上传盖章合同' : '上传盖章合同'}
           </Button>
         </Upload>
+        {canConfirm && r.status === '待审核' && (
+          <>
+            {/* 这个按钮是整条链路唯一会推 rd-web 的地方——代理提交不再自动推 */}
+            <Button size="small" type="primary" icon={<CheckCircleOutlined />} onClick={() => openReview(r)}>
+              审核并推送审签
+            </Button>
+            <Tooltip title="合同内容有问题，退回合同草案并写明要改什么">
+              <Button size="small" danger ghost icon={<StopOutlined />}
+                onClick={() => { setRejectRow(r); setRejectReason('') }}>驳回</Button>
+            </Tooltip>
+          </>
+        )}
         {canConfirm && r.status === '审核完成' && (
           <>
             <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleFinalize(r)}>完成归档</Button>
@@ -674,9 +720,10 @@ export default function ContractPage() {
       title={<span style={{ fontWeight: 700, fontSize: 16 }}>合同管理</span>}
       extra={<Button type="primary" icon={<PlusOutlined />} onClick={openDraftCreate}>新建合同</Button>}
     >
-      <Tabs activeKey={tabStatus} onChange={k => setTabStatus(k as '合同草案' | '审核完成' | '合同上传')}
+      <Tabs activeKey={tabStatus} onChange={k => setTabStatus(k as '合同草案' | '待审核' | '审核完成' | '合同上传')}
         items={[
           { key: '合同草案', label: <span>合同草案 <Tag color="blue">{contracts.filter(c => c.status === '合同草案').length}</Tag></span> },
+          { key: '待审核', label: <span>待我审核 <Tag color="red">{contracts.filter(c => c.status === '待审核').length}</Tag></span> },
           { key: '审核完成', label: <span>审核完成 <Tag color="gold">{contracts.filter(c => c.status === '审核完成').length}</Tag></span> },
           { key: '合同上传', label: <span>合同上传（归档）<Tag color="green">{contracts.filter(c => c.status === '合同上传').length}</Tag></span> },
         ]}
@@ -1035,6 +1082,62 @@ export default function ContractPage() {
               ))
             )}
           </div>
+        )}
+      </Modal>
+
+      {/* ── 经办人审核合同：确认合同类型 → 通过并推 rd-web ──────────── */}
+      <Modal
+        open={reviewOpen}
+        title={`审核合同 — ${reviewRec?.contract_name || ''}`}
+        okText="审核通过并推送审签"
+        cancelText="取消"
+        confirmLoading={reviewBusy}
+        onOk={doReview}
+        onCancel={() => setReviewOpen(false)}
+        width={640}
+      >
+        {!reviewData ? <div style={{ padding: 24, textAlign: 'center' }}>正在读取合同信息…</div> : (
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Alert type="info" showIcon
+              message="审核通过后，会用你自己的 rd-web 账号提交审签单"
+              description="推送用的是当前登录人的 rd-web 执行账号。没配过账号的话这里会提示你先去配，不会再借用别人的账号提交。" />
+
+            <div>
+              <Typography.Text strong>合同类型名称</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginInlineStart: 8 }}>
+                {reviewData.contract_type_guessed
+                  ? '下面是根据附件名猜的，请核对'
+                  : '上次审核确认过的'}
+              </Typography.Text>
+              <Select
+                showSearch allowClear style={{ width: '100%', marginTop: 6 }}
+                placeholder="如：医用耗材购销协议"
+                value={reviewType || undefined}
+                onChange={v => setReviewType(v || '')}
+                options={reviewData.common_types.map(t => ({ label: t, value: t }))}
+                /* 列表里没有的类型允许自己敲进去——医院的合同名目不止这十种 */
+                onSearch={v => setReviewType(v)}
+                filterOption={(input, opt) => (opt?.label as string || '').includes(input)}
+                notFoundContent={<span style={{ fontSize: 12 }}>没有匹配的，直接用你输入的即可</span>}
+              />
+            </div>
+
+            <Descriptions size="small" column={1} bordered
+              items={[
+                { key: 'p', label: '项目名称', children: reviewData.project_name || '—' },
+                { key: 'k', label: '包号', children: `包${reviewData.package_no}` },
+                {
+                  key: 'n', label: '送审签单的合同名称',
+                  children: (
+                    <Typography.Text strong style={{ color: '#1a73e8' }}>
+                      {reviewType.trim()
+                        ? `${reviewType.trim()}-${reviewData.project_name}　包${reviewData.package_no}`
+                        : <Typography.Text type="danger">请先选合同类型</Typography.Text>}
+                    </Typography.Text>
+                  ),
+                },
+              ]} />
+          </Space>
         )}
       </Modal>
 

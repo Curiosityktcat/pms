@@ -77,3 +77,54 @@ def compose(contract_name: str, project_name: str, attachments) -> str:
     if not proj or proj in real:
         return real
     return f"{real}{SEP}{proj}"
+
+# ══════════════════════════════════════════════════════════════════
+# 2026-08-18 重做：合同名称 = 合同类型名 + 项目名称 + 包号
+#
+# 原来只有「猜出来的类型名 + 项目名」，两个毛病：
+#   ① 没有包号，一个项目多个包时审签单上分不出是哪个包的合同；
+#   ② 类型名靠猜附件文件名，实测把整个文件名（含编号和供应商名）当成了类型名——
+#      「内江市第一人民医院服务合同_NJYYJX-SY-2607010（第二次）-蓉旭阳」。
+# 现在类型名以**经办人审核时确认的** contracts.contract_type 为准，下面的猜测
+# 只用来给他填默认值，猜错了他改一下就是，不再直接决定推出去的内容。
+# ══════════════════════════════════════════════════════════════════
+
+# 医院实际在用的几种，按出现频率排；界面上做成下拉+可自己填。
+COMMON_CONTRACT_TYPES = [
+    "医用耗材购销协议",
+    "医疗器械购销协议",
+    "医疗设备购销合同",
+    "服务合同",
+    "配送服务合同",
+    "维保服务合同",
+    "工程施工合同",
+    "货物采购合同",
+    "试剂购销协议",
+    "租赁合同",
+]
+
+# 猜类型名时只认这些词根：命中就取「词根本身」，绝不把整个文件名端过来。
+_TYPE_WORDS = [
+    "医用耗材购销协议", "医疗器械购销协议", "医疗设备购销合同", "试剂购销协议",
+    "配送服务合同", "维保服务合同", "工程施工合同", "货物采购合同",
+    "购销协议", "购销合同", "采购合同", "服务合同", "租赁合同", "施工合同",
+]
+
+
+def guess_contract_type(*texts) -> str:
+    """从附件文件名等文本里认出合同类型词根。认不出返回空，让人去填。"""
+    blob = "　".join(str(t or "") for t in texts)
+    blob = re.sub(r"[\s　]+", "", blob)
+    for word in _TYPE_WORDS:          # 长的排前面，先匹配更具体的
+        if word in blob:
+            return word
+    return ""
+
+
+def compose_name(contract_type: str, project_name: str, package_no) -> str:
+    """合同类型名 + 项目名称 + 包号 —— 用户 2026-08-18 明确的口径。"""
+    ctype = re.sub(r"[\s　]+", "", str(contract_type or "").strip())
+    proj = str(project_name or "").strip()
+    pkg = str(package_no or "").strip() or "1"
+    head = f"{ctype}{SEP}{proj}" if ctype and ctype not in proj else (ctype or proj)
+    return f"{head}　包{pkg}" if head else f"包{pkg}"

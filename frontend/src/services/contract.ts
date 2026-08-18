@@ -9,7 +9,10 @@ export interface Contract {
   contract_number: string
   contract_name: string
   package_no: string
-  status: '合同草案' | '审核完成' | '合同上传'
+  status: '合同草案' | '待审核' | '审核完成' | '合同上传'
+  contract_type?: string      // 合同类型名，经办人审核时确认
+  reviewed_by?: string
+  reviewed_at?: string
   // rd-web 合同审签推送结果：有流水号即表示推送成功
   rdweb_serial_no?: string
   rdweb_submitted_at?: string
@@ -57,6 +60,23 @@ export const deleteContract = (id: number) =>
 
 export const submitContract = (id: number) =>
   api.post<{ ok: boolean; message: string }>(`/contracts/${id}/submit`)
+
+/** 审核弹窗要显示的内容：猜出来的合同类型 + 拼好的合同名称，供经办人过目 */
+export interface ReviewPreview {
+  contract_type: string
+  contract_type_guessed: boolean
+  composed_name: string
+  project_name: string
+  package_no: string
+  common_types: string[]
+}
+export const getReviewPreview = (id: number) =>
+  api.get<{ ok: boolean; data: ReviewPreview }>(`/contracts/${id}/review-preview`)
+
+/** 经办人审核通过：这一步才置「审核完成」，也只有这一步会推 rd-web 审签单 */
+export const reviewContract = (id: number, contractType: string) =>
+  api.post<{ ok: boolean; message: string; rdweb_push?: unknown }>(
+    `/contracts/${id}/review`, { contract_type: contractType })
 
 export const revokeContract = (id: number) =>
   api.post<{ ok: boolean; message: string }>(`/contracts/${id}/revoke`)

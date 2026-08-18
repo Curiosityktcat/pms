@@ -8,7 +8,12 @@ class Contract(db.Model):
     contract_number    = db.Column(db.String(100), default="")   # 合同编号：项目编号+包号+HT，可修改
     contract_name      = db.Column(db.String(300), default="")   # 合同名称，默认项目名称
     package_no         = db.Column(db.String(10), default="1")   # 包号
-    status             = db.Column(db.String(10), default="合同草案")  # 合同草案|合同上传
+    status             = db.Column(db.String(10), default="合同草案")  # 合同草案|待审核|审核完成|合同上传
+    # 合同类型名（「医用耗材购销协议」这类），经办人审核时确认。
+    # 送 rd-web 的合同名称 = 合同类型名 + 项目名称 + 包号，这个字段是其中第一段。
+    contract_type      = db.Column(db.String(60), default="")
+    reviewed_by        = db.Column(db.String(50), default="")   # 审核通过的人
+    reviewed_at        = db.Column(db.String(30), default="")   # 审核通过时间
     # ── 供应商信息（草案阶段填写） ──────────────────────────────────
     supplier_name      = db.Column(db.String(200), default="")   # 成交供应商名称
     supplier_address   = db.Column(db.String(300), default="")   # 地址
