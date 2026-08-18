@@ -13,12 +13,13 @@ import {
 import {
   ProfileOutlined, LinkOutlined, DisconnectOutlined, PaperClipOutlined,
   ReloadOutlined, InboxOutlined, DeleteOutlined, DownloadOutlined,
-  SearchOutlined,
+  SearchOutlined, FileExcelOutlined, UploadOutlined,
 } from '@ant-design/icons'
 import {
   getPlanMeta, listPlans, getPlanStats, linkPlanProject, unlinkPlanProject,
   getPlanCandidates, listPlanAttachments, uploadPlanAttachments,
   deletePlanAttachment, planAttachmentUrl,
+  planLinkSheetUrl, importPlanLinkSheet, type LinkImportResult,
   type PlanItem, type PlanMeta, type PlanStats, type PlanAttachment,
   type PlanCandidate,
 } from '../services/procurementPlan'
@@ -210,12 +211,46 @@ export default function ProcurementPlanPage() {
     },
   ]
 
+  // ── Excel 对照表：导出填编号 → 传回来批量关联 ──────────────────
+  // 先出预览再落库：一次几百条，写错了回滚起来很痛苦。
+  const [impOpen, setImpOpen] = useState(false)
+  const [impFile, setImpFile] = useState<File | null>(null)
+  const [impResult, setImpResult] = useState<LinkImportResult | null>(null)
+  const [impBusy, setImpBusy] = useState(false)
+
+  const doImport = async (file: File, dryRun: boolean) => {
+    setImpBusy(true)
+    try {
+      const res = await importPlanLinkSheet(file, dryRun)
+      setImpResult(res.data)
+      if (!dryRun) {
+        message.success(res.data.message || '已导入')
+        load()
+      }
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '导入失败')
+      setImpResult(null)
+    } finally { setImpBusy(false) }
+  }
+
   return (
     <Card title={<span><ProfileOutlined /> 1.0 采购计划池</span>}
-      extra={<Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>}>
+      extra={
+        <Space>
+          <Button icon={<FileExcelOutlined />} href={planLinkSheetUrl}>
+            导出对照表
+          </Button>
+          <Button type="primary" ghost icon={<UploadOutlined />}
+            onClick={() => { setImpOpen(true); setImpFile(null); setImpResult(null) }}>
+            导入对照表
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+        </Space>
+      }>
       <Alert
         type="info" showIcon style={{ marginBottom: 12 }}
-        message="这里是归口科室报上来的年度采购计划，是采购项目的「前身」。一条计划真正立项后，用「关联项目」挂到对应的采购项目上，之后就能对着看计划预算与实际采购结果。「已合并 / 已集采 / 延期合并」的条目不会走到采购部，默认已隐藏。关联只支持人工点选，系统按关键词给候选提示但不自动绑定——科室的叫法和正式立项名往往对不上，错绑的清理代价比人工点一下大得多。"
+        message="这里是归口科室报上来的年度采购计划，是采购项目的「前身」。一条计划真正立项后，用「关联项目」挂到对应的采购项目上，之后就能对着看计划预算与实际采购结果。「已合并 / 已集采 / 延期合并」的条目不会走到采购部，默认已隐藏。关联只支持人工点选，系统按关键词给候选提示但不自动绑定——科室的叫法和正式立项名往往对不上，错绑的清理代价比人工点一下大得多。条数多的时候用右上角「导出对照表」，在 Excel 里把项目编号填好再传回来，比一条条点快。"
       />
 
       {stats && (
@@ -277,6 +312,84 @@ export default function ProcurementPlanPage() {
             rowClassName={r => (r.will_procure ? '' : 'plan-row-closed')}
           />
         )}
+
+      {/* ── 导入 Excel 对照表：先预览，确认无误再落库 ── */}
+      <Modal
+        open={impOpen}
+        title={<span><FileExcelOutlined /> 导入对照表</span>}
+        width={760}
+        onCancel={() => setImpOpen(false)}
+        footer={[
+          <Button key="c" onClick={() => setImpOpen(false)}>关闭</Button>,
+          <Button key="ok" type="primary" disabled={!impFile || !impResult?.will_link}
+            loading={impBusy}
+            onClick={async () => { if (impFile) { await doImport(impFile, false); setImpOpen(false) } }}>
+            确认写入{impResult?.will_link ? `（${impResult.will_link} 条）` : ''}
+          </Button>,
+        ]}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="怎么用"
+          description={<span>
+            点右上角「导出对照表」下载 Excel → 在最后一列「项目编号（请填这里）」填上编号
+            （编号在第二张工作表里查）→ 存好后传到这里。
+            <b>空着的行一律不动</b>，先给你预览，确认无误再写入。
+          </span>} />
+
+        <Upload.Dragger
+          multiple={false} showUploadList={false} accept=".xlsx,.xlsm"
+          disabled={impBusy}
+          beforeUpload={(file) => {
+            setImpFile(file as File)
+            doImport(file as File, true)     // 传上来先预览
+            return false
+          }}
+          style={{ marginBottom: 12 }}
+        >
+          <p style={{ margin: 0, fontSize: 24, color: '#1a73e8' }}><InboxOutlined /></p>
+          <p style={{ margin: '4px 0 0' }}>
+            {impBusy ? '正在读取…' : impFile ? `已选：${impFile.name}（重新拖一个可替换）` : '把填好的 Excel 拖到这里'}
+          </p>
+        </Upload.Dragger>
+
+        {impResult && (
+          <>
+            <Space wrap style={{ marginBottom: 8 }}>
+              <Tag color="blue">可关联 {impResult.will_link} 条</Tag>
+              <Tag>空着/无变化 {impResult.skipped} 条</Tag>
+              {impResult.errors.length > 0 && <Tag color="red">有问题 {impResult.errors.length} 条</Tag>}
+            </Space>
+
+            {impResult.errors.length > 0 && (
+              <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+                message="下面这些不会被写入，其余的照常"
+                description={<div style={{ maxHeight: 130, overflowY: 'auto' }}>
+                  {impResult.errors.map((e, i) => <div key={i} style={{ fontSize: 12 }}>{e}</div>)}
+                </div>} />
+            )}
+
+            {impResult.will_link > 0 ? (
+              <Table size="small" rowKey="row" pagination={false} scroll={{ y: 260 }}
+                dataSource={impResult.data}
+                columns={[
+                  { title: '表格行', dataIndex: 'row', width: 70 },
+                  { title: '计划', dataIndex: 'plan_name', ellipsis: true },
+                  {
+                    title: '要关联到', dataIndex: 'project_number', width: 300,
+                    render: (v: string, r) => (
+                      <span><Text code>{v}</Text>　
+                        <Text type="secondary" style={{ fontSize: 12 }}>{r.project_name}</Text>
+                        {r.was_linked && <Tag color="orange" style={{ marginInlineStart: 4 }}>会改掉原来的关联</Tag>}
+                      </span>
+                    ),
+                  },
+                ]} />
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这份表里没有可写入的行" />
+            )}
+          </>
+        )}
+      </Modal>
 
       {/* ── 关联采购项目 ── */}
       <Modal

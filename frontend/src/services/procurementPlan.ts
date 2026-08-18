@@ -116,3 +116,35 @@ export const deletePlanAttachment = (planId: number, aid: number) =>
 
 export const planAttachmentUrl = (planId: number, aid: number, download = false) =>
   `/api/procurement-plans/${planId}/attachments/${aid}/${download ? 'download' : 'preview'}`
+
+// ── Excel 对照表：导出填编号 → 传回来批量关联 ────────────────────
+// 365 条计划在页面上一条条点太慢，用户要求「做一个项目清单的 excel 表，
+// 手动关联一下」。仍是人工关联，只是把「点」换成了「填」。
+export const planLinkSheetUrl = '/api/procurement-plans/link-sheet'
+
+export interface LinkImportRow {
+  row: number
+  plan_id: number
+  plan_name: string
+  project_id: number
+  project_number: string
+  project_name: string
+  was_linked: boolean
+}
+export interface LinkImportResult {
+  ok: boolean
+  dry_run: boolean
+  data: LinkImportRow[]
+  will_link: number
+  skipped: number
+  errors: string[]
+  message: string
+}
+
+export const importPlanLinkSheet = (file: File, dryRun: boolean) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  if (dryRun) fd.append('dry_run', '1')
+  return api.post<LinkImportResult>('/procurement-plans/link-import', fd,
+    { headers: { 'Content-Type': 'multipart/form-data' } })
+}
