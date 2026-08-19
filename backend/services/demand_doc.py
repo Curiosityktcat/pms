@@ -29,18 +29,28 @@ BOX_OFF = "□"
 SEP = "　"
 
 
+def _norm(v):
+    """比对前先规整：去掉空白与全角空格。选项文字里常带排版用的空格。"""
+    return re.sub(r"[\s　]+", "", str(v or ""))
+
+
 def _mark(options, chosen):
-    """把选项全印出来，选中的打 ■。事后核对时看得出当时有哪些选项可选。"""
+    """把选项全印出来，选中的打 ■。事后核对时看得出当时有哪些选项可选。
+
+    **只认精确匹配。** 原来还带一层子串兜底（`o in p`），结果
+    「分包采购」是「不分包采购」的子串——选了不分包，两个都打上了勾
+    （2026-08-19 黄新博实测发现）。互为子串的选项在这张表里不止一处，
+    子串匹配是错的，宁可漏勾（一眼看得出来）也不能错勾（盖章发出去才发现）。
+    """
     picked = set()
     if isinstance(chosen, (list, tuple, set)):
-        picked = {str(x).strip() for x in chosen if str(x).strip()}
-    elif chosen is not None and str(chosen).strip():
-        picked = {str(chosen).strip()}
+        picked = {_norm(x) for x in chosen if _norm(x)}
+    elif chosen is not None and _norm(chosen):
+        picked = {_norm(chosen)}
     out = []
     for o in options:
         o = str(o).strip()
-        hit = o in picked or any(o and o in p for p in picked)
-        out.append(f"{BOX_ON if hit else BOX_OFF} {o}")
+        out.append(f"{BOX_ON if _norm(o) in picked else BOX_OFF} {o}")
     return SEP.join(out)
 
 
@@ -311,12 +321,50 @@ def missing_fields(ctx):
     return out
 
 
+# 一份文书一份字典。政府采购和院内竞选**共用同一张 Word 模板**，
+# 但规则完全不同（政采只能分散采购、只能用政采那六种方式；院内竞选是自行采购、
+# 走院内竞选/议价/询价）。把政采的字典套到院内竞选上，会把它的选项全清掉——
+# 2026-08-19 加字典时当场撞到，验收脚本报的就是这个。
+DICT_BY_MODEL = {
+    "ProcurementDemand": "2.2采购需求表",
+    # 院内竞选的规则还没定，先不套字典（套一份错的比不套更糟）
+    "InternalBidDemand": None,
+}
+
+
+def dict_name_for(d):
+    return DICT_BY_MODEL.get(d.__class__.__name__, "2.2采购需求表")
+
+
+def apply_dict(ctx, dict_name="2.2采购需求表"):
+    """出稿前把字典规则套一遍：锁定的纠正回来、隐藏的清掉、选项带出的值补上。
+
+    为什么放在出稿这一步而不是只放界面：界面能绕过（改请求、老数据、导入的 Excel），
+    而这是要盖章对外发的文件。**成稿以字典为准**，这条不能只靠前端自觉。
+    """
+    if not dict_name:
+        return ctx, {}
+    from services import field_dict as fd
+    fields = fd.load(dict_name)
+    if not fields:
+        return ctx, {}
+    eff, meta = fd.resolve(fields, ctx)
+    merged = dict(ctx)
+    merged.update(eff)
+    # 字典说不显示的，成稿里也不能留上一轮的残值
+    for name, m in meta.items():
+        if not m.get("visible", True):
+            merged[name] = ""
+    return merged, meta
+
+
 def render(d, project=None):
     """出稿，返回 (BytesIO, 缺的字段列表)。"""
     from docxtpl import DocxTemplate
     if not os.path.exists(TEMPLATE):
         raise FileNotFoundError(f"模板不在：{TEMPLATE}")
     ctx = build_context_for(d, project)
+    ctx, _meta = apply_dict(ctx, dict_name_for(d))
     tpl = DocxTemplate(TEMPLATE)
     env = tpl.get_undeclared_template_variables  # 触发 jinja env 初始化
     from jinja2 import Environment

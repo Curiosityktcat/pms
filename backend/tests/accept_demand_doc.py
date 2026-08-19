@@ -65,7 +65,10 @@ d = ProcurementDemand(
     demand_type="gov", status="草稿", created_by="验收",
     project_name="验收用采购项目", demand_dept="检验科", manage_dept="医学装备部",
     budget_amount=1234567.89, category="服务", year="2026",
-    procurement_method="院内询价", org_form="自行采购",
+    # 政府采购需求表：方式只能是政采那六种，组织形式只能是分散采购。
+    # 这里故意填成不合规的值，验字典会不会在出稿时纠正过来。
+    procurement_method="询价", org_form="自行采购",
+    budget_method="询价",
     is_energy_save="是", has_import_product="否",
     items_json='[{"包号":"1","编号":"1-1","标的名称":"甲标的","数量":"2","计量单位":"台"},'
                '{"包号":"2","编号":"2-1","标的名称":"乙标的","数量":"5","计量单位":"套"}]')
@@ -94,9 +97,13 @@ check("② 分类「服务」被选中", "■ 服务" in text, "")
 check("② 没选的印成 □", "□ 货物" in text and "□ 工程" in text)
 check("② 是否题选中项正确", "■ 是" in text and "■ 否" in text,
       "3.8节能=是、3.9进口=否")
-check("② 跨行合并的采购方式认得出",
-      "■ 院内询价" in text and "□ 院内竞选" in text,
-      "3.2.3 那组四个选项在模板里本来分两行")
+check("② 3.2 勾的是政采方式「询价」", "■ 询价" in text, "")
+# 字典的活儿：库里存的是「自行采购」，成稿必须被纠正成「分散采购」
+check("② 组织形式被字典纠正成分散采购",
+      "■ 分散采购" in text and "□ 自行采购" in text,
+      "库里存的是「自行采购」")
+check("② 自行采购那几种方式在政采表上不勾",
+      "■ 院内竞选" not in text and "■ 院内询价" not in text)
 
 # 行循环：两条标的都要出来
 check("② 标的清单两行都出来了", "甲标的" in text and "乙标的" in text)

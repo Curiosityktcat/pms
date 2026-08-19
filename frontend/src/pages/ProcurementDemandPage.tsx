@@ -14,6 +14,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import DemandDocPanel, { PreviewSizeToggle, type PreviewSize } from '../components/DemandDocPanel'
+import DictFields from '../components/DictFields'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 
 const DEMAND_ACCESSORS: ListFilterAccessors<ProcurementDemand> = {
@@ -36,6 +37,39 @@ import { useAuth } from '../hooks/useAuth'
 
 const { TextArea } = Input
 const { Text } = Typography
+
+// 字典里的中文字段名 ↔ 数据库列名。
+// 字典用中文（Word 模板里也是中文占位符），模型用英文列，两头要对上。
+// 只列走字典的那几项，其余仍由 antd Form 直接管。
+const DICT_TO_MODEL: Record<string, string> = {
+  采购组织形式: 'org_form',
+  采购方式: 'budget_method',
+  采购包划分: 'package_split',
+  是否属于一签多年项目: 'is_multi_year',
+  中小企业政策: 'sme_policy',
+}
+const MODEL_TO_DICT: Record<string, string> = Object.fromEntries(
+  Object.entries(DICT_TO_MODEL).map(([k, v]) => [v, k]))
+
+/** 库里的一条需求 → 字典那几项的初值 */
+function toDictValues(rec: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  Object.entries(MODEL_TO_DICT).forEach(([col, name]) => {
+    if (rec[col] !== undefined && rec[col] !== null && rec[col] !== '') out[name] = rec[col]
+  })
+  // 项目所属分类决定「一签多年」锁不锁，必须一起给字典
+  if (rec.category) out['项目所属分类'] = rec.category
+  return out
+}
+
+/** 字典那几项 → 存库用的列 */
+function fromDictValues(v: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  Object.entries(DICT_TO_MODEL).forEach(([name, col]) => {
+    if (v[name] !== undefined) out[col] = v[name]
+  })
+  return out
+}
 
 type TabKey = '草稿' | '待分发' | '已分发' | '已立项'
 
@@ -149,6 +183,9 @@ export default function ProcurementDemandPage() {
   // 编辑抽屉
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 右侧预览占屏比例：27% / 45% / 隐藏（用户指定的三档）
+  // 字典驱动那几项的值。放在表单之外单独存——它们的取值受条件约束，
+  // 由后端 resolve 决定，不走 antd Form 的那套。
+  const [dictValues, setDictValues] = useState<Record<string, unknown>>({})
   const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
     // 没存过就用默认的 27%。不能直接 Number(null)——那是 0，正好等于「隐藏」，
     // 结果第一次打开预览就是关的（实测踩到）。
@@ -205,7 +242,9 @@ export default function ProcurementDemandPage() {
     setItems([emptyItem()])
     setAttachName('')
     form.resetFields()
-    form.setFieldsValue({ ...makeDefault(demandType), demand_dept: user?.dept_name || '' })
+    const def0 = makeDefault(demandType)
+    form.setFieldsValue({ ...def0, demand_dept: user?.dept_name || '' })
+    setDictValues(toDictValues(def0 as Record<string, unknown>))
     setShowSurvey(isGov)
     setDrawerOpen(true)
   }
@@ -223,6 +262,7 @@ export default function ProcurementDemandPage() {
       apply_time:         record.apply_time         ? dayjs(record.apply_time)         : undefined,
       expected_use_time:  record.expected_use_time  ? dayjs(record.expected_use_time)  : undefined,
     })
+    setDictValues(toDictValues(record as unknown as Record<string, unknown>))
     setShowSurvey(isGov || !!(record.survey_content))
     setDrawerOpen(true)
   }
@@ -236,6 +276,8 @@ export default function ProcurementDemandPage() {
       const values = form.getFieldsValue()
       const payload: Partial<ProcurementDemand> = {
         ...values,
+        // 字典那几项以字典为准——它们是被条件锁定/联动纠正过的值
+        ...fromDictValues(dictValues),
         demand_type: (demandType as DemandType) || values.demand_type,
         compile_date:      values.compile_date      ? dayjs(values.compile_date).format('YYYY-MM-DD')      : '',
         apply_time:        values.apply_time        ? dayjs(values.apply_time).format('YYYY-MM-DD')        : '',
@@ -1126,47 +1168,17 @@ export default function ProcurementDemandPage() {
                 <Row gutter={16}>
                   {isGov ? (
                     <>
-                      <Col span={12}>
-                        <Form.Item label="3.1 采购组织形式" name="org_form">
-                          <Radio.Group>
-                            <Radio value="分散采购">分散采购</Radio>
-                            <Radio value="政府集中采购">政府集中采购</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="3.2 采购方式" name="budget_method">
-                          <Select placeholder="请选择" allowClear
-                            options={[
-                              { value: '公开招标',   label: '公开招标' },
-                              { value: '邀请招标',   label: '邀请招标' },
-                              { value: '竞争性谈判', label: '竞争性谈判' },
-                              { value: '竞争性磋商', label: '竞争性磋商' },
-                              { value: '单一来源',   label: '单一来源' },
-                              { value: '询价',       label: '询价' },
-                            ]} />
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="3.3 采购包划分" name="package_split">
-                          <Radio.Group>
-                            <Radio value="不分包采购">不分包采购</Radio>
-                            <Radio value="分包采购">分包采购</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="3.4 是否属于一签多年项目" name="is_multi_year">
-                          <Radio.Group>
-                            <Radio value="是">是</Radio>
-                            <Radio value="否">否</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
+                      {/* 3.1~3.6 改成字段字典驱动：哪些选项能选、什么条件下锁死、
+                          选了要再填什么，全由后端字典说了算，这里不写业务判断。
+                          好处是界面和成稿用同一套规则，不会「界面让填、出稿被纠正」。 */}
                       <Col span={24}>
-                        <Form.Item label="3.5 执行政府采购促进中小企业发展的相关政策" name="sme_policy">
-                          <TextArea rows={2} placeholder="填写执行情况" />
-                        </Form.Item>
+                        <DictFields
+                          names={['采购组织形式', '采购方式', '采购包划分', '包数',
+                                  '是否属于一签多年项目', '中小企业政策',
+                                  '面向的企业规模', '预留形式', '预留比例']}
+                          values={dictValues}
+                          onChange={patch => setDictValues(v => ({ ...v, ...patch }))}
+                        />
                       </Col>
                       {([
                         ['3.6 是否采购环境标识产品', 'is_eco_product'],

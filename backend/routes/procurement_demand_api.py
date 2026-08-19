@@ -420,6 +420,30 @@ def demand_doc_file(did):
                      download_name=f"{name}-采购需求表.pdf")
 
 
+@bp.route("/field-dict", methods=["GET"])
+@login_required
+def field_dict_all():
+    """字段字典：界面照它渲染条件字段。条件和联动都在这儿，前端不写业务判断。"""
+    from services import field_dict as fd
+    return jsonify({"ok": True, "data": fd.load()})
+
+
+@bp.route("/field-dict/resolve", methods=["POST"])
+@login_required
+def field_dict_resolve():
+    """按当前填的值算一遍：哪些该出现、哪些锁死成什么、哪些提示。
+
+    前端每次改动调一次，界面就跟着变——判断逻辑只有后端一份，
+    不会出现「界面允许填、出稿却被纠正」这种对不上的情况。
+    """
+    from services import field_dict as fd
+    values = (request.get_json(silent=True) or {}).get("values") or {}
+    fields = fd.load()
+    eff, meta = fd.resolve(fields, values)
+    return jsonify({"ok": True, "data": {
+        "values": eff, "meta": meta, "errors": fd.validate(fields, values)}})
+
+
 @bp.route("/doc-fields", methods=["GET"])
 @login_required
 def demand_doc_fields():

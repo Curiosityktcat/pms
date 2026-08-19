@@ -219,3 +219,33 @@ export const getDemandDocStatus = (id: number) =>
 /** download=false 时后端转 PDF，直接塞进 iframe 预览 */
 export const demandDocUrl = (id: number, download = false) =>
   `/api/procurement-demands/${id}/doc${download ? '?download=1' : ''}`
+
+// ── 字段字典：条件与联动都在后端，前端只负责照着渲染 ─────────────
+export interface DictOption { label: string; text?: string }
+export interface DictField {
+  name: string
+  label?: string
+  kind?: 'text' | 'choice' | 'multi' | 'number' | 'table' | 'group'
+  options?: (string | DictOption)[]
+  unit?: string
+  min?: number
+  max?: number
+  decimals?: number
+  required?: boolean
+}
+export interface DictMeta {
+  visible?: boolean
+  locked?: boolean
+  locked_reason?: string
+  hint?: string
+}
+
+export const getFieldDict = () =>
+  api.get<{ ok: boolean; data: DictField[] }>('/procurement-demands/field-dict')
+
+export const resolveFieldDict = (values: Record<string, unknown>) =>
+  api.post<{ ok: boolean; data: {
+    values: Record<string, unknown>
+    meta: Record<string, DictMeta>
+    errors: string[]
+  } }>('/procurement-demands/field-dict/resolve', { values })
