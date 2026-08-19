@@ -657,6 +657,8 @@ def create_app():
 
         # 为 procurement_demands 表追加新列（SQLite 不支持自动迁移）
         new_cols = [
+            ("packages_json",         "TEXT DEFAULT '[]'"),
+            ("package_count",         "INTEGER DEFAULT 1"),
             ("survey_needed",         "TEXT DEFAULT '不需要'"),
             ("survey_industry",       "TEXT DEFAULT ''"),
             ("survey_market",         "TEXT DEFAULT ''"),

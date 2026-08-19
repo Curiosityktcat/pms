@@ -59,6 +59,11 @@ class ProcurementDemand(db.Model):
 
     # ── 第四部分：标的（JSON） ────────────────────────────────────────
     items_json       = db.Column(db.Text,      default="[]")
+    # 分包：每个包就是一份独立合同，第四~第八部分各填一份
+    # （黄新博 2026-08-19 ⑥⑪：「每个包的情况都要单独填写」）。
+    # 单包项目也存成一条，出稿逻辑不用分两套。
+    packages_json    = db.Column(db.Text,      default="[]")
+    package_count    = db.Column(db.Integer,   default=1)
     max_price        = db.Column(db.Float,     default=0)        # 最高限价（政府采购包级）
     pricing_method   = db.Column(db.String(30), default="")      # 4.2.3 定价方式
     allow_consortium = db.Column(db.String(5),  default="否")    # 4.2.4 支持联合体投标

@@ -44,6 +44,9 @@ export interface ProcurementDemand {
   sole_source_reason: string // 单一来源理由
   // 标的
   items: DemandItem[]
+  /** 分包：每个包一份第四~第八部分（JSON 存） */
+  packages_json?: string
+  package_count?: number
   max_price: number
   // 5-7
   tech_requirements: string

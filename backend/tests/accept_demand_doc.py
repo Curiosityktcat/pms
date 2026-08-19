@@ -56,8 +56,16 @@ check("① 占位符没有跨行断开", "{{" not in blob.replace("{{", "").repl
       "")
 names = set(re.findall(r"\{\{\s*([^\s|}]+)", blob))
 declared = {f["name"] for f in fields}
-unknown = {n for n in names if not n.startswith("r.")} - declared
+# 循环里的变量（{{ r.xxx }} 标的、{{ 包.xxx }} 分包）不是字典字段，
+# 它们的取值来自 build_context 里造的那两个列表，不该要求在字段清单里声明。
+LOOP_PREFIX = ("r.", "包.")
+unknown = {n for n in names if not n.startswith(LOOP_PREFIX)} - declared
 check("① 模板里的占位符都在字段清单里", not unknown, f"多出 {sorted(unknown)[:5]}")
+
+# 循环变量也得成对：for 里声明了什么，正文里才能用什么
+check("① 循环变量都有对应的 for",
+      ("{%tr for r in 标的" in blob or not any(n.startswith("r.") for n in names))
+      and ("{%tr for 包 in 分包" in blob or not any(n.startswith("包.") for n in names)))
 
 # ═══ 二、出稿 ═══════════════════════════════════════════════════
 print("\n── 二、出稿 ──")

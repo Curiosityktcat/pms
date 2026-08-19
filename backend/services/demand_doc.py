@@ -88,6 +88,77 @@ def _money(v):
     return f"{n:,.2f}" if n else ""
 
 
+CN_NUM = "一二三四五六七八九十"
+
+
+def _cn(n):
+    """1→一，2→二……只到十几，够用（分包很少超过十个）。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if 1 <= n <= 10:
+        return CN_NUM[n - 1]
+    if 10 < n < 20:
+        return "十" + CN_NUM[n - 11]
+    return str(n)
+
+
+def build_packages(d):
+    """分包上下文：每个包一份第四~第八部分。
+
+    黄新博 2026-08-19 ⑥⑪：「每个包就是一个独立的合同，具体需求与实施情况都不一样」。
+    单包项目也走同一条路（只有一个包），出稿逻辑不分两套。
+    老数据没有 packages_json，就用整条需求上的单值字段兜一个包出来，
+    免得改造之后历史项目出稿全空。
+    """
+    try:
+        pkgs = json.loads(getattr(d, "packages_json", "") or "[]")
+    except Exception:                                        # noqa: BLE001
+        pkgs = []
+    if not pkgs:
+        pkgs = [{}]                                          # 至少一个包
+
+    def g(*names, default=""):
+        for n in names:
+            v = getattr(d, n, None)
+            if v not in (None, "", 0):
+                return v
+        return default
+
+    out = []
+    for i, p in enumerate(pkgs, 1):
+        def pv(key, fallback_attr=None, default=""):
+            v = p.get(key)
+            if v not in (None, "", []):
+                return v
+            return g(fallback_attr, default=default) if fallback_attr else default
+
+        ev = p.get("评审因素") or {}
+        row = {
+            "序号": i,
+            "序号中文": _cn(i),
+            "预算金额": _money(pv("预算金额", "budget_amount")),
+            "最高限价": _money(pv("最高限价", "max_price")),
+            "评审方法": pv("评审方法", "eval_method"),
+            "定价方式": pv("定价方式", "pricing_method"),
+            "是否支持联合体投标": pv("是否支持联合体投标", "allow_consortium", "否"),
+            "是否允许合同分包": pv("是否允许合同分包", "allow_subcontract", "否"),
+            "中小企业政策": pv("中小企业政策", "sme_policy"),
+            "技术要求": pv("技术要求", "tech_requirements"),
+            "商务要求": pv("商务要求", "business_requirements"),
+            "特殊资格要求": pv("特殊资格要求", "qualification_requirements"),
+        }
+        for name, key in (("价格分", "价格分"), ("技术要求", "技术要求"),
+                          ("服务要求", "服务要求"), ("价格扣除", "价格扣除")):
+            cell = ev.get(key) or {}
+            row[f"评审_{name}_分值"] = cell.get("分值", "")
+            row[f"评审_{name}_客观项"] = cell.get("客观项", "")
+            row[f"评审_{name}_标准"] = cell.get("标准", "")
+        out.append(row)
+    return out
+
+
 def build_context(d, project=None):
     """把一条采购需求摊成模板要的上下文。
 
@@ -196,6 +267,7 @@ def build_context(d, project=None):
             "所属行业": it.get("industry") or it.get("所属行业") or "",
             "核心产品": it.get("core") or it.get("核心产品") or "",
         } for it in items],
+        "分包": build_packages(d),
     })
     return ctx
 
@@ -296,6 +368,7 @@ def build_context_internal(d, project=None):
             "所属行业": it.get("industry") or it.get("所属行业") or "",
             "核心产品": it.get("core") or it.get("核心产品") or "",
         } for it in items],
+        "分包": build_packages(d),
     }
     return ctx
 

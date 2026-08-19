@@ -15,6 +15,7 @@ import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
 import DemandDocPanel, { PreviewSizeToggle, type PreviewSize } from '../components/DemandDocPanel'
 import DictFields from '../components/DictFields'
+import PackageEditor, { emptyPackage, type PackageData } from '../components/PackageEditor'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 
 const DEMAND_ACCESSORS: ListFilterAccessors<ProcurementDemand> = {
@@ -60,6 +61,28 @@ function toDictValues(rec: Record<string, unknown>): Record<string, unknown> {
   // 项目所属分类决定「一签多年」锁不锁，必须一起给字典
   if (rec.category) out['项目所属分类'] = rec.category
   return out
+}
+
+/** 库里的 packages_json → 分包编辑器的值。
+ *  老数据没有分包，就用整条需求上的单值字段兜一个包出来，
+ *  免得改造之后历史项目打开是空的。 */
+function parsePackages(rec: Record<string, unknown>): PackageData[] {
+  try {
+    const raw = JSON.parse(String(rec.packages_json || '[]'))
+    if (Array.isArray(raw) && raw.length) return raw as PackageData[]
+  } catch { /* 坏数据就走下面的兜底 */ }
+  return [{
+    ...emptyPackage(),
+    预算金额: (rec.budget_amount as number) || undefined,
+    最高限价: (rec.max_price as number) || undefined,
+    评审方法: (rec.eval_method as string) || '综合评分法',
+    定价方式: (rec.pricing_method as string) || '固定单价',
+    是否支持联合体投标: (rec.allow_consortium as string) || '否',
+    是否允许合同分包: (rec.allow_subcontract as string) || '否',
+    技术要求: (rec.tech_requirements as string) || '',
+    商务要求: (rec.business_requirements as string) || '',
+    特殊资格要求: (rec.qualification_requirements as string) || '',
+  }]
 }
 
 /** 字典那几项 → 存库用的列 */
@@ -185,6 +208,9 @@ export default function ProcurementDemandPage() {
   // 右侧预览占屏比例：27% / 45% / 隐藏（用户指定的三档）
   // 字典驱动那几项的值。放在表单之外单独存——它们的取值受条件约束，
   // 由后端 resolve 决定，不走 antd Form 的那套。
+  // 分包：每个包一份第四~第八部分（⑥⑪）。单包项目也存成一条，出稿逻辑不分两套。
+  const [packages, setPackages] = useState<PackageData[]>([emptyPackage()])
+  const [pkgTab, setPkgTab] = useState('0')
   const [dictValues, setDictValues] = useState<Record<string, unknown>>({})
   const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
     // 没存过就用默认的 27%。不能直接 Number(null)——那是 0，正好等于「隐藏」，
@@ -245,6 +271,8 @@ export default function ProcurementDemandPage() {
     const def0 = makeDefault(demandType)
     form.setFieldsValue({ ...def0, demand_dept: user?.dept_name || '' })
     setDictValues(toDictValues(def0 as Record<string, unknown>))
+    setPackages([emptyPackage()])
+    setPkgTab('0')
     setShowSurvey(isGov)
     setDrawerOpen(true)
   }
@@ -263,6 +291,8 @@ export default function ProcurementDemandPage() {
       expected_use_time:  record.expected_use_time  ? dayjs(record.expected_use_time)  : undefined,
     })
     setDictValues(toDictValues(record as unknown as Record<string, unknown>))
+    setPackages(parsePackages(record as unknown as Record<string, unknown>))
+    setPkgTab('0')
     setShowSurvey(isGov || !!(record.survey_content))
     setDrawerOpen(true)
   }
@@ -278,6 +308,8 @@ export default function ProcurementDemandPage() {
         ...values,
         // 字典那几项以字典为准——它们是被条件锁定/联动纠正过的值
         ...fromDictValues(dictValues),
+        packages_json: JSON.stringify(packages),
+        package_count: packages.length,
         demand_type: (demandType as DemandType) || values.demand_type,
         compile_date:      values.compile_date      ? dayjs(values.compile_date).format('YYYY-MM-DD')      : '',
         apply_time:        values.apply_time        ? dayjs(values.apply_time).format('YYYY-MM-DD')        : '',
@@ -1253,46 +1285,23 @@ export default function ProcurementDemandPage() {
                 />
                 {isGov && (
                   <>
-                    <div style={{ fontWeight: 500, margin: '16px 0 8px', color: '#555' }}>二、具体分包情况</div>
-                    <Row gutter={16}>
-                      <Col span={12}>
-                        <Form.Item label="4.2.1 最高限价（元）" name="max_price">
-                          <InputNumber style={{ width: '100%' }} min={0} precision={2}
-                            formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                            parser={v => parseFloat(v?.replace(/,/g, '') || '0') as never} />
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="4.2.3 定价方式" name="pricing_method">
-                          <Radio.Group>
-                            <Radio value="固定单价">固定单价</Radio>
-                            <Radio value="固定总价">固定总价</Radio>
-                            <Radio value="其他">其他</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="4.2.4 是否支持联合体投标" name="allow_consortium">
-                          <Radio.Group>
-                            <Radio value="是">是</Radio>
-                            <Radio value="否">否</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="4.2.5 是否允许合同分包" name="allow_subcontract">
-                          <Radio.Group>
-                            <Radio value="是">是</Radio>
-                            <Radio value="否">否</Radio>
-                          </Radio.Group>
-                        </Form.Item>
-                      </Col>
-                    </Row>
+                    <div style={{ fontWeight: 500, margin: '16px 0 8px', color: '#555' }}>
+                      二、具体分包情况
+                      <span style={{ fontWeight: 400, fontSize: 12, color: '#5f6368', marginLeft: 8 }}>
+                        每个包就是一份独立合同，第四~第八部分各填一份；
+                        各包只差几个参数时用「复制上一个包」
+                      </span>
+                    </div>
+                    <PackageEditor value={packages} onChange={setPackages}
+                      activeKey={pkgTab} onActiveChange={setPkgTab} />
                   </>
                 )}
               </Card>
 
-              {/* 第五～七部分 */}
+              {/* 第五～七部分。政府采购已并进上面的分包编辑器（每包一份），
+                  这里只留给院内竞选等单包口径的需求。 */}
+              {!isGov && (
+              <>
               <Card size="small" title="第五部分：技术要求" style={{ marginBottom: 16 }}>
                 <Form.Item name="tech_requirements" noStyle>
                   <TextArea rows={5} placeholder="请填写技术要求内容" />
@@ -1308,40 +1317,11 @@ export default function ProcurementDemandPage() {
                   <TextArea rows={4} placeholder="请填写资格要求内容" />
                 </Form.Item>
               </Card>
-
-              {/* 第八部分（仅政府采购） */}
-              {isGov && (
-                <Card size="small" title="第八部分：评审因素" style={{ marginBottom: 16 }}>
-                  <Row gutter={16}>
-                    <Col span={12}>
-                      <Form.Item label="评审方法" name="eval_method">
-                        <Select placeholder="请选择" allowClear
-                          options={[
-                            { value: '综合评分法',   label: '综合评分法' },
-                            { value: '最低评标价法', label: '最低评标价法' },
-                            { value: '性价比法',     label: '性价比法' },
-                          ]} />
-                      </Form.Item>
-                    </Col>
-                    <Col span={12}>
-                      <Form.Item label="价格分值" name="eval_price_score">
-                        <InputNumber style={{ width: '100%' }} min={0} max={100}
-                          placeholder="如：30" addonAfter="分" />
-                      </Form.Item>
-                    </Col>
-                    <Col span={24}>
-                      <Form.Item label="技术要求评审标准" name="eval_tech_criteria">
-                        <TextArea rows={4} placeholder="请填写技术评审标准（条目式）" />
-                      </Form.Item>
-                    </Col>
-                    <Col span={24}>
-                      <Form.Item label="服务要求评审标准" name="eval_service_criteria">
-                        <TextArea rows={4} placeholder="请填写服务评审标准（条目式）" />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                </Card>
+              </>
               )}
+
+              {/* 第八部分已并入分包编辑器：评审因素按包填，
+                  综合评分法/最低评标价法两套口径也按包定（⑨）。 */}
 
               {/* 第九部分 */}
               <Card size="small"
