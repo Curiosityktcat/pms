@@ -22,6 +22,7 @@ interface Tile {
   anyPerm: string[]
   ownerOnly?: boolean   // 仅黄新博（私人文件库）
   cgbOnly?: boolean     // 仅采购部内部（科室/监督/代理机构都不给）
+  agencyToo?: boolean   // cgbOnly 的基础上，代理机构也能进（只读看自己的）
   deptToo?: boolean     // 工具集合里，科室账号也开放的那几个
 }
 
@@ -63,10 +64,12 @@ const FLOW: Tile[] = [
     anyPerm: ['archive'] },
   // 考核不按权限点挂：经办人要给自己项目的代理打分，助理/负责人要看汇总，
   // 曾经把它挂在「分发」权限下，结果经办人整个看不到，别再犯。
-  // 但它是**采购部内部**的事——2026-08-19 黄新博：「这个地方除了采购部人员应该看不到」。
-  // 所以改成按角色收：科室、监督、代理机构都不给。
+  // 科室和监督看不到（2026-08-19 黄新博：「除了采购部人员应该看不到」）。
+  // 但代理机构要能看**自己的**得分——他当天补充：「代理机构可以看到自己的考核得分，
+  // 而不能够进行操作」。后端本来就做对了：列表按 agency_code 收口、取详情非本机构 403、
+  // 返回 readonly，打分只给采购人方（_can_assess）。所以这里只要把入口放回去。
   { no: '12', label: '代理机构考核', path: '/agency-assessment',
-    icon: <SafetyCertificateOutlined />, anyPerm: [], cgbOnly: true },
+    icon: <SafetyCertificateOutlined />, anyPerm: [], cgbOnly: true, agencyToo: true },
 ]
 
 // ── 工具集合（流程之外的能力）───────────────────────────────────
@@ -99,7 +102,8 @@ export default function PortalPage() {
   const isDeptSide = DEPT_ROLES.has(role)
   const visible = (t: Tile) => {
     if (t.ownerOnly && user?.username !== '黄新博') return false
-    if (t.cgbOnly && !CGB_ROLES.has(role) && !user?.is_admin) return false
+    if (t.cgbOnly && !CGB_ROLES.has(role) && !user?.is_admin
+        && !(t.agencyToo && role === 'agency')) return false
     return t.anyPerm.length === 0 || t.anyPerm.some(p => perms.has(p))
   }
   const flow = FLOW.filter(visible)
