@@ -346,6 +346,88 @@ def generate_word(did):
         return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
 
 
+# ══════════════════════════════════════════════════════════════════
+# 按模板出稿：成稿文件 ＝ 模板 ＋ 信息
+#
+# 老的 /word 是把版式写死在代码里的；这套改成用《2.2内江市第一人民医院采购需求表》
+# 那份 Word 模板套打（按 procurement-doc-templates 的规矩改造过）。
+# 好处是版式归文员管、改模板不用改代码，坏处是模板写错了要能当场看出来——
+# 所以配了 /doc-status 告诉界面哪些占位符还空着。
+# ══════════════════════════════════════════════════════════════════
+
+@bp.route("/<int:did>/doc-status", methods=["GET"])
+@login_required
+def demand_doc_status(did):
+    """出稿前的体检：模板在不在、还有哪些空着。界面上按这个提示人去补。"""
+    from services import demand_doc
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    import os as _os
+    if not _os.path.exists(demand_doc.TEMPLATE):
+        return jsonify({"ok": False, "error": "还没配采购需求表模板"}), 404
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    ctx = demand_doc.build_context(demand, project)
+    missing = demand_doc.missing_fields(ctx)
+    total = len(demand_doc.load_fields())
+    return jsonify({"ok": True, "data": {
+        "total": total,
+        "filled": total - len(missing),
+        "missing": [{"name": m["name"], "label": m["label"], "kind": m["kind"]}
+                    for m in missing],
+    }})
+
+
+@bp.route("/<int:did>/doc", methods=["GET"])
+@login_required
+def demand_doc_file(did):
+    """出稿。?download=1 下载 Word，否则转 PDF 给右边的预览用。"""
+    from services import demand_doc
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    try:
+        buf, _missing = demand_doc.render(demand, project)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except Exception as e:                                   # noqa: BLE001
+        # 模板语法错误在这儿必须说清楚，否则文员改完模板只看到「生成失败」
+        return jsonify({"ok": False, "error": f"套打失败：{e}"[:300]}), 500
+
+    name = (demand.project_name or f"采购需求{did}").strip()[:60]
+    if request.args.get("download") == "1":
+        return send_file(
+            buf, as_attachment=True, download_name=f"{name}-采购需求表.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    # 预览：落个临时文件转 PDF（LibreOffice 只认路径）
+    import os as _os
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="demanddoc_")
+    src = _os.path.join(tmpdir, f"{name}.docx")
+    with open(src, "wb") as fh:
+        fh.write(buf.getvalue())
+    # 必须转 PDF：这个响应是塞进 <iframe> 的，浏览器渲染不了 .docx。
+    # send_preview 对新版 Office 默认发原文件，要显式要 PDF。
+    from services.office_convert import to_pdf
+    try:
+        pdf = to_pdf(src)
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify({"ok": False,
+                        "error": f"转 PDF 失败，预览用不了（可以先下载 Word 看）：{e}"[:300]}), 500
+    return send_file(pdf, mimetype="application/pdf", as_attachment=False,
+                     download_name=f"{name}-采购需求表.pdf")
+
+
+@bp.route("/doc-fields", methods=["GET"])
+@login_required
+def demand_doc_fields():
+    """模板里有哪些占位符——界面上「信息」那一栏照这个分组显示。"""
+    from services import demand_doc
+    return jsonify({"ok": True, "data": demand_doc.load_fields()})
+
+
 # ── Excel 模板下载 ────────────────────────────────────────────
 @bp.route("/template/<dtype>", methods=["GET"])
 @login_required

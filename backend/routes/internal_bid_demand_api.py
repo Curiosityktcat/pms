@@ -180,6 +180,71 @@ def revoke_demand(did):
 
 
 # ── 生成 Word ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 按模板出稿：和政府采购需求共用同一份《2.2 采购需求表》模板
+# （自行采购只是「标绿部分无需填写」，表是同一张）。
+# 字段名对不上、是否题存成 0/1，映射在 services/demand_doc.build_context_internal。
+# ══════════════════════════════════════════════════════════════════
+
+@bp.route("/<int:did>/doc-status", methods=["GET"])
+@login_required
+def internal_doc_status(did):
+    from services import demand_doc
+    import os as _os
+    demand, err = _scoped(did)
+    if err:
+        return err
+    if not _os.path.exists(demand_doc.TEMPLATE):
+        return jsonify({"ok": False, "error": "还没配采购需求表模板"}), 404
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    ctx = demand_doc.build_context_for(demand, project)
+    missing = demand_doc.missing_fields(ctx)
+    total = len(demand_doc.load_fields())
+    return jsonify({"ok": True, "data": {
+        "total": total, "filled": total - len(missing),
+        "missing": [{"name": m["name"], "label": m["label"], "kind": m["kind"]}
+                    for m in missing],
+    }})
+
+
+@bp.route("/<int:did>/doc", methods=["GET"])
+@login_required
+def internal_doc_file(did):
+    """?download=1 下载 Word，否则转 PDF 给右边的预览用（iframe 渲染不了 docx）。"""
+    from services import demand_doc
+    demand, err = _scoped(did)
+    if err:
+        return err
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    try:
+        buf, _missing = demand_doc.render(demand, project)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify({"ok": False, "error": f"套打失败：{e}"[:300]}), 500
+
+    name = (demand.project_name or f"院内竞选需求{did}").strip()[:60]
+    if request.args.get("download") == "1":
+        return send_file(
+            buf, as_attachment=True, download_name=f"{name}-采购需求表.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    import os as _os
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="internaldoc_")
+    src = _os.path.join(tmpdir, f"{name}.docx")
+    with open(src, "wb") as fh:
+        fh.write(buf.getvalue())
+    from services.office_convert import to_pdf
+    try:
+        pdf = to_pdf(src)
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify({"ok": False,
+                        "error": f"转 PDF 失败，预览用不了（可以先下载 Word 看）：{e}"[:300]}), 500
+    return send_file(pdf, mimetype="application/pdf", as_attachment=False,
+                     download_name=f"{name}-采购需求表.pdf")
+
+
 @bp.route("/<int:did>/word", methods=["GET"])
 @login_required
 def generate_word(did):

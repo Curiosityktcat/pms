@@ -2,13 +2,17 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Button, Drawer, Form, Input, Select, Radio, DatePicker, InputNumber,
   Card, Space, Tabs, Popconfirm, App, Checkbox,
-  Row, Col, Divider,
+  Row, Col, Divider, Typography,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, FileWordOutlined,
   CheckCircleOutlined, RollbackOutlined,
 } from '@ant-design/icons'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import DemandDocPanel, { PreviewSizeToggle, type PreviewSize } from '../components/DemandDocPanel'
+
+// 预览宽度记在本地，下次打开还是上次那一档
+const PREVIEW_KEY = 'pms-internal-preview-size'
 import dayjs from 'dayjs'
 import {
   listInternalBidDemands, createInternalBidDemand, updateInternalBidDemand,
@@ -119,6 +123,16 @@ export default function InternalBidDemandPage() {
 
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 右侧预览占屏比例：27% / 45% / 隐藏（用户指定的三档）
+  const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
+    const raw = localStorage.getItem(PREVIEW_KEY)
+    if (raw === null) return 27
+    const v = Number(raw)
+    return (v === 45 || v === 0 ? v : 27) as PreviewSize
+  })
+  const changePreviewSize = (v: PreviewSize) => {
+    setPreviewSize(v); localStorage.setItem(PREVIEW_KEY, String(v))
+  }
   const [editingId, setEditingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
@@ -385,8 +399,15 @@ export default function InternalBidDemandPage() {
         title={editingId ? '编辑院内竞选需求表' : '新建院内竞选需求表'}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        width={900}
+        // 三栏工作台要横向铺开：左边填信息、右边看成稿，中间不跳页
+        width="96vw"
         destroyOnClose
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>文件预览</Typography.Text>
+            <PreviewSizeToggle value={previewSize} onChange={changePreviewSize} />
+          </Space>
+        }
         footer={
           <div style={{ textAlign: 'right' }}>
             <Space>
@@ -416,6 +437,13 @@ export default function InternalBidDemandPage() {
           </div>
         }
       >
+        {/* 三栏工作台：左边填信息，右边看成稿。预览宽度由顶部三个按钮控制。 */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'stretch',
+                      height: 'calc(100vh - 190px)' }}>
+          <div style={{
+            flex: `1 1 ${100 - previewSize}%`, minWidth: 0,
+            overflowY: 'auto', paddingRight: 6,
+          }}>
         <Form form={form} layout="vertical" size="middle">
 
           {/* ── 表头 ── */}
@@ -1056,6 +1084,14 @@ export default function InternalBidDemandPage() {
           </Card>
 
         </Form>
+          </div>
+
+          {previewSize > 0 && (
+            <div style={{ flex: `0 0 ${previewSize}%`, minWidth: 320, overflow: 'hidden' }}>
+              <DemandDocPanel demandId={editingId ?? undefined} kind="internal-bid-demands" />
+            </div>
+          )}
+        </div>
       </Drawer>
     </div>
   )

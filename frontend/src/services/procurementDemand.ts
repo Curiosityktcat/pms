@@ -205,3 +205,17 @@ export const uploadAttachment = (id: number, file: File) => {
 // 兼容旧代码（已废弃，保留避免编译报错）
 export const finalizeDemand = submitDemand
 export const revokeDemand = recallDemand
+
+// ── 按模板出稿：成稿 ＝ 模板 ＋ 信息 ─────────────────────────────
+export interface DemandDocStatus {
+  total: number
+  filled: number
+  missing: { name: string; label: string; kind: string }[]
+}
+
+export const getDemandDocStatus = (id: number) =>
+  api.get<{ ok: boolean; data: DemandDocStatus }>(`/procurement-demands/${id}/doc-status`)
+
+/** download=false 时后端转 PDF，直接塞进 iframe 预览 */
+export const demandDocUrl = (id: number, download = false) =>
+  `/api/procurement-demands/${id}/doc${download ? '?download=1' : ''}`

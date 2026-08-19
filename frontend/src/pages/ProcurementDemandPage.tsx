@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
+import DemandDocPanel, { PreviewSizeToggle, type PreviewSize } from '../components/DemandDocPanel'
 import ProjectListToolbar, { useProjectListFilter, type ListFilterAccessors } from '../components/ProjectListToolbar'
 
 const DEMAND_ACCESSORS: ListFilterAccessors<ProcurementDemand> = {
@@ -37,6 +38,9 @@ const { TextArea } = Input
 const { Text } = Typography
 
 type TabKey = '草稿' | '待分发' | '已分发' | '已立项'
+
+// 预览宽度记在本地，下次打开还是上次那一档——反复调很烦
+const PREVIEW_KEY = 'pms-demand-preview-size'
 
 const STATUS_COLOR: Record<string, string> = {
   草稿: 'default', 待分发: 'orange', 已分发: 'blue', 已立项: 'green',
@@ -144,6 +148,18 @@ export default function ProcurementDemandPage() {
 
   // 编辑抽屉
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // 右侧预览占屏比例：27% / 45% / 隐藏（用户指定的三档）
+  const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
+    // 没存过就用默认的 27%。不能直接 Number(null)——那是 0，正好等于「隐藏」，
+    // 结果第一次打开预览就是关的（实测踩到）。
+    const raw = localStorage.getItem(PREVIEW_KEY)
+    if (raw === null) return 27
+    const v = Number(raw)
+    return (v === 45 || v === 0 ? v : 27) as PreviewSize
+  })
+  const changePreviewSize = (v: PreviewSize) => {
+    setPreviewSize(v); localStorage.setItem(PREVIEW_KEY, String(v))
+  }
   const [editingId,  setEditingId]  = useState<number | null>(null)
   const [saving,     setSaving]     = useState(false)
   const [items,      setItems]      = useState<DemandItem[]>([])
@@ -443,7 +459,9 @@ export default function ProcurementDemandPage() {
     { title: '单价（元）', dataIndex: 'unit_price',  width: 110, render: (v,_,i)   => <InputNumber size="small" value={v} min={0} precision={2} style={{width:'100%'}} onChange={val=>updateItem(i,'unit_price',val??0)}/> },
     { title: '数量',    dataIndex: 'quantity',       width: 80,  render: (v,_,i)   => <InputNumber size="small" value={v} min={0} style={{width:'100%'}} onChange={val=>updateItem(i,'quantity',val??0)}/> },
     { title: '单位',    dataIndex: 'unit',           width: 70,  render: (v,_,i)   => <Input size="small" value={v} onChange={e=>updateItem(i,'unit',e.target.value)} /> },
-    { title: '金额（元）', dataIndex: 'amount',      width: 110, render: (v:number) => v.toLocaleString('zh-CN',{minimumFractionDigits:2}) },
+    // 标的还没填金额时 v 是 undefined，直接 .toLocaleString() 会把整个抽屉炸成白屏
+    { title: '金额（元）', dataIndex: 'amount',      width: 110,
+      render: (v?: number) => (v == null ? '' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2 })) },
     { title: '技术要求摘要', dataIndex: 'requirements', width: 180, render: (v,_,i) => <Input size="small" value={v} onChange={e=>updateItem(i,'requirements',e.target.value)} placeholder="简要说明"/> },
     { title: '', key: 'del', width: 50, render: (_,__,i) => <Button size="small" danger type="text" onClick={()=>removeItem(i)}>✕</Button> },
   ]
@@ -531,8 +549,15 @@ export default function ProcurementDemandPage() {
           : `新建${meta?.label || ''}${isEmergency ? '登记' : '需求'}`}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        width={860}
-        styles={{ body: { paddingBottom: 80 } }}
+        // 三栏工作台要横向铺开：左边填信息、右边看成稿，中间不跳页
+        width="96vw"
+        extra={
+          <Space size={8}>
+            <Text type="secondary" style={{ fontSize: 12 }}>文件预览</Text>
+            <PreviewSizeToggle value={previewSize} onChange={changePreviewSize} />
+          </Space>
+        }
+        styles={{ body: { paddingBottom: 80, paddingTop: 12 } }}
         footer={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Space>
@@ -565,6 +590,14 @@ export default function ProcurementDemandPage() {
           </div>
         }
       >
+        {/* 三栏工作台：左边填信息，右边看成稿，中间不跳页。
+            预览宽度由顶部那三个按钮控制（27% / 45% / 隐藏）。 */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'stretch',
+                      height: 'calc(100vh - 190px)' }}>
+          <div style={{
+            flex: `1 1 ${100 - previewSize}%`, minWidth: 0,
+            overflowY: 'auto', paddingRight: 6,
+          }}>
         <Form form={form} layout="vertical" size="middle">
 
           {/* ════════════════════════════════════════════════════ */}
@@ -1464,6 +1497,14 @@ export default function ProcurementDemandPage() {
           )}
 
         </Form>
+          </div>
+
+          {previewSize > 0 && (
+            <div style={{ flex: `0 0 ${previewSize}%`, minWidth: 320, overflow: 'hidden' }}>
+              <DemandDocPanel demandId={editingId ?? undefined} />
+            </div>
+          )}
+        </div>
       </Drawer>
     </div>
   )
