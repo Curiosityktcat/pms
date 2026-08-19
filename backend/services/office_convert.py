@@ -35,6 +35,35 @@ def _cache_key(src_path: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def to_pdf_bytes(blob: bytes, suffix: str = ".docx") -> str:
+    """把内存里的文档转 PDF，**按内容指纹缓存**，返回 PDF 路径。
+
+    为什么单开这个：原来的 to_pdf 缓存键是「路径 + mtime + 大小」，
+    而套打出来的 docx 每次都写到新的临时目录，键必然不同——
+    缓存一次都命中不了，每次预览都在重跑 LibreOffice（实测 2.2 秒）。
+    改成拿内容算指纹：只要填的信息没变，第二次预览直接给缓存。
+    """
+    key = hashlib.sha256(blob).hexdigest()
+    out_pdf = os.path.join(_CACHE_DIR, key + ".pdf")
+    if os.path.exists(out_pdf) and os.path.getsize(out_pdf) > 0:
+        return out_pdf
+    src = os.path.join(_CACHE_DIR, key + suffix)
+    if not os.path.exists(src) or os.path.getsize(src) != len(blob):
+        with open(src, "wb") as f:
+            f.write(blob)
+    pdf = to_pdf(src)
+    if pdf != out_pdf:
+        try:
+            os.replace(pdf, out_pdf)
+        except OSError:
+            return pdf
+    try:
+        os.remove(src)          # 中间的 docx 留着没用，占地方
+    except OSError:
+        pass
+    return out_pdf
+
+
 def to_pdf(src_path: str) -> str:
     """把 src_path 转成 PDF，返回 PDF 路径（带磁盘缓存）。失败抛 RuntimeError。"""
     if not os.path.exists(src_path):

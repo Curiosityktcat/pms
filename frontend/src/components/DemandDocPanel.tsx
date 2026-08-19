@@ -13,7 +13,9 @@ import { Alert, Button, Card, Empty, Progress, Space, Spin, Tag, Tooltip, Typogr
 import {
   ReloadOutlined, DownloadOutlined, RobotOutlined,
   ColumnWidthOutlined, EyeInvisibleOutlined, FileWordOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons'
+import DemandAgent from './DemandAgent'
 import api from '../services/api'
 import type { DemandDocStatus } from '../services/procurementDemand'
 
@@ -56,8 +58,15 @@ export function PreviewSizeToggle(
 }
 
 export default function DemandDocPanel(
-  { demandId, kind = 'procurement-demands', onJumpField, previewHidden = false }:
+  { demandId, kind = 'procurement-demands', onJumpField, previewHidden = false,
+    reloadToken = 0, onApplied }:
   { demandId?: number; kind?: DocKind; onJumpField?: (name: string) => void
+    /** Agent 采纳后回调，外面重新拉一遍表单（值已经写进库了） */
+    onApplied?: () => void
+    /** 外面每保存一次就 +1，预览跟着自动重出——
+     *  原来只能手动点「重新出稿」，填完保存右边还是老样子，
+     *  黄新博 2026-08-19 说「预览生成的 Word 文件压根不好用」，症结就在这。 */
+    reloadToken?: number
     /** 「隐藏」那一档：只收起文件预览，Agent 操作区留下并占满右栏
      *  （黄新博 2026-08-19：「可不可以只把文件预览隐藏了，然后 agent 操作区就能大一些」） */
     previewHidden?: boolean },
@@ -65,6 +74,7 @@ export default function DemandDocPanel(
   const [status, setStatus] = useState<DemandDocStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)   // 变一下就重新拉预览
+  const [agentOpen, setAgentOpen] = useState(false)
   const [err, setErr] = useState('')
 
   const load = useCallback(() => {
@@ -79,9 +89,16 @@ export default function DemandDocPanel(
       .finally(() => setLoading(false))
   }, [demandId, kind])
 
-  useEffect(() => { load() }, [load])
+  const refresh = useCallback(() => {
+    load()
+    setPreviewKey(k => k + 1)
+  }, [load])
 
-  const refresh = () => { load(); setPreviewKey(k => k + 1) }
+  useEffect(() => { load() }, [load])
+  // 保存后自动重出，不用人再点一次
+  useEffect(() => {
+    if (reloadToken) refresh()
+  }, [reloadToken])          // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!demandId) {
     return (
@@ -105,6 +122,10 @@ export default function DemandDocPanel(
                           ...(previewHidden ? { flex: 1, overflowY: 'auto' } : {}) } }}
         extra={
           <Space size={4}>
+            <Button size="small" type="primary" ghost icon={<ThunderboltOutlined />}
+              onClick={() => setAgentOpen(true)}>
+              让 Agent 填
+            </Button>
             <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>
               重新出稿
             </Button>
@@ -157,14 +178,17 @@ export default function DemandDocPanel(
             message="出不了稿" description={err} />
         ) : (
           <iframe
-            key={previewKey}
             title="采购需求表预览"
-            src={docUrl(kind, demandId, false)}
+            src={`${docUrl(kind, demandId, false)}${docUrl(kind, demandId, false).includes('?') ? '&' : '?'}v=${previewKey}`}
             style={{ width: '100%', height: '100%', border: 0 }}
           />
         )}
       </Card>
       )}
+
+      <DemandAgent demandId={demandId} open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+        onApplied={() => { refresh(); onApplied?.() }} />
     </div>
   )
 }

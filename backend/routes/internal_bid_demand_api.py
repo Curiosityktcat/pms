@@ -229,20 +229,17 @@ def internal_doc_file(did):
             buf, as_attachment=True, download_name=f"{name}-采购需求表.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
-    import os as _os
-    import tempfile
-    tmpdir = tempfile.mkdtemp(prefix="internaldoc_")
-    src = _os.path.join(tmpdir, f"{name}.docx")
-    with open(src, "wb") as fh:
-        fh.write(buf.getvalue())
-    from services.office_convert import to_pdf
+    # 按内容指纹缓存，填的信息没变就不重跑 LibreOffice（原来每次 2.2 秒）
+    from services.office_convert import to_pdf_bytes
     try:
-        pdf = to_pdf(src)
+        pdf = to_pdf_bytes(buf.getvalue())
     except Exception as e:                                   # noqa: BLE001
         return jsonify({"ok": False,
                         "error": f"转 PDF 失败，预览用不了（可以先下载 Word 看）：{e}"[:300]}), 500
-    return send_file(pdf, mimetype="application/pdf", as_attachment=False,
+    resp = send_file(pdf, mimetype="application/pdf", as_attachment=False,
                      download_name=f"{name}-采购需求表.pdf")
+    resp.headers["Cache-Control"] = "private, max-age=60"
+    return resp
 
 
 @bp.route("/<int:did>/word", methods=["GET"])

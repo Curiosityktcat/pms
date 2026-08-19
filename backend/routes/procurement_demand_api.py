@@ -402,22 +402,20 @@ def demand_doc_file(did):
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     # 预览：落个临时文件转 PDF（LibreOffice 只认路径）
-    import os as _os
-    import tempfile
-    tmpdir = tempfile.mkdtemp(prefix="demanddoc_")
-    src = _os.path.join(tmpdir, f"{name}.docx")
-    with open(src, "wb") as fh:
-        fh.write(buf.getvalue())
     # 必须转 PDF：这个响应是塞进 <iframe> 的，浏览器渲染不了 .docx。
-    # send_preview 对新版 Office 默认发原文件，要显式要 PDF。
-    from services.office_convert import to_pdf
+    # 按**内容指纹**缓存——填的信息没变，第二次预览直接给缓存，
+    # 不再每次重跑 LibreOffice（原来每次 2.2 秒，因为缓存键带临时路径，一次都命中不了）。
+    from services.office_convert import to_pdf_bytes
     try:
-        pdf = to_pdf(src)
+        pdf = to_pdf_bytes(buf.getvalue())
     except Exception as e:                                   # noqa: BLE001
         return jsonify({"ok": False,
                         "error": f"转 PDF 失败，预览用不了（可以先下载 Word 看）：{e}"[:300]}), 500
-    return send_file(pdf, mimetype="application/pdf", as_attachment=False,
+    resp = send_file(pdf, mimetype="application/pdf", as_attachment=False,
                      download_name=f"{name}-采购需求表.pdf")
+    # 内容变了 URL 上的 v 就变，所以可以放心让浏览器缓存一会儿
+    resp.headers["Cache-Control"] = "private, max-age=60"
+    return resp
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -459,6 +457,159 @@ def _me():
 def _is_admin():
     from services.permission import is_admin_user
     return is_admin_user(session.get("user", ""))
+
+
+# ══════════════════════════════════════════════════════════════════
+# 采购需求 Agent（⑩ 的第 2 条）：上传资料 → 它读了给建议 → 人点采纳才落库
+#
+# 「只提建议，不直接落库」是有意为之：金额、编号、法条这类东西模型写错了
+# 是要担责的，必须有人过一眼。每条建议都带原文依据，好核对。
+# ══════════════════════════════════════════════════════════════════
+
+AGENT_UPLOAD_DIR = os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+    "uploads", "demand_agent")
+AGENT_EXT = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".txt"}
+
+
+@bp.route("/<int:did>/agent/suggest", methods=["POST"])
+@login_required
+def demand_agent_suggest(did):
+    """读上传的资料（可多份），给出建议值。**不写库。**"""
+    import tempfile
+    from services import demand_agent, field_dict
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+
+    files = [f for f in (request.files.getlist("file")
+                         or request.files.getlist("files")) if f and f.filename]
+    instruction = (request.form.get("instruction") or "").strip()
+    pasted = (request.form.get("text") or "").strip()
+    if not files and not pasted:
+        return jsonify({"ok": False,
+                        "error": "上传几份资料，或者把文字粘进来"}), 400
+
+    tmpdir = tempfile.mkdtemp(prefix="agent_", dir=None)
+    paths, rejected = [], []
+    for f in files:
+        name = os.path.basename(f.filename)
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in AGENT_EXT:
+            rejected.append(f"{name}（不支持 {ext or '无扩展名'}）")
+            continue
+        dst = os.path.join(tmpdir, name)
+        f.save(dst)
+        paths.append((name, dst))
+
+    material, failed = demand_agent.read_files(paths)
+    if pasted:
+        material = (material + "\n\n【粘贴的文字】\n" + pasted).strip()
+    if not material.strip():
+        return jsonify({"ok": False,
+                        "error": "这些资料里没读到文字。" +
+                                 ("；".join(failed + rejected) or "")}), 400
+
+    # 字典判定为锁定的字段，Agent 连建议都不给——那是规则定死的
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    from services import demand_doc
+    ctx = demand_doc.build_context_for(demand, project)
+    fields = field_dict.load(demand_doc.dict_name_for(demand))
+    locked = []
+    if fields:
+        _eff, meta = field_dict.resolve(fields, ctx)
+        locked = [k for k, m in meta.items() if m.get("locked") or not m.get("visible", True)]
+
+    try:
+        out = demand_agent.suggest(
+            material, instruction, locked_names=locked,
+            usage_ctx={"username": session.get("user", ""),
+                       "display_name": session.get("display_name", ""),
+                       "feature": "采购需求Agent填写"})
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify({"ok": False, "error": f"Agent 没跑成：{e}"[:300]}), 500
+
+    out["read"] = [n for n, _p in paths]
+    out["failed"] = failed + rejected
+    out["material_chars"] = len(material)
+    return jsonify({"ok": True, "data": out})
+
+
+@bp.route("/<int:did>/agent/apply", methods=["POST"])
+@login_required
+def demand_agent_apply(did):
+    """把人挑中的建议写进需求。只写挑中的那几条。"""
+    from services import demand_doc, field_dict
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    if demand.status == "已立项":
+        return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
+
+    body = request.get_json(silent=True) or {}
+    picked = body.get("fields") or {}
+    pkg_picked = body.get("packages") or []
+
+    # 中文字段名 → 数据库列。只认这张表里的，别的一律不写。
+    COL = {
+        "项目概况": "project_overview",
+        "相关产业发展情况": "survey_industry",
+        "市场供给情况": "survey_market",
+        "历史成交情况": "survey_history",
+        "后续采购情况": "survey_followup",
+        "其他相关情况": "survey_other",
+        "合同履行期限": "contract_period",
+        "合同履约地点": "contract_location",
+        "合同支付约定": "payment_terms",
+        "验收交付标准和方法": "acceptance_delivery",
+        "质量保修范围和保修期": "warranty_terms",
+        "履约验收程序": "acceptance_procedure",
+        "履约验收时间": "acceptance_time",
+    }
+
+    # 再挡一道：字典锁定的字段，就算前端硬塞也不写
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    fields = field_dict.load(demand_doc.dict_name_for(demand))
+    locked = set()
+    if fields:
+        ctx = demand_doc.build_context_for(demand, project)
+        _eff, meta = field_dict.resolve(fields, ctx)
+        locked = {k for k, m in meta.items()
+                  if m.get("locked") or not m.get("visible", True)}
+
+    applied, skipped = [], []
+    for name, val in picked.items():
+        if name in locked:
+            skipped.append(f"{name}（字典锁定，不可由 Agent 改）")
+            continue
+        col = COL.get(name)
+        if not col or not hasattr(demand, col):
+            skipped.append(f"{name}（不在可写范围）")
+            continue
+        setattr(demand, col, str(val))
+        applied.append(name)
+
+    if pkg_picked:
+        try:
+            pkgs = json.loads(demand.packages_json or "[]") or [{}]
+        except Exception:                                    # noqa: BLE001
+            pkgs = [{}]
+        while len(pkgs) < len(pkg_picked):
+            pkgs.append({})
+        for i, one in enumerate(pkg_picked):
+            for k, v in (one or {}).items():
+                if k in ("技术要求", "商务要求", "特殊资格要求"):
+                    pkgs[i][k] = v
+                    applied.append(f"包{i + 1}·{k}")
+        demand.packages_json = json.dumps(pkgs, ensure_ascii=False)
+        demand.package_count = len(pkgs)
+
+    demand.updated_at = _now()
+    db.session.commit()
+    msg = f"已采纳 {len(applied)} 项"
+    if skipped:
+        msg += f"；{len(skipped)} 项没写：" + "；".join(skipped[:3])
+    return jsonify({"ok": True, "applied": applied, "skipped": skipped, "message": msg})
 
 
 @bp.route("/templates", methods=["GET"])

@@ -252,3 +252,29 @@ export const resolveFieldDict = (values: Record<string, unknown>) =>
     meta: Record<string, DictMeta>
     errors: string[]
   } }>('/procurement-demands/field-dict/resolve', { values })
+
+// ── 采购需求 Agent：读资料给建议，人点采纳才落库 ─────────────────
+export interface AgentSuggestion { value: string; evidence: string }
+export interface AgentResult {
+  fields: Record<string, AgentSuggestion>
+  packages: Record<string, AgentSuggestion>[]
+  notes: string[]
+  read: string[]
+  failed: string[]
+  material_chars: number
+}
+
+export const agentSuggest = (id: number, files: File[], text: string, instruction: string) => {
+  const fd = new FormData()
+  files.forEach(f => fd.append('file', f))
+  if (text) fd.append('text', text)
+  if (instruction) fd.append('instruction', instruction)
+  return api.post<{ ok: boolean; data: AgentResult }>(
+    `/procurement-demands/${id}/agent/suggest`, fd,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })
+}
+
+export const agentApply = (id: number, fields: Record<string, string>,
+                           packages: Record<string, string>[]) =>
+  api.post<{ ok: boolean; applied: string[]; skipped: string[]; message: string }>(
+    `/procurement-demands/${id}/agent/apply`, { fields, packages })

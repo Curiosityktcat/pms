@@ -212,6 +212,8 @@ export default function ProcurementDemandPage() {
   const [packages, setPackages] = useState<PackageData[]>([emptyPackage()])
   const [pkgTab, setPkgTab] = useState('0')
   const [dictValues, setDictValues] = useState<Record<string, unknown>>({})
+  // 每保存一次 +1，右边预览跟着自动重出
+  const [docReload, setDocReload] = useState(0)
   const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
     // 没存过就用默认的 27%。不能直接 Number(null)——那是 0，正好等于「隐藏」，
     // 结果第一次打开预览就是关的（实测踩到）。
@@ -319,6 +321,7 @@ export default function ProcurementDemandPage() {
       if (editingId) {
         await updateDemand(editingId, payload)
         message.success('保存成功')
+        setDocReload(n => n + 1)   // 右边预览跟着重出，不用再点「重新出稿」
         setDrawerOpen(false)
         load()
       } else {
@@ -1496,7 +1499,15 @@ export default function ProcurementDemandPage() {
           <div style={{ flex: previewSize > 0 ? `0 0 ${previewSize}%` : '0 0 300px',
                         minWidth: 280, overflow: 'hidden' }}>
             <DemandDocPanel demandId={editingId ?? undefined}
-              previewHidden={previewSize === 0} />
+              previewHidden={previewSize === 0} reloadToken={docReload}
+              onApplied={async () => {
+                // Agent 采纳后值已经写进库了，把这条重新拉一遍灌进表单，
+                // 否则左边还是旧的，一保存又把 Agent 填的覆盖回去
+                const fresh = await listDemands(undefined, demandType || undefined)
+                const one = (fresh.data.data || []).find(x => x.id === editingId)
+                if (one) openEdit(one)
+                load()
+              }} />
           </div>
         </div>
       </Drawer>

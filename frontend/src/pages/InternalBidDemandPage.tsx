@@ -124,6 +124,8 @@ export default function InternalBidDemandPage() {
   // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 右侧预览占屏比例：27% / 45% / 隐藏（用户指定的三档）
+  // 每保存一次 +1，右边预览跟着自动重出
+  const [docReload, setDocReload] = useState(0)
   const [previewSize, setPreviewSize] = useState<PreviewSize>(() => {
     const raw = localStorage.getItem(PREVIEW_KEY)
     if (raw === null) return 27
@@ -232,6 +234,7 @@ export default function InternalBidDemandPage() {
       if (editingId) {
         await updateInternalBidDemand(editingId, payload)
         message.success('保存成功')
+        setDocReload(n => n + 1)   // 右边预览跟着重出，不用再点「重新出稿」
       } else {
         const res = await createInternalBidDemand(payload)
         setEditingId(res.data.data.id)
@@ -1091,7 +1094,15 @@ export default function InternalBidDemandPage() {
           <div style={{ flex: previewSize > 0 ? `0 0 ${previewSize}%` : '0 0 300px',
                         minWidth: 280, overflow: 'hidden' }}>
             <DemandDocPanel demandId={editingId ?? undefined} kind="internal-bid-demands"
-              previewHidden={previewSize === 0} />
+              previewHidden={previewSize === 0} reloadToken={docReload}
+              onApplied={async () => {
+                // Agent 采纳后值已经写进库了，把这条重新拉一遍灌进表单，
+                // 否则左边还是旧的，一保存又把 Agent 填的覆盖回去
+                const fresh = await listInternalBidDemands()
+                const one = (fresh.data.data || []).find(x => x.id === editingId)
+                if (one) openEdit(one)
+                load()
+              }} />
           </div>
         </div>
       </Drawer>
