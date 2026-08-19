@@ -152,6 +152,18 @@ def create_app():
         "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/chpwd",
         "/api/auth/captcha",
     }
+    # 不分角色、所有登录用户都该通的接口。
+    # 2026-08-19 黄新博实测报的三个问题都出在这儿：
+    #   · 在线人数永远 0    —— /api/presence/ping 被闸门挡了，前端还把错误静默吞掉
+    #   · 公告首页登录后空白 —— /api/announcements/public 是**公开**数据，
+    #     没登录能看、登录了反而看不到，这是我把闸门改成按权限判时带出来的回归
+    #   · 采购部公告看不到  —— /api/dept-announcements 压根没进白名单，
+    #     而它本来就是「所有进入系统的人都能看」的公告栏
+    _COMMON_PREFIXES = (
+        "/api/presence",
+        "/api/announcements/public",
+        "/api/dept-announcements",
+    )
     _DEPT_READONLY_PREFIXES = (
         "/api/projects", "/api/bid", "/api/bid-board",
         "/api/auth-letter-records", "/api/announcements",
@@ -212,6 +224,9 @@ def create_app():
     def _perm_gate(path):
         """按对照表判当前账号有没有这个模块的权限。没有 → 403，有 → 放行。"""
         from flask import session as _ss, jsonify as _js
+        # 公共接口不参与权限判定：公开公告、在线人数、采购部公告栏
+        if any(path == q or path.startswith(q + "/") for q in _COMMON_PREFIXES):
+            return None
         need = None
         for _prefix, _keys in _API_PERM.items():
             if path == _prefix or path.startswith(_prefix + "/"):
@@ -262,6 +277,8 @@ def create_app():
         if not path.startswith("/api/"):
             return None                      # 前端页面与静态资源不拦
         if path.startswith("/api/dept/"):
+            return None
+        if any(path == q or path.startswith(q + "/") for q in _COMMON_PREFIXES):
             return None
         if path.startswith("/api/authorizations"):
             # 具体记录仍由授权接口按 session.dept_code 二次收口；这里只打开总闸门。

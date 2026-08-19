@@ -34,9 +34,20 @@ def _is_reviewer():
             or is_admin_user(session.get("user", "")))
 
 
+# 采购部内部角色。这个公告栏是**采购部往下发**的，不是大家互相发。
+CGB_ROLES = ("officer", "assistant", "pd_assistant", "leader")
+
+
 def _can_upload():
-    # 内部账号可上传（经办人/助理/领导/分发岗）；代理机构不可
-    return session.get("role", "") != "agency"
+    """谁能往采购部公告栏发东西。
+
+    2026-08-19 收紧：原来是「只要不是代理机构就能传」，那时候系统里只有采购部
+    的人。现在 59 个科室账号进来了，照旧的话每个科室都能往全院公告栏发文件。
+    黄新博的原话是「所有进入系统的人都**可以看得到**」——看是所有人，发还是采购部。
+    """
+    from services.permission import is_admin_user
+    return (session.get("role", "") in CGB_ROLES
+            or is_admin_user(session.get("user", "")))
 
 
 @bp.route("", methods=["GET"])

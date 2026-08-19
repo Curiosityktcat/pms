@@ -10,12 +10,17 @@ import { pingPresence } from '../services/presence'
 const POLL_MS = 30000  // < 后端 WINDOW(120s)，确保挂着的页面不掉线
 
 export default function OnlineCount() {
-  const [count, setCount] = useState(0)
+  const [count, setCount] = useState<number | null>(null)
 
   const ping = useCallback(async () => {
     try {
       setCount((await pingPresence()).data.data.count)
-    } catch { /* 静默 */ }
+    } catch {
+      // 原来这里是静默吞掉的，结果科室账号被闸门挡成 403 之后
+      // 界面上永远是「在线人数 0 人」，看不出是坏了还是真没人
+      // （2026-08-19 黄新博实测发现）。取不到就干脆不显示。
+      setCount(null)
+    }
   }, [])
 
   useEffect(() => {
@@ -23,6 +28,8 @@ export default function OnlineCount() {
     const t = setInterval(ping, POLL_MS)
     return () => clearInterval(t)
   }, [ping])
+
+  if (count === null) return null      // 取不到就不显示，别谎报 0
 
   return (
     <span style={{
