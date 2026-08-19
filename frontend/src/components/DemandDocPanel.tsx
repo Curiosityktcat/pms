@@ -38,7 +38,9 @@ export function PreviewSizeToggle(
   return (
     <Space.Compact size="small">
       {PREVIEW_SIZES.map(s => (
-        <Tooltip key={s} title={s === 0 ? '完全隐藏预览' : `预览占屏 ${s}%`}>
+        <Tooltip key={s} title={s === 0
+          ? '收起文件预览，Agent 操作区占满右栏'
+          : `预览占屏 ${s}%`}>
           <Button
             type={value === s ? 'primary' : 'default'}
             size="small"
@@ -54,8 +56,11 @@ export function PreviewSizeToggle(
 }
 
 export default function DemandDocPanel(
-  { demandId, kind = 'procurement-demands', onJumpField }:
-  { demandId?: number; kind?: DocKind; onJumpField?: (name: string) => void },
+  { demandId, kind = 'procurement-demands', onJumpField, previewHidden = false }:
+  { demandId?: number; kind?: DocKind; onJumpField?: (name: string) => void
+    /** 「隐藏」那一档：只收起文件预览，Agent 操作区留下并占满右栏
+     *  （黄新博 2026-08-19：「可不可以只把文件预览隐藏了，然后 agent 操作区就能大一些」） */
+    previewHidden?: boolean },
 ) {
   const [status, setStatus] = useState<DemandDocStatus | null>(null)
   const [loading, setLoading] = useState(false)
@@ -94,7 +99,10 @@ export default function DemandDocPanel(
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 8 }}>
       {/* ── Agent 操作区 ─────────────────────────────────────── */}
       <Card size="small" title={<span><RobotOutlined /> Agent 操作区</span>}
-        styles={{ body: { padding: '8px 12px' } }}
+        style={previewHidden ? { flex: 1, minHeight: 0, display: 'flex',
+                                 flexDirection: 'column' } : undefined}
+        styles={{ body: { padding: '8px 12px',
+                          ...(previewHidden ? { flex: 1, overflowY: 'auto' } : {}) } }}
         extra={
           <Space size={4}>
             <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>
@@ -121,7 +129,8 @@ export default function DemandDocPanel(
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   还空着（成稿里会留白，可以先出稿看看版式）：
                 </Text>
-                <div style={{ maxHeight: 78, overflowY: 'auto', marginTop: 4 }}>
+                <div style={{ maxHeight: previewHidden ? 320 : 78,
+                              overflowY: 'auto', marginTop: 4 }}>
                   <Space size={[4, 4]} wrap>
                     {status.missing.slice(0, 24).map(m => (
                       <Tag key={m.name} style={{ cursor: onJumpField ? 'pointer' : 'default', marginInlineEnd: 0 }}
@@ -138,7 +147,8 @@ export default function DemandDocPanel(
         ) : <Text type="secondary" style={{ fontSize: 12 }}>{err || '—'}</Text>}
       </Card>
 
-      {/* ── 文件预览 ─────────────────────────────────────────── */}
+      {/* ── 文件预览（「隐藏」那一档就不渲染，把地方让给 Agent 区）── */}
+      {!previewHidden && (
       <Card size="small" title={<span><FileWordOutlined /> 文件预览</span>}
         style={{ flex: 1, minHeight: 0 }}
         styles={{ body: { padding: 0, height: 'calc(100% - 38px)' } }}>
@@ -154,6 +164,7 @@ export default function DemandDocPanel(
           />
         )}
       </Card>
+      )}
     </div>
   )
 }

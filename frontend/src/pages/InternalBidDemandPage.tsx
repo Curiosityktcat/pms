@@ -1086,11 +1086,13 @@ export default function InternalBidDemandPage() {
         </Form>
           </div>
 
-          {previewSize > 0 && (
-            <div style={{ flex: `0 0 ${previewSize}%`, minWidth: 320, overflow: 'hidden' }}>
-              <DemandDocPanel demandId={editingId ?? undefined} kind="internal-bid-demands" />
-            </div>
-          )}
+          {/* 「隐藏」不是把整个右栏收掉，而是只收文件预览——
+              Agent 操作区留下并占满，正好比原来更大。 */}
+          <div style={{ flex: previewSize > 0 ? `0 0 ${previewSize}%` : '0 0 300px',
+                        minWidth: 280, overflow: 'hidden' }}>
+            <DemandDocPanel demandId={editingId ?? undefined} kind="internal-bid-demands"
+              previewHidden={previewSize === 0} />
+          </div>
         </div>
       </Drawer>
     </div>
