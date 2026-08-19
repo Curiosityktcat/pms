@@ -87,6 +87,7 @@ def create_app():
     from routes.dept_admin_api import bp as dept_admin_bp               # 科室字典管理（仅系统管理员）
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
     from models.project_file import ProjectFile                          # noqa: F401 建表用
+    from models.demand_template import DemandTemplate                    # noqa: F401 建表用
     from routes.project_monitor_api import bp as project_monitor_bp       # 项目管理器（只读进度看板）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载

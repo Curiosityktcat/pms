@@ -431,6 +431,21 @@ def apply_dict(ctx, dict_name="2.2采购需求表"):
     return merged, meta
 
 
+# 这几个字段是富文本（段落 + 表格）。Subdoc 必须由 DocxTemplate 实例来造，
+# 所以不能在 build_context 里就渲染好，要等 render 拿到 tpl 之后再替换。
+RICH_PACKAGE_FIELDS = ("技术要求", "商务要求", "特殊资格要求")
+
+
+def _fill_rich(tpl, ctx):
+    """把分包里的富文本字段换成 Subdoc；空的就填空字符串。"""
+    from services import rich_block
+    for pkg in ctx.get("分包") or []:
+        for key in RICH_PACKAGE_FIELDS:
+            sd = rich_block.to_subdoc(tpl, pkg.get(key))
+            pkg[key] = sd if sd is not None else ""
+    return ctx
+
+
 def render(d, project=None):
     """出稿，返回 (BytesIO, 缺的字段列表)。"""
     from docxtpl import DocxTemplate
@@ -439,6 +454,7 @@ def render(d, project=None):
     ctx = build_context_for(d, project)
     ctx, _meta = apply_dict(ctx, dict_name_for(d))
     tpl = DocxTemplate(TEMPLATE)
+    ctx = _fill_rich(tpl, ctx)
     env = tpl.get_undeclared_template_variables  # 触发 jinja env 初始化
     from jinja2 import Environment
     jenv = Environment()

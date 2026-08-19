@@ -420,6 +420,191 @@ def demand_doc_file(did):
                      download_name=f"{name}-采购需求表.pdf")
 
 
+# ══════════════════════════════════════════════════════════════════
+# 采购需求模板库（⑩ 的第 1 条）
+#
+# 「很多项目都属于同一类型，大多数的内容都一样……每个经办人可以让其他人 COPY 过去，
+#   或者是授权使用。」
+# 存的不是 Word 文件，是**一份填好的需求信息**；套用就是拷进新需求，再改差异那几项。
+# ══════════════════════════════════════════════════════════════════
+
+# 默认存哪几个部分——他点名的：第三、六~十一。第一、二部分是这个项目独有的，
+# 存进模板反而会把新项目的信息覆盖掉。
+TPL_SECTIONS = ["第三部分", "第六部分", "第七部分", "第八部分",
+                "第九部分", "第十部分", "第十一部分"]
+
+# 每个部分对应哪些列。分包（第四~第八）整份存在 packages 里，不在这儿逐列列。
+SECTION_FIELDS = {
+    "第三部分": ["org_form", "budget_method", "procurement_method", "package_split",
+                "is_multi_year", "sme_policy", "is_eco_product", "is_energy_save",
+                "has_import_product", "is_govt_service", "is_info_system",
+                "is_research_equip"],
+    "第六部分": ["business_requirements"],
+    "第七部分": ["qualification_requirements"],
+    "第八部分": ["eval_method", "eval_price_score", "eval_tech_criteria",
+                "eval_service_criteria"],
+    "第九部分": ["contract_type", "contract_is_actual", "contract_period",
+                "contract_location", "payment_terms", "acceptance_delivery",
+                "warranty_terms", "ip_terms", "cost_risk_terms", "breach_terms",
+                "other_contract_terms", "performance_bond_terms"],
+    "第十部分": ["acceptance_org", "invite_other_supplier"],
+    "第十一部分": [],
+}
+
+
+def _me():
+    return session.get("display_name", "")
+
+
+def _is_admin():
+    from services.permission import is_admin_user
+    return is_admin_user(session.get("user", ""))
+
+
+@bp.route("/templates", methods=["GET"])
+@login_required
+def list_demand_templates():
+    """我能用的模板：自己的 + 公开的 + 别人授权给我的。"""
+    from models.demand_template import DemandTemplate as T
+    me, adm = _me(), _is_admin()
+    rows = db.session.execute(db.select(T).order_by(T.id.desc())).scalars().all()
+    data = [t.to_dict(me, adm) for t in rows if t.can_use(me, adm)]
+    dtype = (request.args.get("demand_type") or "").strip()
+    if dtype:
+        data = [x for x in data if not x["demand_type"] or x["demand_type"] == dtype]
+    return jsonify({"ok": True, "data": data, "sections": TPL_SECTIONS})
+
+
+@bp.route("/<int:did>/save-as-template", methods=["POST"])
+@login_required
+def save_as_template(did):
+    """把这条需求存成模板。只存选中的那几个部分。"""
+    from models.demand_template import DemandTemplate as T
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "给模板起个名字，比如「医用耗材类·院内竞选」"}), 400
+    sections = body.get("sections") or TPL_SECTIONS
+
+    data = {}
+    for sec in sections:
+        for col in SECTION_FIELDS.get(sec, []):
+            v = getattr(demand, col, None)
+            if v not in (None, ""):
+                data[col] = v
+    # 分包整份带走（第四~第八部分都在里面）
+    if body.get("with_packages", True):
+        data["packages"] = getattr(demand, "packages_json", "") or "[]"
+
+    row = T(name=name, note=(body.get("note") or "").strip(),
+            demand_type=demand.demand_type or "",
+            sections_json=json.dumps(sections, ensure_ascii=False),
+            data_json=json.dumps(data, ensure_ascii=False),
+            owner=_me(), shared=1 if body.get("shared") else 0,
+            shared_with=",".join(body.get("shared_with") or []),
+            created_at=_now(), updated_at=_now())
+    db.session.add(row)
+    db.session.commit()
+    return jsonify({"ok": True, "data": row.to_dict(_me(), _is_admin()),
+                    "message": f"已存为模板「{name}」，存了 {len(data)} 项内容"})
+
+
+@bp.route("/<int:did>/apply-template/<int:tid>", methods=["POST"])
+@login_required
+def apply_demand_template(did, tid):
+    """把模板套进这条需求。只覆盖模板里有的字段，其余不动。"""
+    from models.demand_template import DemandTemplate as T
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    if demand.status == "已立项":
+        return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
+    tpl = db.session.get(T, tid)
+    if not tpl:
+        return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not tpl.can_use(_me(), _is_admin()):
+        return jsonify({"ok": False,
+                        "error": "这份模板没有对你开放，找它的主人授权"}), 403
+
+    try:
+        data = json.loads(tpl.data_json or "{}")
+    except Exception:                                        # noqa: BLE001
+        return jsonify({"ok": False, "error": "模板内容坏了，读不出来"}), 400
+
+    applied = []
+    for col, v in data.items():
+        if col == "packages":
+            demand.packages_json = v
+            try:
+                demand.package_count = len(json.loads(v or "[]")) or 1
+            except Exception:                                # noqa: BLE001
+                pass
+            applied.append("分包（第四~第八部分）")
+            continue
+        if hasattr(demand, col):
+            setattr(demand, col, v)
+            applied.append(col)
+    demand.updated_at = _now()
+    tpl.use_count = (tpl.use_count or 0) + 1
+    db.session.commit()
+    return jsonify({"ok": True, "data": demand.to_dict() if hasattr(demand, "to_dict") else {},
+                    "applied": applied,
+                    "message": f"已套用模板「{tpl.name}」，覆盖了 {len(applied)} 项"})
+
+
+@bp.route("/templates/<int:tid>", methods=["PUT", "DELETE"])
+@login_required
+def edit_demand_template(tid):
+    """改名/授权/删除。只有主人（和管理员）能动。"""
+    from models.demand_template import DemandTemplate as T
+    tpl = db.session.get(T, tid)
+    if not tpl:
+        return jsonify({"ok": False, "error": "模板不存在"}), 404
+    if not tpl.can_edit(_me(), _is_admin()):
+        return jsonify({"ok": False, "error": "只有模板的主人能改它"}), 403
+    if request.method == "DELETE":
+        db.session.delete(tpl)
+        db.session.commit()
+        return jsonify({"ok": True, "message": "已删除"})
+    body = request.get_json(silent=True) or {}
+    if "name" in body:
+        tpl.name = (body["name"] or "").strip() or tpl.name
+    if "note" in body:
+        tpl.note = body["note"] or ""
+    if "shared" in body:
+        tpl.shared = 1 if body["shared"] else 0
+    if "shared_with" in body:
+        tpl.shared_with = ",".join(body["shared_with"] or [])
+    tpl.updated_at = _now()
+    db.session.commit()
+    return jsonify({"ok": True, "data": tpl.to_dict(_me(), _is_admin())})
+
+
+@bp.route("/template-lint", methods=["POST"])
+@login_required
+def lint_uploaded_template():
+    """上传 Word 模板时当场体检——不合格的当场列给做模板的人看。"""
+    import os as _os
+    import tempfile
+    from services import template_lint, field_dict
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "没有收到文件"}), 400
+    if not f.filename.lower().endswith(".docx"):
+        return jsonify({"ok": False, "error": "请上传 .docx（Word 2007 以后的格式）"}), 400
+    tmp = _os.path.join(tempfile.mkdtemp(prefix="tpllint_"), _os.path.basename(f.filename))
+    f.save(tmp)
+    known = [x["name"] for x in field_dict.load()]
+    errors, warns, names = template_lint.lint(tmp, known)
+    return jsonify({"ok": True, "data": {
+        "errors": errors, "warnings": warns, "placeholders": names,
+        "passed": not errors,
+    }})
+
+
 @bp.route("/field-dict", methods=["GET"])
 @login_required
 def field_dict_all():

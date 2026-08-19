@@ -54,7 +54,10 @@ check("① 循环标记成对", blob.count("{%tr for") == blob.count("{%tr endfo
       f"for {blob.count('{%tr for')} / endfor {blob.count('{%tr endfor')}")
 check("① 占位符没有跨行断开", "{{" not in blob.replace("{{", "").replace("}}", ""),
       "")
-names = set(re.findall(r"\{\{\s*([^\s|}]+)", blob))
+# {{ 名字 }} 和 {{p 名字 }} 都要认——指令字母（p/r/tr/tc）不是名字。
+# 直接用体检器那套规则，两处别各写各的。
+names = {m.group(1).strip() for m in
+         re.finditer(r"\{\{\s*(?:(?:tr|tc|p|r)\s+)?([^\s|}]+)", blob)}
 declared = {f["name"] for f in fields}
 # 循环里的变量（{{ r.xxx }} 标的、{{ 包.xxx }} 分包）不是字典字段，
 # 它们的取值来自 build_context 里造的那两个列表，不该要求在字段清单里声明。
