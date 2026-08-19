@@ -1,6 +1,6 @@
 from datetime import datetime
 from flask import Blueprint, request, session, jsonify, send_file
-import json, os
+import json, os, secrets
 from models import db
 from models.procurement_demand import ProcurementDemand
 from models.project import Project
@@ -472,6 +472,139 @@ AGENT_UPLOAD_DIR = os.path.join(
 AGENT_EXT = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".txt"}
 
 
+@bp.route("/<int:did>/chat", methods=["GET"])
+@login_required
+def demand_chat_history(did):
+    """这条需求和 Agent 的对话记录。下次打开还能看到上次聊到哪。"""
+    from models.demand_chat import DemandChatMessage as M
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    rows = db.session.execute(
+        db.select(M).filter_by(demand_id=did, demand_kind="gov").order_by(M.id)
+    ).scalars().all()
+    return jsonify({"ok": True, "data": [m.to_dict() for m in rows]})
+
+
+@bp.route("/<int:did>/chat", methods=["POST"])
+@login_required
+def demand_chat_send(did):
+    """发一条消息（可带文件），Agent 回一条。两条都落库。"""
+    import tempfile
+    from models.demand_chat import DemandChatMessage as M
+    from services import demand_agent, demand_doc, field_dict
+
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+
+    text = (request.form.get("text") or "").strip()
+    files = [f for f in (request.files.getlist("file")
+                         or request.files.getlist("files")) if f and f.filename]
+    if not text and not files:
+        return jsonify({"ok": False, "error": "说点什么，或者传个文件"}), 400
+
+    # ── 存下附件并读出文字 ────────────────────────────────────────
+    os.makedirs(os.path.join(AGENT_UPLOAD_DIR, str(did)), exist_ok=True)
+    saved, paths = [], []
+    for f in files:
+        name = os.path.basename(f.filename)
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in AGENT_EXT:
+            saved.append({"name": name, "error": f"不支持 {ext or '无扩展名'}"})
+            continue
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        fn = f"{stamp}_{secrets.token_hex(3)}{ext}"
+        dst = os.path.join(AGENT_UPLOAD_DIR, str(did), fn)
+        f.save(dst)
+        paths.append((name, dst))
+        saved.append({"name": name, "saved": fn})
+
+    material, failed = demand_agent.read_files(paths)
+    for item in saved:
+        for msg in failed:
+            if msg.startswith(item.get("name", "") + "："):
+                item["error"] = msg.split("：", 1)[1]
+    for item in saved:
+        if not item.get("error") and item.get("saved"):
+            item["chars"] = len(material) if len(paths) == 1 else None
+
+    now = _now()
+    me = session.get("display_name", "")
+    umsg = M(demand_id=did, demand_kind="gov", role="user", text=text,
+             files_json=json.dumps(saved, ensure_ascii=False),
+             material=material,          # 后面几轮还要靠它记得传过什么
+             created_by=me, created_at=now)
+    db.session.add(umsg)
+    db.session.commit()
+
+    # ── 历史 + 锁定字段 ──────────────────────────────────────────
+    rows = db.session.execute(
+        db.select(M).filter_by(demand_id=did, demand_kind="gov").order_by(M.id)
+    ).scalars().all()
+    history = [{"role": m.role, "text": m.text,
+                "material": getattr(m, "material", "") or ""} for m in rows[:-1]]
+
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    ctx = demand_doc.build_context_for(demand, project)
+    fields = field_dict.load(demand_doc.dict_name_for(demand))
+    locked = []
+    if fields:
+        _eff, meta = field_dict.resolve(fields, ctx)
+        locked = [k for k, m in meta.items()
+                  if m.get("locked") or not m.get("visible", True)]
+
+    try:
+        out = demand_agent.converse(
+            history, text, material=material, locked_names=locked,
+            usage_ctx={"username": session.get("user", ""),
+                       "display_name": me, "feature": "采购需求Agent对话"})
+    except Exception as e:                                   # noqa: BLE001
+        # Agent 挂了也要留一条，否则界面上是你说了话它没反应
+        amsg = M(demand_id=did, demand_kind="gov", role="agent",
+                 text=f"我这边出错了：{str(e)[:200]}。可以再说一遍，或者换份资料试试。",
+                 created_by="agent", created_at=_now())
+        db.session.add(amsg)
+        db.session.commit()
+        return jsonify({"ok": True, "data": {"user": umsg.to_dict(),
+                                             "agent": amsg.to_dict()}})
+
+    sug = None
+    if out.get("fields") or out.get("packages"):
+        sug = {"fields": out["fields"], "packages": out["packages"],
+               "notes": out.get("notes") or []}
+    amsg = M(demand_id=did, demand_kind="gov", role="agent",
+             text=out.get("say") or "",
+             suggestions_json=json.dumps(sug, ensure_ascii=False) if sug else "",
+             created_by="agent", created_at=_now())
+    db.session.add(amsg)
+    db.session.commit()
+    return jsonify({"ok": True, "data": {"user": umsg.to_dict(),
+                                         "agent": amsg.to_dict()}})
+
+
+@bp.route("/<int:did>/chat/<int:mid>/apply", methods=["POST"])
+@login_required
+def demand_chat_apply(did, mid):
+    """采纳某条 Agent 消息里的建议（可只挑几项）。采纳结果回写到那条消息上。"""
+    from models.demand_chat import DemandChatMessage as M
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    msg = db.session.get(M, mid)
+    if not msg or msg.demand_id != did:
+        return jsonify({"ok": False, "error": "这条消息不存在"}), 404
+
+    if demand.status == "已立项":
+        return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
+    body = request.get_json(silent=True) or {}
+    out = _apply_agent_values(demand, body)
+    # 采纳结果记在那条消息上，界面里能看出「这条我已经采纳过了」
+    msg.applied_json = json.dumps(out.get("applied") or [], ensure_ascii=False)
+    db.session.commit()
+    return jsonify({"ok": True, **out})
+
+
 @bp.route("/<int:did>/agent/suggest", methods=["POST"])
 @login_required
 def demand_agent_suggest(did):
@@ -535,18 +668,12 @@ def demand_agent_suggest(did):
     return jsonify({"ok": True, "data": out})
 
 
-@bp.route("/<int:did>/agent/apply", methods=["POST"])
-@login_required
-def demand_agent_apply(did):
-    """把人挑中的建议写进需求。只写挑中的那几条。"""
-    from services import demand_doc, field_dict
-    demand, _serr = _scoped(did)
-    if _serr:
-        return _serr
-    if demand.status == "已立项":
-        return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
+def _apply_agent_values(demand, body):
+    """把挑中的建议写进需求。抽出来给「一次性建议」和「对话」两处共用。
 
-    body = request.get_json(silent=True) or {}
+    返回 {"applied": [...], "skipped": [...], "message": ...}，不负责提交事务。
+    """
+    from services import demand_doc, field_dict
     picked = body.get("fields") or {}
     pkg_picked = body.get("packages") or []
 
@@ -605,11 +732,24 @@ def demand_agent_apply(did):
         demand.package_count = len(pkgs)
 
     demand.updated_at = _now()
-    db.session.commit()
     msg = f"已采纳 {len(applied)} 项"
     if skipped:
         msg += f"；{len(skipped)} 项没写：" + "；".join(skipped[:3])
-    return jsonify({"ok": True, "applied": applied, "skipped": skipped, "message": msg})
+    return {"applied": applied, "skipped": skipped, "message": msg}
+
+
+@bp.route("/<int:did>/agent/apply", methods=["POST"])
+@login_required
+def demand_agent_apply(did):
+    """把人挑中的建议写进需求（一次性建议那条路）。"""
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    if demand.status == "已立项":
+        return jsonify({"ok": False, "error": "已立项的需求不可修改"}), 400
+    out = _apply_agent_values(demand, request.get_json(silent=True) or {})
+    db.session.commit()
+    return jsonify({"ok": True, **out})
 
 
 @bp.route("/templates", methods=["GET"])

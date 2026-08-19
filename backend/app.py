@@ -88,6 +88,7 @@ def create_app():
     from routes.procurement_plan_api import bp as procurement_plan_bp     # 采购计划池（归口科室年度计划）
     from models.project_file import ProjectFile                          # noqa: F401 建表用
     from models.demand_template import DemandTemplate                    # noqa: F401 建表用
+    from models.demand_chat import DemandChatMessage                     # noqa: F401 建表用
     from routes.project_monitor_api import bp as project_monitor_bp       # 项目管理器（只读进度看板）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
@@ -637,6 +638,20 @@ def create_app():
                         f"ALTER TABLE projects ADD COLUMN {_col} {_typedef}"
                     ))
             _conn2.commit()
+
+        # Agent 对话表补列（表建过之后再加的字段，SQLite 不会自动迁移）
+        try:
+            from sqlalchemy import text as _text_chat
+            with db.engine.connect() as _c_chat:
+                _cols_chat = {r[1] for r in _c_chat.execute(
+                    _text_chat("PRAGMA table_info(demand_chat_messages)"))}
+                if _cols_chat and "material" not in _cols_chat:
+                    _c_chat.execute(_text_chat(
+                        "ALTER TABLE demand_chat_messages ADD COLUMN material TEXT DEFAULT ''"))
+                    _c_chat.commit()
+                    print("[chat] demand_chat_messages.material 已补", flush=True)
+        except Exception as _e:                                  # noqa: BLE001
+            print("[chat] 对话表迁移失败：", _e, flush=True)
 
         # 为 contracts 表追加 rd-web 合同审签流水号列
         with db.engine.connect() as _conn_ct:

@@ -278,3 +278,39 @@ export const agentApply = (id: number, fields: Record<string, string>,
                            packages: Record<string, string>[]) =>
   api.post<{ ok: boolean; applied: string[]; skipped: string[]; message: string }>(
     `/procurement-demands/${id}/agent/apply`, { fields, packages })
+
+// ── Agent 对话：像聊天一样，有记录、能传文件、直接说要它干什么 ──────
+export interface ChatFile { name: string; saved?: string; chars?: number; error?: string }
+export interface ChatSuggestions {
+  fields: Record<string, AgentSuggestion>
+  packages: Record<string, AgentSuggestion>[]
+  notes: string[]
+}
+export interface ChatMessage {
+  id: number
+  role: 'user' | 'agent'
+  text: string
+  files: ChatFile[]
+  suggestions?: ChatSuggestions | null
+  applied?: string[] | null
+  created_by: string
+  created_at: string
+}
+
+export const getChat = (id: number) =>
+  api.get<{ ok: boolean; data: ChatMessage[] }>(`/procurement-demands/${id}/chat`)
+
+export const sendChat = (id: number, text: string, files: File[]) => {
+  const fd = new FormData()
+  if (text) fd.append('text', text)
+  files.forEach(f => fd.append('file', f))
+  return api.post<{ ok: boolean; data: { user: ChatMessage; agent: ChatMessage } }>(
+    `/procurement-demands/${id}/chat`, fd,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })
+}
+
+export const applyChat = (id: number, mid: number,
+                          fields: Record<string, string>,
+                          packages: Record<string, string>[]) =>
+  api.post<{ ok: boolean; applied: string[]; skipped: string[]; message: string }>(
+    `/procurement-demands/${id}/chat/${mid}/apply`, { fields, packages })

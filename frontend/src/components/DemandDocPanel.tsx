@@ -15,7 +15,7 @@ import {
   ColumnWidthOutlined, EyeInvisibleOutlined, FileWordOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
-import DemandAgent from './DemandAgent'
+import DemandAgentChat from './DemandAgentChat'
 import api from '../services/api'
 import type { DemandDocStatus } from '../services/procurementDemand'
 
@@ -116,15 +116,21 @@ export default function DemandDocPanel(
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 8 }}>
       {/* ── Agent 操作区 ─────────────────────────────────────── */}
       <Card size="small" title={<span><RobotOutlined /> Agent 操作区</span>}
-        style={previewHidden ? { flex: 1, minHeight: 0, display: 'flex',
-                                 flexDirection: 'column' } : undefined}
+        // 对话开着时这张卡要能撑开，否则聊天记录挤在一条缝里
+        style={(previewHidden || agentOpen)
+          ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
+          : undefined}
         styles={{ body: { padding: '8px 12px',
-                          ...(previewHidden ? { flex: 1, overflowY: 'auto' } : {}) } }}
+                          ...((previewHidden || agentOpen)
+                            ? { flex: 1, minHeight: 0, overflowY: 'auto',
+                                display: 'flex', flexDirection: 'column' }
+                            : {}) } }}
         extra={
           <Space size={4}>
-            <Button size="small" type="primary" ghost icon={<ThunderboltOutlined />}
-              onClick={() => setAgentOpen(true)}>
-              让 Agent 填
+            <Button size="small" type={agentOpen ? 'primary' : 'default'}
+              ghost={!agentOpen} icon={<ThunderboltOutlined />}
+              onClick={() => setAgentOpen(v => !v)}>
+              {agentOpen ? '收起对话' : '让 Agent 填'}
             </Button>
             <Button size="small" icon={<ReloadOutlined />} onClick={refresh}>
               重新出稿
@@ -135,7 +141,13 @@ export default function DemandDocPanel(
             </Button>
           </Space>
         }>
-        {loading && !status ? <Spin size="small" /> : status ? (
+        {agentOpen ? (
+          // 对话开着的时候，Agent 卡片整个让给它——像微信那样上面是记录、下面是输入框
+          <div style={{ flex: 1, minHeight: 240 }}>
+            <DemandAgentChat demandId={demandId}
+              onApplied={() => { refresh(); onApplied?.() }} />
+          </div>
+        ) : loading && !status ? <Spin size="small" /> : status ? (
           <Space direction="vertical" size={6} style={{ width: '100%' }}>
             <Space size={8} wrap>
               <Text style={{ fontSize: 12 }}>信息完成度</Text>
@@ -186,9 +198,6 @@ export default function DemandDocPanel(
       </Card>
       )}
 
-      <DemandAgent demandId={demandId} open={agentOpen}
-        onClose={() => setAgentOpen(false)}
-        onApplied={() => { refresh(); onApplied?.() }} />
     </div>
   )
 }
