@@ -8,6 +8,9 @@ class User(db.Model):
     username = db.Column(db.String(100), unique=True, nullable=False)
     salt = db.Column(db.String(32), nullable=False)
     pw_hash = db.Column(db.String(100), nullable=False)
+    # 批量建号/管理员重置密码后置 1：一次性密码是写在纸上发下去的，
+    # 本人首次登录必须改掉，改完才放行业务接口。
+    must_change_pw = db.Column(db.Integer, default=0)
     role = db.Column(db.String(20), nullable=False)
     display_name = db.Column(db.String(50), default="")
     active = db.Column(db.Integer, default=1)

@@ -53,6 +53,7 @@ def login():
     session["display_name"] = user.display_name
     session["agency_code"] = user.agency_code or ""
     session["dept_code"] = user.dept_code or ""
+    session["must_change_pw"] = int(getattr(user, "must_change_pw", 0) or 0)
     from services.dept import dept_display
     return jsonify({"ok": True, "user": {
         "username": user.username,
@@ -64,6 +65,8 @@ def login():
         "dept_name": dept_display(user.dept_code),
         "perms": get_user_perms(user.username, user.role),
         "is_admin": user.username == "admin",
+        # 批量建号发下去的是一次性密码，没改之前前端要强制弹改密框
+        "must_change_pw": int(getattr(user, "must_change_pw", 0) or 0),
     }})
 
 
@@ -87,6 +90,7 @@ def me():
         "agency_code": session.get("agency_code", ""),
         "perms": get_user_perms(session["user"], session["role"]),
         "is_admin": session["user"] == "admin",
+        "must_change_pw": int(session.get("must_change_pw", 0) or 0),
     }})
 
 
@@ -102,4 +106,5 @@ def chpwd():
     ok, msg = change_password(session["user"], old, n1)
     if not ok:
         return jsonify({"ok": False, "error": msg}), 400
+    session["must_change_pw"] = 0          # 闸门立刻放开，不用重新登录
     return jsonify({"ok": True, "message": msg})

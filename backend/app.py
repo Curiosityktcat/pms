@@ -228,6 +228,27 @@ def create_app():
     # 前端菜单的摆设。他的范围同样是被限定的，必须一起纳进来按权限判。
     _SCOPED_ROLES = ("supervisor",)
 
+    # 一次性密码没改之前，除了登录/登出/改密本身，业务接口一律挡住。
+    # 不挡的话「强制首改」就只是前端一个弹窗，绕过去太容易——而这些密码是
+    # 写在纸上发给 59 个科室的，必须真的用一次就作废。
+    _PW_FREE_PATHS = (
+        "/api/auth/login", "/api/auth/logout", "/api/auth/me",
+        "/api/auth/chpwd", "/api/auth/captcha",
+    )
+
+    @app.before_request
+    def _force_change_password():
+        from flask import request as _rq, session as _ss, jsonify as _js
+        if not _ss.get("user") or not _ss.get("must_change_pw"):
+            return None
+        path = _rq.path
+        if not path.startswith("/api/") or path in _PW_FREE_PATHS:
+            return None
+        if path.startswith("/captcha"):
+            return None
+        return _js({"ok": False, "must_change_pw": True,
+                    "error": "这是发给你的一次性密码，请先修改密码再使用系统"}), 403
+
     @app.before_request
     def _confine_dept_role():
         from flask import request as _rq, session as _ss, jsonify as _js
@@ -462,10 +483,18 @@ def create_app():
             from sqlalchemy import text as _text_dept
             with db.engine.connect() as _c_dept:
                 _cols = {r[1] for r in _c_dept.execute(_text_dept("PRAGMA table_info(users)"))}
+                _added = []
                 if "dept_code" not in _cols:
                     _c_dept.execute(_text_dept("ALTER TABLE users ADD COLUMN dept_code TEXT DEFAULT ''"))
+                    _added.append("dept_code")
+                # 一次性密码用过就得改，靠这个标记挡住业务接口
+                if "must_change_pw" not in _cols:
+                    _c_dept.execute(_text_dept(
+                        "ALTER TABLE users ADD COLUMN must_change_pw INTEGER DEFAULT 0"))
+                    _added.append("must_change_pw")
+                if _added:
                     _c_dept.commit()
-                    print("[dept] users.dept_code 已补", flush=True)
+                    print("[dept] users 补列:", "、".join(_added), flush=True)
         except Exception as _e:
             print("[dept] users.dept_code 迁移失败：", _e, flush=True)
 

@@ -125,14 +125,22 @@ _ALL_PERM_SET = set(ALL_PERM_KEYS)
 
 # 各业务角色的默认权限（仅在 role_permissions 表为空时一次性写入）
 # 三档科室范围的基底，供 DEFAULT_ROLE_PERMS 和一次性迁移共用，避免两处写重复。
-DEPT_DEMAND_PERMS = ["dept-portal", "project-monitor"]
-DEPT_MANAGE_PERMS = DEPT_DEMAND_PERMS + [
-    # 计划是归口科室自己报的，得让他们自己维护、自己关联到项目上；
-    # 需求科室不给——那不是他们的活。
-    "procurement-plan",
+#
+# 2026-08-19 黄新博更正（推翻 8-18 那句「需求科室其余不给权限」）：
+#   「医院所有科室都是需求科室，需求科室是可以提交采购需求的，
+#     归口科室也可以提交采购需求」
+# 所以采购需求编制是**所有科室**的基本能力；
+# 两者的真正区别是**采购计划池**——那是归口科室的年度台账，需求科室没有。
+# 这个划分也顺带解决了「两栖科室」：临床科室偶尔归口一个项目时，
+# 它本来就能编需求，不必再单独赋权。
+DEPT_DEMAND_PERMS = [
+    "dept-portal", "project-monitor",
     "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
     "procurement-demand-inquiry", "procurement-demand-emergency",
 ]
+# 归口管理科室 = 需求科室 + 采购计划池（年度计划是归口科室报的）
+DEPT_MANAGE_PERMS = DEPT_DEMAND_PERMS + ["procurement-plan"]
+# 监督 = 归口 + 开标管理 + 授权函
 SUPERVISOR_PERMS = DEPT_MANAGE_PERMS + ["bid", "auth-letter"]
 
 DEFAULT_ROLE_PERMS = {
@@ -178,12 +186,9 @@ DEFAULT_ROLE_PERMS = {
     # 这一条收紧了 8-15 那版（当时是「除归档外都能看」），以后者为准。
     # project-monitor 保留：他要项目管理器时明确说「主要是归口科室和需求科室
     # 以及采购部经办人和主任看项目进度」，那正是这个模块存在的理由。
-    # 归口管理科室 = 需求科室 + 采购需求编制
-    "dept_manage": DEPT_DEMAND_PERMS + [
-        "procurement-demand-gov", "internal-bid-demand", "procurement-demand-sole",
-        "procurement-demand-inquiry", "procurement-demand-emergency",
-    ],
-    # 需求科室：只有「0. 我的科室项目」和项目管理器
+    # 归口管理科室 = 需求科室 + 采购计划池
+    "dept_manage": list(DEPT_MANAGE_PERMS),
+    # 需求科室：科室门户 + 项目管理器 + 采购需求编制（全院科室都是需求科室）
     "dept_demand": list(DEPT_DEMAND_PERMS),
     # 旧角色只为迁移前兼容，不出现在新的权限矩阵中；口径跟需求科室一致，
     # 免得还没迁过去的账号在这段时间里权限比新角色还大。

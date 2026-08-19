@@ -37,18 +37,23 @@ DEMAND_KEYS = {"procurement-demand-gov", "internal-bid-demand", "procurement-dem
 
 # ── 角色范围本身 ───────────────────────────────────────────────────
 print("── 三档范围 ──")
-check("① 需求科室只有「我的科室项目」+ 项目管理器",
-      DEMAND_SET == {"dept-portal", "project-monitor"}, f"{sorted(DEMAND_SET)}")
-# 归口科室还多一个「1.0 采购计划池」：计划是他们自己报的，得让他们自己维护和关联
-check("① 归口 = 需求 + 采购需求编制 + 计划池",
-      MANAGE_SET == DEMAND_SET | DEMAND_KEYS | {"procurement-plan"},
+# 2026-08-19 黄新博更正：「医院所有科室都是需求科室，需求科室是可以提交采购需求的，
+# 归口科室也可以提交采购需求」——所以采购需求编制是所有科室的基本能力，
+# 归口科室真正多出来的只有采购计划池。
+check("① 需求科室 = 科室门户 + 项目管理器 + 采购需求编制",
+      DEMAND_SET == {"dept-portal", "project-monitor"} | DEMAND_KEYS,
+      f"{sorted(DEMAND_SET)}")
+check("① 归口 = 需求科室 + 采购计划池（只多这一个）",
+      MANAGE_SET == DEMAND_SET | {"procurement-plan"},
       f"多出 {sorted(MANAGE_SET - DEMAND_SET)}")
 check("① 监督 = 归口 + 开标管理 + 授权函",
       SUPER_SET == MANAGE_SET | {"bid", "auth-letter"}, f"多出 {sorted(SUPER_SET - MANAGE_SET)}")
 for name, ks in (("需求科室", DEMAND_SET), ("归口科室", MANAGE_SET), ("监督", SUPER_SET)):
     check(f"① {name}没有归档权限", "archive" not in ks)
     check(f"① {name}没有合同/结果确认权限", not ({"contract", "procurement-result"} & ks))
-check("① 需求科室没有采购需求编制", not (DEMAND_SET & DEMAND_KEYS))
+check("① 需求科室有采购需求编制（全院科室都能提需求）", DEMAND_KEYS <= DEMAND_SET)
+check("① 需求科室没有采购计划池（那是归口科室的年度台账）",
+      "procurement-plan" not in DEMAND_SET)
 
 # ── 库里真的落到位了吗 ─────────────────────────────────────────────
 print("\n── 库里的权限表 ──")
@@ -97,12 +102,13 @@ for role, want, label in (("dept_demand", DEMAND_SET, "需求科室"),
                        ("/api/procurement-results", "采购结果")):
         r = c.get(path)
         check(f"③ {label} 进不了{name}", r.status_code in (401, 403), f"HTTP {r.status_code}")
+    r = c.get("/api/procurement-demands")
+    check(f"③ {label} 能进采购需求编制", r.status_code == 200, f"HTTP {r.status_code}")
+    r = c.get("/api/procurement-plans")
     if role == "dept_demand":
-        r = c.get("/api/procurement-demands")
-        check("③ 需求科室进不了采购需求编制", r.status_code in (401, 403), f"HTTP {r.status_code}")
+        check("③ 需求科室进不了采购计划池", r.status_code in (401, 403), f"HTTP {r.status_code}")
     else:
-        r = c.get("/api/procurement-demands")
-        check(f"③ {label} 能进采购需求编制", r.status_code == 200, f"HTTP {r.status_code}")
+        check(f"③ {label} 能进采购计划池", r.status_code == 200, f"HTTP {r.status_code}")
 
 print(f"\n通过 {ok} 项" + (f"，失败 {len(bad)}：{bad}" if bad else "，全部通过"))
 sys.exit(1 if bad else 0)

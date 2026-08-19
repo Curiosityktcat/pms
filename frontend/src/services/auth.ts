@@ -10,6 +10,8 @@ export interface UserInfo {
   dept_name: string
   perms: string[]
   is_admin: boolean
+  /** 1 = 用的还是发下来的一次性密码，必须先改掉才能用系统 */
+  must_change_pw?: number
 }
 
 export const authLogin = (username: string, password: string, captchaToken?: string) =>

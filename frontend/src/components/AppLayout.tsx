@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Layout, Menu, Dropdown, Space, Button, Tooltip, Grid, Drawer } from 'antd'
+import { Layout, Menu, Dropdown, Space, Button, Tooltip, Grid, Drawer, Card, Alert } from 'antd'
 import { HomeOutlined, BookOutlined, MenuOutlined, ProfileOutlined }from '@ant-design/icons'
 import {
   FolderOpenOutlined,
@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import ChpwdPage from '../pages/ChpwdPage'
 import { useTheme } from '../hooks/useTheme'
 import { authLogout } from '../services/auth'
 import AiGuideButton from './AiGuideButton'
@@ -48,6 +49,9 @@ const DevLabel = ({ label }: { label: string }) => (
 
 export default function AppLayout() {
   const { user, setUser } = useAuth()
+  // 一次性密码没改之前，后端会把所有业务接口挡成 403。
+  // 这里必须挡在前面提示改密，否则人登录进去只看到满屏「无权」，莫名其妙。
+  const mustChangePw = !!user?.must_change_pw
   const { mode: themeMode, setMode: setThemeMode } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
@@ -701,6 +705,24 @@ export default function AppLayout() {
 
   // 分流页全屏展示，不带侧边栏；选择功能点进去后，侧栏按工作区自动出现
   const isPortal = activeKey === 'portal'
+
+  // 没改一次性密码就把整个界面挡住，只留改密这一件事可做。
+  // 不能只做成提示：后端已经把业务接口全挡了，让人点进去撞一鼻子灰更糟。
+  if (mustChangePw) {
+    return (
+      <Layout style={{ minHeight: '100vh', display: 'flex',
+                       alignItems: 'center', justifyContent: 'center',
+                       background: 'var(--pms-bg, #f6f8fa)' }}>
+        <Card style={{ width: 460, maxWidth: '92vw' }}
+          title={<span style={{ fontWeight: 700 }}>请先修改密码</span>}>
+          <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+            message="你现在用的是发下来的一次性密码"
+            description="为了安全，一次性密码只能用来登录这一次。改好密码后就能正常使用系统。" />
+          <ChpwdPage embedded onDone={() => user && setUser({ ...user, must_change_pw: 0 })} />
+        </Card>
+      </Layout>
+    )
+  }
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

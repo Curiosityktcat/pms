@@ -276,6 +276,33 @@ def roles():
     ]})
 
 
+def _dept_display(dept):
+    """显示名 = 科室名-负责人（黄新博 2026-08-19 要的「科室与人员对应」）。
+
+    审批记录里只写「医学装备部提交了需求」是追不到人的，得带上负责人姓名。
+    负责人没填就退回科室名，不留个难看的尾巴。
+    """
+    head = (getattr(dept, "head_name", "") or "").strip()
+    return f"{dept.name}-{head}" if head else dept.name
+
+
+def _dept_username(dept, taken):
+    """登录名用科室名；被别的账号占了才加「-科室」后缀。
+
+    「审计科」这个名字被监督岗的账号占过，当时只好手工改成「审计科-科室」。
+    科室名和岗位名重名是常事，把规则写死在这儿，别每次绕。
+    """
+    name = dept.name
+    if name not in taken:
+        return name
+    cand = f"{name}-科室"
+    i = 2
+    while cand in taken:
+        cand = f"{name}-科室{i}"
+        i += 1
+    return cand
+
+
 @bp.route("/bulk-dept-accounts", methods=["POST"])
 @admin_required
 def bulk_dept_accounts():
@@ -289,24 +316,35 @@ def bulk_dept_accounts():
         db.select(Dept).filter_by(active=1).order_by(Dept.sort_no, Dept.id)
     ).scalars().all()
     pending = [dept for dept in depts if dept.code not in bound_codes]
-    preview = [{"username": dept.name, "display_name": dept.name,
-                "role": _dept_role(dept), "dept_code": dept.code,
-                "dept_type": dept.dept_type or ""} for dept in pending]
+    _taken = set(db.session.execute(db.select(User.username)).scalars())
+    preview = []
+    for dept in pending:
+        uname = _dept_username(dept, _taken)
+        _taken.add(uname)          # 同一批里也不能互相撞
+        preview.append({"username": uname, "display_name": _dept_display(dept),
+                        "role": _dept_role(dept), "dept_code": dept.code,
+                        "dept_type": dept.dept_type or "",
+                        "head_name": (getattr(dept, "head_name", "") or "").strip()})
     if dry_run:
         return jsonify({"ok": True, "dry_run": True, "created": [], "pending": preview,
                         "created_count": 0, "pending_count": len(preview)})
 
+    # 重名不再让整批建号失败——一个「审计科」就能卡住其余 58 个。
+    # 撞了就加「-科室」后缀，规则在 _dept_username 里。
     existing_names = set(db.session.execute(db.select(User.username)).scalars())
-    conflicts = [dept.name for dept in pending if dept.name in existing_names]
-    if conflicts:
-        return _error(f"以下科室名已被其它账号占用：{'、'.join(conflicts)}")
 
     created = []
     for dept in pending:
+        uname = _dept_username(dept, existing_names)
+        existing_names.add(uname)
         password = _password()
         salt = secrets.token_hex(16)
-        user = User(username=dept.name, display_name=dept.name, role=_dept_role(dept), active=1,
+        user = User(username=uname, display_name=_dept_display(dept),
+                    role=_dept_role(dept), active=1,
                     dept_code=dept.code, agency_code="", salt=salt, pw_hash=hash_pw(password, salt))
+        # 一次性密码是要写在纸上发下去的，本人首次登录必须改掉
+        if hasattr(user, "must_change_pw"):
+            user.must_change_pw = 1
         db.session.add(user)
         db.session.flush()
         _seed_role_if_empty(user.role)
@@ -315,7 +353,9 @@ def bulk_dept_accounts():
                                 "dept_code": dept.code})
         created.append({"username": user.username, "display_name": user.display_name,
                         "role": user.role, "dept_code": user.dept_code,
-                        "dept_type": dept.dept_type or "", "password": password})
+                        "dept_type": dept.dept_type or "",
+                        "head_name": (getattr(dept, "head_name", "") or "").strip(),
+                        "password": password})
     db.session.commit()
     return jsonify({"ok": True, "dry_run": False, "created": created, "pending": [],
                     "created_count": len(created), "pending_count": 0})
