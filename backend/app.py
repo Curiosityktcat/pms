@@ -245,6 +245,19 @@ def create_app():
     # 前端菜单的摆设。他的范围同样是被限定的，必须一起纳进来按权限判。
     _SCOPED_ROLES = ("supervisor",)
 
+    # 405 说明这个进程比代码老——后端没重启，新路由还没注册。
+    # 2026-08-20 就吃过一次：改完只重建了前端，1574 还是昨天的进程，
+    # 用户点发送拿到 405，界面上只显示「没发出去」，查了半天。
+    @app.errorhandler(405)
+    def _method_not_allowed(e):
+        from flask import request as _rq, jsonify as _js
+        return _js({
+            "ok": False,
+            "error": f"这个接口不接受 {_rq.method}（{_rq.path}）。"
+                     "多半是后端没重启、新接口还没生效——找管理员重启一下服务。",
+            "stale_process": True,
+        }), 405
+
     # 一次性密码没改之前，除了登录/登出/改密本身，业务接口一律挡住。
     # 不挡的话「强制首改」就只是前端一个弹窗，绕过去太容易——而这些密码是
     # 写在纸上发给 59 个科室的，必须真的用一次就作废。

@@ -146,8 +146,22 @@ export default function DemandAgentChat(
       const r = await sendChat(demandId, myText, myFiles)
       setMsgs(m => [...m, r.data.data.user, r.data.data.agent])
     } catch (e: unknown) {
-      const m = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
-      message.error(m || '没发出去')
+      // 把后端说的原话显示出来。原来一律显示「没发出去」——
+      // 2026-08-20 后端没重启导致 405 时，界面上只有这四个字，看不出是什么问题。
+      const err = e as {
+        response?: { status?: number; data?: { error?: string } }
+        message?: string
+      }
+      const detail = err?.response?.data?.error
+      const status = err?.response?.status
+      message.error({
+        content: detail
+          || (status === 413 ? '文件太大了，传不上去'
+            : status === 401 ? '登录过期了，刷新页面重新登录'
+            : status ? `没发出去（HTTP ${status}）`
+            : `没发出去：${err?.message || '网络不通'}`),
+        duration: 6,
+      })
       setText(myText); setFiles(myFiles)
     } finally { setBusy(false) }
   }
