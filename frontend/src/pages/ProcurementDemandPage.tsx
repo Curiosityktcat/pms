@@ -29,7 +29,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   listDemands, createDemand, updateDemand, deleteDemand,
   submitDemand, recallDemand, dispatchDemand, returnDemand,
-  getPrefillForProject, getAgencies, demandWordUrl,
+  getPrefillForProject, getAgencies, demandWordUrl, checkDemand,
   demandAttachmentUrl, uploadAttachment,
   demandTemplateUrl, importExcel,
   type ProcurementDemand, type DemandItem, type DemandStatus, type DemandType,
@@ -173,7 +173,7 @@ function makeDefault(dt: DemandType | ''): Partial<ProcurementDemand> {
 }
 
 export default function ProcurementDemandPage() {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const { user } = useAuth()
   const navigate = useNavigate()
   const { type } = useParams<{ type?: string }>()
@@ -299,6 +299,22 @@ export default function ProcurementDemandPage() {
     setDrawerOpen(true)
   }
 
+  /** 保存后提醒一句还缺什么。**不拦保存**——填一半存着是常态；
+   *  真正拦的是提交（黄新博 2026-08-20：「缺件后可以保存但是无法提交就行」）。 */
+  const hintMissing = (id?: number | null) => {
+    if (!id) return
+    checkDemand(id).then(r => {
+      const miss = r.data.data.missing || []
+      if (miss.length) {
+        message.warning({
+          content: `还差 ${miss.length} 项必填：${miss.slice(0, 4).join('、')}`
+            + (miss.length > 4 ? ' 等' : '') + '。可以继续存着，提交前补齐就行',
+          duration: 6,
+        })
+      }
+    }).catch(() => { /* 查不到就算了，不打扰 */ })
+  }
+
   // ── 保存 ────────────────────────────────────────────────────────
   const handleSave = async () => {
     try { await form.validateFields() }
@@ -322,12 +338,14 @@ export default function ProcurementDemandPage() {
         await updateDemand(editingId, payload)
         message.success('保存成功')
         setDocReload(n => n + 1)   // 右边预览跟着重出，不用再点「重新出稿」
+        hintMissing(editingId)
         setDrawerOpen(false)
         load()
       } else {
         const res = await createDemand(payload)
         const newId = res.data.data.id
         message.success('新建成功')
+        hintMissing(newId)
         load()
         if (isEmergency) {
           // 紧急采购：留在抽屉，切换为编辑状态，供上传附件
@@ -360,7 +378,29 @@ export default function ProcurementDemandPage() {
   // ── 提交/撤回/分发/退回/立项/删除 ─────────────────────────────
   const handleSubmit = async (id: number) => {
     try { await submitDemand(id); message.success('已提交，等待采购部分发'); load() }
-    catch (e: any) { message.error(e.response?.data?.error || '操作失败') }
+    catch (e: any) {
+      // 缺件被拦时，一行 message 塞不下——列成弹窗，让人知道去补哪几项
+      const miss: string[] = e.response?.data?.missing || []
+      if (miss.length) {
+        modal.warning({
+          title: `还差 ${miss.length} 项必填，补齐了才能提交`,
+          width: 480,
+          content: (
+            <div style={{ maxHeight: 320, overflowY: 'auto', marginTop: 8 }}>
+              {miss.map((m, i) => (
+                <div key={i} style={{ fontSize: 13, lineHeight: 2 }}>· {m}</div>
+              ))}
+              <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 10 }}>
+                已经填的都存着了，补完这几项再点提交就行。
+              </div>
+            </div>
+          ),
+          okText: '知道了',
+        })
+        return
+      }
+      message.error(e.response?.data?.error || '操作失败')
+    }
   }
   const handleRecall = async (id: number) => {
     try { await recallDemand(id); message.success('已撤回为草稿'); load() }
@@ -1496,8 +1536,10 @@ export default function ProcurementDemandPage() {
 
           {/* 「隐藏」不是把整个右栏收掉，而是只收文件预览——
               Agent 操作区留下并占满，正好比原来更大。 */}
-          <div style={{ flex: previewSize > 0 ? `0 0 ${previewSize}%` : '0 0 300px',
-                        minWidth: 280, overflow: 'hidden' }}>
+          {/* 收起预览时右栏给 45%——那一档整栏都是 Agent 对话，300px 太窄，
+              一行塞不下几个字（黄新博 2026-08-20 提的）。 */}
+          <div style={{ flex: `0 0 ${previewSize > 0 ? previewSize : 45}%`,
+                        minWidth: 320, overflow: 'hidden' }}>
             <DemandDocPanel demandId={editingId ?? undefined}
               previewHidden={previewSize === 0} reloadToken={docReload}
               onApplied={async () => {

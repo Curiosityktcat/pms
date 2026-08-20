@@ -314,3 +314,8 @@ export const applyChat = (id: number, mid: number,
                           packages: Record<string, string>[]) =>
   api.post<{ ok: boolean; applied: string[]; skipped: string[]; message: string }>(
     `/procurement-demands/${id}/chat/${mid}/apply`, { fields, packages })
+
+/** 提交前自检：缺哪些必填项。保存后提示一下，别等点了提交才知道 */
+export const checkDemand = (id: number) =>
+  api.get<{ ok: boolean; data: { missing: string[]; can_submit: boolean; name_ok: boolean } }>(
+    `/procurement-demands/${id}/check`)

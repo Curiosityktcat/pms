@@ -1091,8 +1091,10 @@ export default function InternalBidDemandPage() {
 
           {/* 「隐藏」不是把整个右栏收掉，而是只收文件预览——
               Agent 操作区留下并占满，正好比原来更大。 */}
-          <div style={{ flex: previewSize > 0 ? `0 0 ${previewSize}%` : '0 0 300px',
-                        minWidth: 280, overflow: 'hidden' }}>
+          {/* 收起预览时右栏给 45%——那一档整栏都是 Agent 对话，300px 太窄，
+              一行塞不下几个字（黄新博 2026-08-20 提的）。 */}
+          <div style={{ flex: `0 0 ${previewSize > 0 ? previewSize : 45}%`,
+                        minWidth: 320, overflow: 'hidden' }}>
             <DemandDocPanel demandId={editingId ?? undefined} kind="internal-bid-demands"
               previewHidden={previewSize === 0} reloadToken={docReload}
               onApplied={async () => {

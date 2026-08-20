@@ -9,7 +9,7 @@
  * 右边点一下就能看到套打出来的成稿，不用下载下来再开 Word。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Card, Empty, Progress, Space, Spin, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Progress, Space, Spin, Tooltip, Typography } from 'antd'
 import {
   ReloadOutlined, DownloadOutlined, RobotOutlined,
   ColumnWidthOutlined, EyeInvisibleOutlined, FileWordOutlined,
@@ -58,9 +58,9 @@ export function PreviewSizeToggle(
 }
 
 export default function DemandDocPanel(
-  { demandId, kind = 'procurement-demands', onJumpField, previewHidden = false,
+  { demandId, kind = 'procurement-demands', previewHidden = false,
     reloadToken = 0, onApplied }:
-  { demandId?: number; kind?: DocKind; onJumpField?: (name: string) => void
+  { demandId?: number; kind?: DocKind
     /** Agent 采纳后回调，外面重新拉一遍表单（值已经写进库了） */
     onApplied?: () => void
     /** 外面每保存一次就 +1，预览跟着自动重出——
@@ -74,7 +74,9 @@ export default function DemandDocPanel(
   const [status, setStatus] = useState<DemandDocStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)   // 变一下就重新拉预览
-  const [agentOpen, setAgentOpen] = useState(false)
+  // 默认就摊开对话——黄新博 2026-08-20：「每次都得点让 agent 填后才会出现对话，
+  // 默认直接出现对话」。
+  const [agentOpen, setAgentOpen] = useState(true)
   const [err, setErr] = useState('')
 
   const load = useCallback(() => {
@@ -148,34 +150,16 @@ export default function DemandDocPanel(
               onApplied={() => { refresh(); onApplied?.() }} />
           </div>
         ) : loading && !status ? <Spin size="small" /> : status ? (
-          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-            <Space size={8} wrap>
-              <Text style={{ fontSize: 12 }}>信息完成度</Text>
-              <Progress percent={pct} size="small" style={{ width: 140 }}
-                status={pct === 100 ? 'success' : 'active'} />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                已填 {status.filled}/{status.total}
-              </Text>
-            </Space>
-            {status.missing.length > 0 && (
-              <div>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  还空着（成稿里会留白，可以先出稿看看版式）：
-                </Text>
-                <div style={{ maxHeight: previewHidden ? 320 : 78,
-                              overflowY: 'auto', marginTop: 4 }}>
-                  <Space size={[4, 4]} wrap>
-                    {status.missing.slice(0, 24).map(m => (
-                      <Tag key={m.name} style={{ cursor: onJumpField ? 'pointer' : 'default', marginInlineEnd: 0 }}
-                        onClick={() => onJumpField?.(m.name)}>
-                        {m.label || m.name}
-                      </Tag>
-                    ))}
-                    {status.missing.length > 24 && <Tag>…还有 {status.missing.length - 24} 项</Tag>}
-                  </Space>
-                </div>
-              </div>
-            )}
+          // 只留一条完成度。缺哪些字段不在这儿列了——
+          // 黄新博 2026-08-20：「不要那个缺哪些文件了，把缺件提醒直接在保存的时候提醒」。
+          // 现在保存后弹提示，提交时才真的拦。
+          <Space size={8} wrap>
+            <Text style={{ fontSize: 12 }}>信息完成度</Text>
+            <Progress percent={pct} size="small" style={{ width: 120 }}
+              status={pct === 100 ? 'success' : 'active'} />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              已填 {status.filled}/{status.total}
+            </Text>
           </Space>
         ) : <Text type="secondary" style={{ fontSize: 12 }}>{err || '—'}</Text>}
       </Card>

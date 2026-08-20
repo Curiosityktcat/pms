@@ -199,10 +199,57 @@ def submit_demand(did):
         return jsonify({"ok": False, "error": "只有草稿状态可以提交"}), 400
     if not (demand.project_name or "").strip():
         return jsonify({"ok": False, "error": "请先填写采购需求名称"}), 400
+
+    # 缺件在**提交**这一步拦，保存不拦（黄新博 2026-08-20：
+    # 「缺件后可以保存但是无法提交就行」）。填一半存着是常态，
+    # 发给采购部之前才必须齐全。
+    missing = _required_missing(demand)
+    if missing:
+        return jsonify({
+            "ok": False, "error": "这几项必须填了才能提交：" + "、".join(missing[:8])
+                                  + (f" 等 {len(missing)} 项" if len(missing) > 8 else ""),
+            "missing": missing,
+        }), 400
+
     demand.status = "待分发"
     demand.updated_at = _now()
     db.session.commit()
     return jsonify({"ok": True, "message": "已提交，等待采购部分发"})
+
+
+def _required_missing(demand):
+    """提交前查缺件：返回缺的字段名（中文），空表示齐了。
+
+    判据来自字段字典——哪些必填、哪些在当前条件下压根不出现，都由字典说了算，
+    这里不另写一套（写两套迟早对不上）。
+    """
+    from services import demand_doc, field_dict
+    fields = field_dict.load(demand_doc.dict_name_for(demand))
+    if not fields:
+        return []
+    project = db.session.get(Project, demand.project_id) if demand.project_id else None
+    ctx = demand_doc.build_context_for(demand, project)
+    errs = field_dict.validate(fields, ctx)
+    out = []
+    for e in errs:
+        if "必填" in e:
+            name = e.split("「", 1)[-1].split("」", 1)[0] if "「" in e else e
+            out.append(name)
+    return out
+
+
+@bp.route("/<int:did>/check", methods=["GET"])
+@login_required
+def check_demand(did):
+    """提交前自检：缺哪些。界面上保存后提示一下，别等点了提交才知道。"""
+    demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    missing = _required_missing(demand)
+    return jsonify({"ok": True, "data": {
+        "missing": missing, "can_submit": not missing,
+        "name_ok": bool((demand.project_name or "").strip()),
+    }})
 
 
 # ── 撤回（待分发 → 草稿） ────────────────────────────────────────
