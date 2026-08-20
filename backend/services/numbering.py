@@ -69,26 +69,43 @@ def decide(method, amount=None, is_unit_price=False, sole_use_agency=None):
     return True, "C"
 
 
-def gen_number(use_agency, agency_code=None, when=None):
-    """原子地递增序号并返回编号字符串。必须在 Flask 请求上下文中调用。"""
-    if use_agency and not agency_code:
-        raise ValueError("走代理机构的项目必须指定代理机构")
-    now = when or datetime.datetime.now()
-    ym = now.strftime("%y%m")
-    kind = "JX" if use_agency else "XJ"
+def _next_seq(kind, period):
+    """原子地取下一个流水号。period 是号段的周期键（月 %y%m 或日 %y%m%d）。"""
     db.session.execute(
         text("INSERT OR IGNORE INTO number_seq(kind, ym, seq) VALUES(:kind, :ym, 0)"),
-        {"kind": kind, "ym": ym},
+        {"kind": kind, "ym": period},
     )
     db.session.execute(
         text("UPDATE number_seq SET seq = seq + 1 WHERE kind = :kind AND ym = :ym"),
-        {"kind": kind, "ym": ym},
+        {"kind": kind, "ym": period},
     )
     row = db.session.execute(
         text("SELECT seq FROM number_seq WHERE kind = :kind AND ym = :ym"),
-        {"kind": kind, "ym": ym},
+        {"kind": kind, "ym": period},
     ).fetchone()
-    seq = row[0]
+    return row[0]
+
+
+def gen_number(use_agency, agency_code=None, when=None, method=None):
+    """原子地递增序号并返回编号字符串。必须在 Flask 请求上下文中调用。
+
+    三个号段：
+      走代理            NJYYJX-{机构}-{年月}{3位月流水}
+      单一来源不走代理   NJYYDYLY-{年}-{月日}{当日流水}   ← 对外公示用的号
+      其余不走代理      NJYYXJ-{年月}{3位月流水}
+    """
+    if use_agency and not agency_code:
+        raise ValueError("走代理机构的项目必须指定代理机构")
+    now = when or datetime.datetime.now()
+
+    # 单一来源不走代理：医院对外挂公示自成一段，按日编号（如 NJYYDYLY-26-08201）
+    if method == M_SOLE and not use_agency:
+        seq = _next_seq("DYLY", now.strftime("%y%m%d"))
+        return f"NJYYDYLY-{now.strftime('%y')}-{now.strftime('%m%d')}{seq}"
+
+    ym = now.strftime("%y%m")
+    kind = "JX" if use_agency else "XJ"
+    seq = _next_seq(kind, ym)
     if use_agency:
         return f"NJYYJX-{agency_code}-{ym}{seq:03d}"
     return f"NJYYXJ-{ym}{seq:03d}"

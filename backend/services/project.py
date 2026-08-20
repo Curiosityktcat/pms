@@ -172,7 +172,7 @@ def create_project(data, created_by, display_name):
     use_agency, line = decide(method, amount, is_unit_price, sole)
     if use_agency and not agency_code:
         raise ValueError("走代理机构的项目必须选择代理机构")
-    number = gen_number(use_agency, agency_code if use_agency else None)
+    number = gen_number(use_agency, agency_code if use_agency else None, method=method)
     p = Project(
         number=number, amount=(amount if amount else 0), line=line,
         agency_code=agency_code if use_agency else "",
@@ -299,7 +299,7 @@ def _submit_draft(p, data, now):
     use_agency, line = decide(method, amount, is_unit_price, sole)
     if use_agency and not agency_code:
         raise ValueError("走代理必须选代理机构")
-    number = gen_number(use_agency, agency_code if use_agency else None)
+    number = gen_number(use_agency, agency_code if use_agency else None, method=method)
     p.number = number
     p.name = name
     p.amount = amount if amount else 0

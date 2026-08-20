@@ -432,7 +432,8 @@ export default function ProjectFormPage() {
         {canChooseAgency && !isLocked && (
           <Form.Item label="是否走代理机构？" name="sole_use_agency" style={{ maxWidth: 320 }}>
             <Select options={[
-              { value: 'no', label: '不走代理（NJYYXJ）' },
+              // 单一来源不走代理自成号段（对外挂公示用的就是这个号）
+              { value: 'no',  label: methodVal === M_SOLE ? '不走代理（NJYYDYLY）' : '不走代理（NJYYXJ）' },
               { value: 'yes', label: '走代理（NJYYJX）' },
             ]} />
           </Form.Item>
