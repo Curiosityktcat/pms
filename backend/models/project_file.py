@@ -16,6 +16,7 @@ class ProjectFile(db.Model):
                            index=True, nullable=False)
     original_name = db.Column(db.String(300), default="")   # 上传时的原名，界面显示这个
     saved_name = db.Column(db.String(200), default="")      # 存盘名，带随机串防同名覆盖
+    folder = db.Column(db.String(200), default="")          # 项目文件夹内的相对子目录
     size = db.Column(db.Integer, default=0)
     uploaded_by = db.Column(db.String(50), default="")
     uploaded_at = db.Column(db.String(30), default="")

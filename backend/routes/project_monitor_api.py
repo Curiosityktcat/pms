@@ -399,7 +399,7 @@ FILE_WRITE_ROLES = ("officer", "assistant", "leader", "admin")
 MONITOR_UPLOAD_DIR = os.path.join(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
     "uploads", "project_files")
-ALLOWED_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+ALLOWED_EXT = {".pdf", ".doc", ".docx", ".wps", ".xls", ".xlsx", ".ppt", ".pptx",
                ".jpg", ".jpeg", ".png", ".gif", ".zip", ".rar", ".txt", ".csv"}
 MAX_UPLOAD_MB = 100
 
@@ -424,11 +424,15 @@ def project_files(pid):
         folders = []
         print(f"[项目资料] 项目 {pid} 归档树读取失败：{e}", flush=True)
 
-    extra = []
+    extra_groups = {}
     for row in db.session.execute(
             db.select(ProjectFile).filter_by(project_id=pid)
             .order_by(ProjectFile.id.desc())).scalars():
-        extra.append({
+        # 历史资料保留了原目录层级，几千个文件塞进一个组没法看；
+        # folder 为空的仍归到原来那个组名，界面上老文件位置不变。
+        folder = (row.folder or "").strip()
+        group_name = folder or "补充材料（在项目管理器里传的）"
+        extra_groups.setdefault(group_name, []).append({
             "id": row.id,
             "name": row.original_name or row.saved_name or "",
             "size": row.size or 0,
@@ -438,8 +442,12 @@ def project_files(pid):
             "preview_url": f"/api/project-monitor/projects/{pid}/files/{row.id}",
             "can_delete": _can_write_files(),
         })
-    if extra:
-        folders = list(folders) + [{"folder": "补充材料（在项目管理器里传的）", "items": extra}]
+    if extra_groups:
+        # 按组名排序，免得展示顺序随文件 id 变来变去
+        folders = list(folders) + [
+            {"folder": name, "items": extra_groups[name]}
+            for name in sorted(extra_groups)
+        ]
 
     total = sum(len(f.get("items") or []) for f in folders)
     return jsonify({"ok": True, "data": folders, "total": total,
@@ -478,7 +486,8 @@ def upload_project_file(pid):
         with open(os.path.join(MONITOR_UPLOAD_DIR, str(pid), saved_name), "wb") as fh:
             fh.write(blob)
         row = ProjectFile(project_id=pid, original_name=name, saved_name=saved_name,
-                          size=len(blob), uploaded_by=session.get("display_name", ""),
+                          folder="", size=len(blob),
+                          uploaded_by=session.get("display_name", ""),
                           uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"))
         db.session.add(row)
         saved.append(name)

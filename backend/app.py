@@ -652,6 +652,21 @@ def create_app():
                     ))
             _conn2.commit()
 
+        # 项目管理器补传表原来没有目录层级；只补列不回填，存量文件按根目录展示，
+        # 这样既保留旧行为，也让历史资料导入后能按原文件夹分组。
+        try:
+            with db.engine.connect() as _conn_pf:
+                _existing_pf = {row[1] for row in _conn_pf.execute(
+                    _text2("PRAGMA table_info(project_files)")
+                )}
+                if "folder" not in _existing_pf:
+                    _conn_pf.execute(_text2(
+                        "ALTER TABLE project_files ADD COLUMN folder TEXT DEFAULT ''"
+                    ))
+                    _conn_pf.commit()
+        except Exception as _e:                              # noqa: BLE001
+            print("[项目资料] project_files.folder 迁移失败：", _e, flush=True)
+
         # Agent 对话表补列（表建过之后再加的字段，SQLite 不会自动迁移）
         try:
             from sqlalchemy import text as _text_chat
