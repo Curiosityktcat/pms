@@ -13,10 +13,35 @@ M_SOLE   = "院内单一来源采购"
 M_JINGJI = "医用耗材紧急采购"   # 不分金额、不走代理
 
 
+# 走不走代理由经办人选择的采购方式。两者的默认值相反：
+#   单一来源——院内自办是常态，不选 = 不走代理
+#   竞选——99% 的项目都委托代理机构，不选 = 走代理
+CHOICE_AGENCY_METHODS = (M_SOLE, M_JINGXUAN)
+
+
+def parse_agency_choice(method, raw):
+    """把表单值解析成 decide() 要的三态 use_agency 选择。
+
+    raw 取自 use_agency / sole_use_agency 字段（"yes" / "no" / 空）。
+    返回 True=走代理、False=不走代理、None=该方式不由用户选。
+    """
+    v = (raw or "").strip()
+    if method == M_SOLE:
+        return v == "yes"        # 默认不走代理
+    if method == M_JINGXUAN:
+        return v != "no"         # 默认走代理
+    return None
+
+
 def decide(method, amount=None, is_unit_price=False, sole_use_agency=None):
-    """返回 (use_agency: bool, line: 'A'/'B'/'C')"""
-    # 单一来源、紧急采购是人工明确选定的采购方式，走不走代理由方式本身决定，
-    # 不能被「招单价」翻成走代理——否则「单一来源+不走代理」会被要求选代理机构而立不了项。
+    """返回 (use_agency: bool, line: 'A'/'B'/'C')
+
+    sole_use_agency 是「是否走代理」的选择（历史字段名，现在竞选也用它）：
+    True=走代理、False=不走代理、None=没给（按该方式的默认值）。
+    """
+    # 单一来源、紧急采购、竞选是人工明确选定的采购方式，走不走代理由方式本身
+    # （或用户的选择）决定，不能被「招单价」翻成走代理——否则「单一来源+不走
+    # 代理」会被要求选代理机构而立不了项。
     if method == M_SOLE:
         if sole_use_agency:
             return True, "C"
@@ -25,9 +50,10 @@ def decide(method, amount=None, is_unit_price=False, sole_use_agency=None):
         return False, "B"
     if method == M_JINGJI:
         return False, "A"   # 不分金额、不走代理，线 A
-    if is_unit_price:
-        return True, "C"
     if method == M_JINGXUAN:
+        # 没给选择时按老口径走代理；明确选了不走代理才院内自办，线 B
+        return (True, "C") if (sole_use_agency is None or sole_use_agency) else (False, "B")
+    if is_unit_price:
         return True, "C"
     if method == M_YIJIA:
         return False, "A"

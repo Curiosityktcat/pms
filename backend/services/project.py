@@ -3,7 +3,7 @@ from sqlalchemy import text
 from models import db
 from models.project import Project
 from models.agency import Agency
-from services.numbering import decide, gen_number, M_SOLE, M_JINGJI
+from services.numbering import decide, gen_number, parse_agency_choice, M_SOLE, M_JINGJI
 from services import project_number as pnum
 
 STATUSES = ["立项", "委托代理", "编制中", "审核中", "已发公告", "报名中", "开标", "已定标", "合同签订", "已归档"]
@@ -168,8 +168,7 @@ def create_project(data, created_by, display_name):
     amount = _parse_amount(amount_raw, is_unit_price)
     if not is_unit_price and amount is None:
         raise ValueError("请填写金额或勾选招单价")
-    sole_use_agency = data.get("sole_use_agency", "")
-    sole = (sole_use_agency == "yes") if method == M_SOLE else None
+    sole = parse_agency_choice(method, data.get("use_agency") or data.get("sole_use_agency", ""))
     use_agency, line = decide(method, amount, is_unit_price, sole)
     if use_agency and not agency_code:
         raise ValueError("走代理机构的项目必须选择代理机构")
@@ -293,11 +292,10 @@ def _submit_draft(p, data, now):
     is_unit_price = bool(data.get("is_unit_price", False))
     amount_raw = data.get("amount", "")
     agency_code = (data.get("agency_code") or "").strip()
-    sole_use_agency = data.get("sole_use_agency", "")
     amount = _parse_amount(amount_raw, is_unit_price)
     if not is_unit_price and amount is None:
         raise ValueError("请填写金额或勾选招单价")
-    sole = (sole_use_agency == "yes") if method == M_SOLE else None
+    sole = parse_agency_choice(method, data.get("use_agency") or data.get("sole_use_agency", ""))
     use_agency, line = decide(method, amount, is_unit_price, sole)
     if use_agency and not agency_code:
         raise ValueError("走代理必须选代理机构")

@@ -33,6 +33,19 @@ NODE_LABELS = {
 }
 AGENCY_NODES = ["demand_confirm", "doc_upload", "doc_confirm",
                 "announce", "bid_open", "result", "contract"]
+# 不挂采购公告的方式：单一来源直接邀请供应商谈判，没有挂网公告这一步
+# （它有自己的「单一来源公示」，ann_type='single_source'，不是采购公告）。
+NO_ANNOUNCE_METHODS = ("院内单一来源采购",)
+
+
+def nodes_for(method, has_announcement=False):
+    """该方式的节点集。单一来源默认不含 announce；但历史上真挂过采购公告的
+    项目仍然把这个节点显示出来，免得已有记录在进展图里凭空消失。"""
+    if method not in AGENCY_TRACK_METHODS:
+        return list(SIMPLE_NODES)
+    if method in NO_ANNOUNCE_METHODS and not has_announcement:
+        return [k for k in AGENCY_NODES if k != "announce"]
+    return list(AGENCY_NODES)
 # 非代理轨道（其它精简流程）的节点集
 SIMPLE_NODES = ["demand_confirm", "doc_confirm", "result", "contract"]
 
@@ -66,8 +79,6 @@ def build_progress(project):
     method = project.method or ""
     if method in INQUIRY_TRACK_METHODS:
         return _build_inquiry_progress(project)
-    node_keys = AGENCY_NODES if method in AGENCY_TRACK_METHODS else SIMPLE_NODES
-
     rounds = db.session.execute(
         db.select(ProcurementRound).filter_by(project_id=pid)
         .order_by(ProcurementRound.round_number.asc())
@@ -80,6 +91,7 @@ def build_progress(project):
     anns = db.session.execute(
         db.select(Announcement).filter_by(project_id=pid, ann_type="procurement")
     ).scalars().all()
+    node_keys = nodes_for(method, has_announcement=bool(anns))
     results = db.session.execute(
         db.select(ProcurementResult).filter_by(project_id=pid)
     ).scalars().all()
@@ -117,8 +129,12 @@ def build_progress(project):
             elif key == "doc_upload":
                 files = doc_files(rn)
                 first = files[0] if files else {}
-                nodes.append(_node(key, bool(files),
-                                   first.get("at", ""), first.get("by", ""), files=files))
+                n = _node(key, bool(files),
+                          first.get("at", ""), first.get("by", ""), files=files)
+                # 不走代理的项目没有代理机构，文件由经办人自己传，别叫「代理机构上传」
+                if (project.line or "") != "C":
+                    n["label"] = "采购文件上传"
+                nodes.append(n)
             elif key == "doc_confirm":
                 nodes.append(_node(key, rnd.doc_confirmed,
                                    rnd.doc_confirmed_at, rnd.doc_confirmed_by))
@@ -295,18 +311,21 @@ def _inquiry_stage_map(inquiry_ids):
     return out
 
 
-def _stage_for(p, rnd, rn, ann_ok, res_ok):
+def _stage_for(p, rnd, rn, ann_ok, res_ok, ann_any=()):
     """单项目当前轮的阶段判定（轻量，供列表批量派生用）。
 
     与 build_progress 的节点完成判定一致；doc_upload 不单独成阶段（并入 5.2 文件确认）。
     """
-    agency = (p.method or "") in AGENCY_TRACK_METHODS
+    method = p.method or ""
+    agency = method in AGENCY_TRACK_METHODS
+    # 单一来源不挂采购公告，除非这个项目历史上真的挂过一份
+    needs_ann = method not in NO_ANNOUNCE_METHODS or (p.id, rn) in ann_any
     if not rnd.demand_confirmed:
         return "demand_confirm"
     if not rnd.doc_confirmed:
         return "doc_confirm"
     if agency:
-        if (p.id, rn) not in ann_ok:
+        if needs_ann and (p.id, rn) not in ann_ok:
             return "announce"
         if rnd.can_open_status != "已确认":
             return "bid_open"
@@ -348,12 +367,13 @@ def stage_map(project_ids):
             can_open_status=row.can_open_status, can_open=row.can_open)
 
     # 状态过滤下推到 SQL：原来是全量拉出来再在 Python 里 if
-    ann_ok = {(r.project_id, r.round_number or 1) for r in db.session.execute(
-        db.select(Announcement.project_id, Announcement.round_number).where(
+    ann_rows = db.session.execute(
+        db.select(Announcement.project_id, Announcement.round_number, Announcement.status).where(
             Announcement.project_id.in_(ids),
-            Announcement.ann_type == "procurement",
-            Announcement.status == "已确认")
-    ).all()}
+            Announcement.ann_type == "procurement")
+    ).all()
+    ann_ok = {(r.project_id, r.round_number or 1) for r in ann_rows if r.status == "已确认"}
+    ann_any = {(r.project_id, r.round_number or 1) for r in ann_rows}
 
     res_ok = {(r.project_id, r.round_number or 1) for r in db.session.execute(
         db.select(ProcurementResult.project_id, ProcurementResult.round_number).where(
@@ -392,7 +412,7 @@ def stage_map(project_ids):
         rn = rnd.round_number or 1
         out[pid] = {
             "current_round": rn,
-            "current_stage": _stage_for(p, rnd, rn, ann_ok, res_ok),
+            "current_stage": _stage_for(p, rnd, rn, ann_ok, res_ok, ann_any),
             "pending_contract": pending.get(pid, 0),
         }
     return out

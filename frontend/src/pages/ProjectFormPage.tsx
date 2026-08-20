@@ -47,7 +47,7 @@ const M_JINGJI = '医用耗材紧急采购'
 const METHOD_HINT: Record<string, string> = {
   [M_YIJIA]:   '2万以下的货物/工程/服务',
   [M_XUNJIA]:  '2万(含)～5万',
-  [M_JINGXUAN]:'5万(含)以上，需指派代理机构',
+  [M_JINGXUAN]:'5万(含)以上；一般委托代理机构，也可不走代理（下方选择）',
   [M_SOLE]:    '需专家论证+公示；可走可不走代理（下方选择）',
   [M_JINGJI]:  '医用耗材紧急采购，不分金额，不走代理机构',
 }
@@ -90,10 +90,12 @@ export default function ProjectFormPage() {
   const isUnitPrice = Form.useWatch('is_unit_price', form)
   const soleUseAgency = Form.useWatch('sole_use_agency', form)
 
-  // 紧急采购永不走代理；竞选必须走代理；单一来源看用户选择
+  // 紧急采购永不走代理；竞选默认走代理（99% 委托代理），单一来源默认不走。
+  // 两者都能在下拉里改，字段沿用 sole_use_agency（后端也认这个名字）。
   const needsAgency =
-    methodVal === M_JINGXUAN ||
+    (methodVal === M_JINGXUAN && soleUseAgency !== 'no') ||
     (methodVal === M_SOLE && soleUseAgency === 'yes')
+  const canChooseAgency = methodVal === M_JINGXUAN || methodVal === M_SOLE
   // 紧急采购：金额变化不改变采购方式
   const isJingji = methodVal === M_JINGJI
 
@@ -212,7 +214,7 @@ export default function ProjectFormPage() {
           amount: (p.amount && p.amount > 0) ? p.amount : null,
           is_unit_price: !p.amount || p.amount === 0,
           method: p.method,
-          sole_use_agency: 'no',
+          sole_use_agency: p.line === 'C' ? 'yes' : 'no',
           agency_code: p.agency_code,
           demand_dept: p.demand_dept,
           manage_dept: p.manage_dept,
@@ -247,6 +249,7 @@ export default function ProjectFormPage() {
     if (checked) {
       form.setFieldValue('amount', null)
       form.setFieldValue('method', M_JINGXUAN)
+      form.setFieldValue('sole_use_agency', 'yes')
     } else {
       form.setFieldValue('method', autoMethod(form.getFieldValue('amount'), false))
     }
@@ -403,7 +406,11 @@ export default function ProjectFormPage() {
           <Form.Item label="采购方式（按金额自动，可手动改为单一来源或紧急采购）" name="method" style={{ flex: 1 }}>
             <Select
               disabled={isLocked}
-              onChange={() => {}}
+              onChange={(m: string) => {
+                // 每种方式的默认走代理口径不同：竞选默认走、单一来源默认不走
+                if (m === M_JINGXUAN) form.setFieldValue('sole_use_agency', 'yes')
+                else if (m === M_SOLE) form.setFieldValue('sole_use_agency', 'no')
+              }}
               options={[
                 { value: M_YIJIA,   label: M_YIJIA },
                 { value: M_XUNJIA,  label: M_XUNJIA },
@@ -422,8 +429,8 @@ export default function ProjectFormPage() {
           )}
         </div>
 
-        {methodVal === M_SOLE && !isLocked && (
-          <Form.Item label="单一来源：是否走代理机构？" name="sole_use_agency" style={{ maxWidth: 320 }}>
+        {canChooseAgency && !isLocked && (
+          <Form.Item label="是否走代理机构？" name="sole_use_agency" style={{ maxWidth: 320 }}>
             <Select options={[
               { value: 'no', label: '不走代理（NJYYXJ）' },
               { value: 'yes', label: '走代理（NJYYJX）' },

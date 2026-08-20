@@ -31,8 +31,12 @@ ANN_TYPE_CN = {
     "single_source": "单一来源公示",
 }
 
-# 仅以下采购方式的项目需要挂采购公告（院内竞选 / 院内单一来源采购）
+# 可以编制采购公告的采购方式。单一来源保留在内是为了兼容历史数据（早期
+# 有项目挂过采购公告），但它不再进「待编公告」待办——单一来源不挂网，
+# 直接邀请供应商谈判，它需要的是「单一来源公示」(ann_type='single_source')。
 ANNOUNCEMENT_METHODS = ("院内竞选", "院内单一来源采购")
+# 真正会被系统催着挂采购公告的方式
+ANNOUNCEMENT_REQUIRED_METHODS = ("院内竞选",)
 
 ALLOWED_EXTS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx",
@@ -926,7 +930,7 @@ def eligible_projects():
             .where(db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)))
             .where(db.or_(Project.is_draft == 0, Project.is_draft.is_(None)))
             .where(Project.agency_code != "")
-            .where(Project.method.in_(ANNOUNCEMENT_METHODS))
+            .where(Project.method.in_(ANNOUNCEMENT_REQUIRED_METHODS))
             .where(Project.doc_confirmed == 1)
             .where(~db.exists().where(db.and_(
                 Announcement.project_id == Project.id,
