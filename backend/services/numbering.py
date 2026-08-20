@@ -15,6 +15,16 @@ M_JINGJI = "医用耗材紧急采购"   # 不分金额、不走代理
 
 def decide(method, amount=None, is_unit_price=False, sole_use_agency=None):
     """返回 (use_agency: bool, line: 'A'/'B'/'C')"""
+    # 单一来源、紧急采购是人工明确选定的采购方式，走不走代理由方式本身决定，
+    # 不能被「招单价」翻成走代理——否则「单一来源+不走代理」会被要求选代理机构而立不了项。
+    if method == M_SOLE:
+        if sole_use_agency:
+            return True, "C"
+        if not is_unit_price and amount is not None and amount < 20000:
+            return False, "A"
+        return False, "B"
+    if method == M_JINGJI:
+        return False, "A"   # 不分金额、不走代理，线 A
     if is_unit_price:
         return True, "C"
     if method == M_JINGXUAN:
@@ -22,14 +32,6 @@ def decide(method, amount=None, is_unit_price=False, sole_use_agency=None):
     if method == M_YIJIA:
         return False, "A"
     if method == M_XUNJIA:
-        return False, "B"
-    if method == M_JINGJI:
-        return False, "A"   # 不分金额、不走代理，线 A
-    if method == M_SOLE:
-        if sole_use_agency:
-            return True, "C"
-        if amount is not None and amount < 20000:
-            return False, "A"
         return False, "B"
     # 兜底按金额
     if amount is None:
