@@ -21,6 +21,10 @@ bp = Blueprint("user_admin", __name__, url_prefix="/api/admin/users")
 ROLES = ["assistant", "pd_assistant", "leader", "officer", "supervisor", "agency", "dept_manage", "dept_demand"]
 ROLE_LABELS = {**ROLE_CN, "pd_assistant": "项目分发助理"}
 DEPT_ROLES = ("dept", "dept_manage", "dept_demand")
+# 可以绑科室的角色。监督岗（审计科/纪委）除了监督全院，本身也是一个归口科室，
+# 绑上科室后「我的科室项目」才有默认视角；监督的可见范围与 dept_code 无关
+# （list_projects 里监督走 else 分支看全院），所以绑定只是补身份、不收窄。
+DEPT_BOUND_ROLES = DEPT_ROLES + ("supervisor",)
 
 
 def _dept_role(dept):
@@ -52,6 +56,12 @@ def _password(length=12):
 def _validate_binding(role, dept_code, agency_code):
     if role not in ROLES:
         return "未知角色"
+    if role == "supervisor" and dept_code:
+        # 监督绑科室是可选的，且不校验「该科室应使用X角色」——监督不是按
+        # 科室类型推出来的角色，审计科和纪委都是行后科室。
+        dept = db.session.execute(db.select(Dept).filter_by(code=dept_code, active=1)).scalar_one_or_none()
+        if not dept:
+            return "所选科室不存在或已停用"
     if role in DEPT_ROLES:
         if not dept_code:
             return "科室账号必须选择所属科室"
@@ -148,7 +158,7 @@ def create_user():
     username = (data.get("username") or "").strip()
     display_name = (data.get("display_name") or "").strip()
     role = (data.get("role") or "").strip()
-    dept_code = (data.get("dept_code") or "").strip().upper() if role in DEPT_ROLES else ""
+    dept_code = (data.get("dept_code") or "").strip().upper() if role in DEPT_BOUND_ROLES else ""
     agency_code = (data.get("agency_code") or "").strip().upper() if role == "agency" else ""
     if not username or not display_name:
         return _error("用户名和姓名不能为空")
@@ -183,7 +193,7 @@ def update_user(user_id):
     data = request.get_json(force=True) or {}
     role = (data.get("role", user.role) or "").strip()
     display_name = (data.get("display_name", user.display_name) or "").strip()
-    dept_code = (data.get("dept_code", user.dept_code) or "").strip().upper() if role in DEPT_ROLES else ""
+    dept_code = (data.get("dept_code", user.dept_code) or "").strip().upper() if role in DEPT_BOUND_ROLES else ""
     agency_code = (data.get("agency_code", user.agency_code) or "").strip().upper() if role == "agency" else ""
     active = 1 if data.get("active", user.active) in (1, True, "1") else 0
     if not display_name:

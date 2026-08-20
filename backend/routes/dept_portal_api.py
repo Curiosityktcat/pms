@@ -50,7 +50,10 @@ def _current_dept_code():
     if role in ("dept", "dept_manage", "dept_demand"):
         return session.get("dept_code", "") or ""
     if role in _OVERSEER_ROLES or _is_admin():
-        return (request.args.get("dept") or "").strip()
+        # 监督岗自己也是一个归口科室（审计科/纪委）。没指定看哪个科室时，
+        # 回落到它绑定的那个，否则「我的科室项目」进去是空的。
+        # 助理/负责人的 dept_code 为空，回落等价于原来的行为。
+        return (request.args.get("dept") or "").strip() or session.get("dept_code", "") or ""
     return ""
 
 
