@@ -61,3 +61,6 @@ laws_export.json
 
 # 科室门户账号明文密码，只留在服务器本地（600），绝不入库
 data/dept_accounts.txt
+# 科室账号明文密码与数据库备份，绝不入库
+data/dept_accounts*.txt
+pms.db.bak_*
