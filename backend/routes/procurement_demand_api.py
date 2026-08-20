@@ -519,6 +519,56 @@ AGENT_UPLOAD_DIR = os.path.join(
 AGENT_EXT = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".txt"}
 
 
+def _agent_facts(did):
+    """只读当前政府采购需求的事实；scope 已由调用接口先校验。"""
+    from models.demand_agent_fact import DemandAgentFact as F
+    return db.session.execute(
+        db.select(F).filter_by(demand_id=did, demand_kind="gov").order_by(F.id)
+    ).scalars().all()
+
+
+def _save_agent_facts(did, updates, message_id, created_by):
+    """落本轮新事实。经办人确认是最高优先级，模型和文档都不能覆盖。"""
+    from models.demand_agent_fact import DemandAgentFact as F
+    saved = []
+    for item in updates or []:
+        key = str(item.get("key") or "").strip()
+        source = str(item.get("source") or "model")
+        if not key or source not in ("user", "model", "document"):
+            continue
+        row = db.session.execute(db.select(F).filter_by(
+            demand_id=did, demand_kind="gov", key=key)).scalar_one_or_none()
+        if row and row.source == "user" and source != "user":
+            continue
+        if row is None:
+            row = F(demand_id=did, demand_kind="gov", key=key)
+            db.session.add(row)
+        row.value = json.dumps(item.get("value"), ensure_ascii=False)
+        row.source = source
+        evidence = str(item.get("evidence") or "")
+        if source == "user" and evidence == "经办人本轮回答":
+            evidence = f"经办人 {_now()[:10]} 回答"
+        elif source == "user" and evidence == "经办人本轮选择":
+            evidence = f"经办人 {_now()[:10]} 选择"
+        elif source == "user" and evidence.startswith("经办人本轮采纳 agent 建议："):
+            evidence = evidence.replace("经办人本轮", f"经办人 {_now()[:10]}", 1)
+        row.evidence = evidence[:500]
+        row.message_id = message_id
+        row.created_by = created_by if source == "user" else source
+        row.created_at = _now()
+        saved.append(row)
+    return saved
+
+
+def _chat_history_rows(rows):
+    """给编排器的历史保留问题和附件名，模型才能把自由文本答案对回事实 key。"""
+    return [{"role": m.role, "text": m.text,
+             "material": getattr(m, "material", "") or "",
+             "files": m.to_dict().get("files") or [],
+             "suggestions": m.to_dict().get("suggestions") or {}}
+            for m in rows]
+
+
 @bp.route("/<int:did>/chat", methods=["GET"])
 @login_required
 def demand_chat_history(did):
@@ -530,7 +580,8 @@ def demand_chat_history(did):
     rows = db.session.execute(
         db.select(M).filter_by(demand_id=did, demand_kind="gov").order_by(M.id)
     ).scalars().all()
-    return jsonify({"ok": True, "data": [m.to_dict() for m in rows]})
+    return jsonify({"ok": True, "data": [m.to_dict() for m in rows],
+                    "facts": [f.to_dict() for f in _agent_facts(did)]})
 
 
 @bp.route("/<int:did>/chat", methods=["POST"])
@@ -589,8 +640,8 @@ def demand_chat_send(did):
     rows = db.session.execute(
         db.select(M).filter_by(demand_id=did, demand_kind="gov").order_by(M.id)
     ).scalars().all()
-    history = [{"role": m.role, "text": m.text,
-                "material": getattr(m, "material", "") or ""} for m in rows[:-1]]
+    history = _chat_history_rows(rows[:-1])
+    facts = [f.to_dict() for f in _agent_facts(did)]
 
     project = db.session.get(Project, demand.project_id) if demand.project_id else None
     ctx = demand_doc.build_context_for(demand, project)
@@ -604,6 +655,7 @@ def demand_chat_send(did):
     try:
         out = demand_agent.converse(
             history, text, material=material, locked_names=locked,
+            facts=facts, filenames=[name for name, _path in paths],
             usage_ctx={"username": session.get("user", ""),
                        "display_name": me, "feature": "采购需求Agent对话"})
     except Exception as e:                                   # noqa: BLE001
@@ -614,20 +666,218 @@ def demand_chat_send(did):
         db.session.add(amsg)
         db.session.commit()
         return jsonify({"ok": True, "data": {"user": umsg.to_dict(),
-                                             "agent": amsg.to_dict()}})
+                                             "agent": amsg.to_dict()},
+                        "facts": [f.to_dict() for f in _agent_facts(did)]})
 
     sug = None
-    if out.get("fields") or out.get("packages"):
+    if out.get("fields") or out.get("packages") or out.get("questions"):
         sug = {"fields": out["fields"], "packages": out["packages"],
-               "notes": out.get("notes") or []}
+               "notes": out.get("notes") or [],
+               "questions": out.get("questions") or []}
     amsg = M(demand_id=did, demand_kind="gov", role="agent",
              text=out.get("say") or "",
              suggestions_json=json.dumps(sug, ensure_ascii=False) if sug else "",
              created_by="agent", created_at=_now())
     db.session.add(amsg)
+    db.session.flush()
+    _save_agent_facts(did, out.get("facts"), umsg.id, me)
     db.session.commit()
     return jsonify({"ok": True, "data": {"user": umsg.to_dict(),
-                                         "agent": amsg.to_dict()}})
+                                         "agent": amsg.to_dict()},
+                    "facts": [f.to_dict() for f in _agent_facts(did)]})
+
+
+@bp.route("/<int:did>/facts/<int:fid>", methods=["DELETE"])
+@login_required
+def demand_agent_fact_revoke(did, fid):
+    """撤销一项事实并只重算必须重算的部分；历史消息保留。"""
+    from models.demand_agent_fact import DemandAgentFact as F
+    from models.demand_chat import DemandChatMessage as M
+    from services import demand_agent, demand_agent_steps as steps
+    _demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    fact = db.session.get(F, fid)
+    if not fact or fact.demand_id != did or fact.demand_kind != "gov":
+        return jsonify({"ok": False, "error": "这项确认不存在"}), 404
+    revoked_key = fact.key
+    db.session.delete(fact)
+    db.session.flush()
+    rows = db.session.execute(
+        db.select(M).filter_by(demand_id=did, demand_kind="gov").order_by(M.id)
+    ).scalars().all()
+
+    def question(key, ask, why, kind="text", options=None, **extra):
+        # 撤销后的问题仍走对话编排器的统一结构，
+        # 否则前端的建议、置信度和选项标记会缺字段。
+        return demand_agent._question(  # noqa: SLF001
+            key, ask, why, kind, options, **extra)
+
+    def fixed_question(key):
+        """确定口径直接返回既有问题模板，不再请模型重新理解资料。"""
+        if key.startswith("material_kind:"):
+            filename = key.split(":", 1)[1] or "这份资料"
+            return question(
+                key, f"“{filename}”主要是什么资料？",
+                "撤销原确认后要重新确定处理步骤，否则可能把内容填进错误位置",
+                "choice", [
+                    {"label": "技术参数", "value": "technical"},
+                    {"label": "商务要求", "value": "business"},
+                    {"label": "评审办法/分值", "value": "scoring"},
+                    {"label": "项目基本信息", "value": "basic"},
+                    {"label": "其他", "value": "other"},
+                ])
+        if key == "total_score":
+            return question(
+                key, "本项目技术分总分是多少？",
+                "总分决定一般条款和▲条款各自分到多少分，不能沿用别的项目", "number",
+                suggestion=50,
+                suggestion_reason="这份资料原文没写技术分总分；同类项目常见按 50 分设置，"
+                                  "这是经验值，不是从本文件读出的结论。按 50 分可继续分值计算；"
+                                  "若项目采用其他总分，两类条款分值会随之变化。",
+                confidence="medium")
+        if key == "tri_ratio":
+            return question(
+                key, "▲条款与一般条款的分值怎么分配？请填写两类分值或▲占比。",
+                "原文没有明确比例时套默认权重会造成评分办法错误", "text",
+                suggestion=0.8,
+                suggestion_reason="这份资料原文没写▲条款占比；同类项目常见让▲条款占技术分的 80%，"
+                                  "这是经验值，不是原文结论。采用其他占比会直接改变一般条款和▲条款分值。",
+                confidence="medium")
+        if key == "count_rule":
+            item = steps.calculate([], count_rule_confirmed=False)["uncertain"][0]
+            item["suggestion"] = "leaf"
+            item["suggestion_reason"] = (
+                "这份资料原文没有检出完整计数规则；采购需求模板的通用口径是“无子项每条算 1 项、"
+                "有子项按最末级子项算 1 项”。按此口径可以继续计算；若本项目文件另有原话，"
+                "应改按原文复算。")
+            item["confidence"] = "medium"
+            item["options"][0]["suggested"] = True
+            return item
+        if key == "package_plan":
+            return question(
+                key, "这个项目分几个包，每个包对应资料的哪一段？",
+                "分包边界决定技术、商务要求和预算分别写入哪个采购包", "text",
+                suggestion_reason="现有资料没有同时读出明确包数、各包范围和金额，缺一项都可能串包，"
+                                  "因此不提供建议。", confidence="low")
+        if key == "price_deduct":
+            return question(
+                key, "价格扣除政策采用哪一项？",
+                "小微企业、监狱企业、残疾人福利单位的适用口径要写入采购政策，不能代选", "choice", [
+                    {"label": "小微企业", "value": "small_micro"},
+                    {"label": "监狱企业", "value": "prison"},
+                    {"label": "残疾人福利单位", "value": "disabled_welfare"},
+                ], suggestion_reason="这是采购政策选择，不是从资料内容能判断的事实，硬给建议会误导，"
+                                     "因此由经办人确认。", confidence="low")
+        return question(
+            key, f"请重新确认“{key}”。",
+            "这项确认已撤销，后续计算不能继续使用旧值")
+
+    def whole_question():
+        """先复用已保存的分类产物；真没有时才重跑顶层条款分类。"""
+        saved_question = None
+        artifact_rows, whole = None, None
+        for row in reversed(rows):
+            suggestions = row.to_dict().get("suggestions") or {}
+            for item in suggestions.get("questions") or []:
+                if item.get("key") == "whole_tops" and saved_question is None:
+                    saved_question = json.loads(json.dumps(item, ensure_ascii=False))
+            for root_name in ("steps", "artifacts"):
+                artifacts = suggestions.get(root_name) or {}
+                technical = artifacts.get("technical") or {}
+                for artifact in reversed(list(technical.values())):
+                    if artifact.get("B_whole_tops"):
+                        artifact_rows = artifact.get("A_clauses") or []
+                        whole = artifact["B_whole_tops"]
+                        break
+                if whole:
+                    break
+            if whole:
+                break
+        if whole is None and saved_question is not None:
+            # 旧消息可能是修复前生成的；撤销时顺手清掉
+            # “13 条和 13 条”这种无差异对比，不需要因此再调模型。
+            import re as _re
+            reason = str(saved_question.get("suggestion_reason") or "")
+            saved_question["suggestion_reason"] = _re.sub(
+                r"▲条款分别是\s*(\d+)\s*条和\s*\1\s*条。", "", reason)
+            return saved_question
+        if whole is None:
+            materials = []
+            for row in rows:
+                material = (getattr(row, "material", "") or "").strip()
+                if material and material not in materials:
+                    materials.append(material)
+            artifact_rows = steps.parse_clauses("\n\n".join(materials[-8:]))
+            whole = steps.classify_whole_tops(
+                artifact_rows,
+                usage_ctx={"username": session.get("user", ""),
+                           "display_name": session.get("display_name", ""),
+                           "feature": "采购需求Agent撤销事实-顶层条款复算"})
+
+        pending = json.loads(json.dumps(whole.get("uncertain") or [], ensure_ascii=False))
+        selected = whole.get("whole_tops") or []
+        if not pending:
+            pending = [question(
+                "whole_tops", "这些带子项的顶层条款中，有没有配置清单、货物明细或附件列表？",
+                "清单应整条计数，技术参数则按最末级子项计数，选错会改变条款总数")]
+        if selected and artifact_rows:
+            leaf_count = steps.calculate(artifact_rows, ())
+            whole_count = steps.calculate(artifact_rows, selected)
+            quotes = demand_agent._whole_top_quotes(artifact_rows, selected)  # noqa: SLF001
+            reason = ""
+            if quotes:
+                reason = "原文可核对：" + "、".join(f"“{x}”" for x in quotes) + "。"
+            model_reasons = [str((whole.get("reason") or {}).get(x) or "") for x in selected]
+            if any(model_reasons):
+                reason += "我的理解是" + "；".join(x for x in model_reasons if x) + "。"
+            if whole_count["general"] != leaf_count["general"]:
+                reason += (f"按配置清单整条计数，一般条款是 {whole_count['general']} 条；"
+                           f"按子项逐条计数，一般条款会变成 {leaf_count['general']} 条。")
+            if whole_count["tri"] != leaf_count["tri"]:
+                reason += (f"按配置清单整条计数，▲条款是 {whole_count['tri']} 条；"
+                           f"按子项逐条计数会变成 {leaf_count['tri']} 条。")
+            level = demand_agent._confidence_label(whole.get("confidence"))  # noqa: SLF001
+            for item in pending:
+                item["confidence"] = level
+                item["suggestion"] = "whole" if level != "low" else ""
+                item["suggestion_reason"] = reason
+                if item.get("options"):
+                    item["options"][0]["suggested"] = level != "low"
+        return pending[0]
+
+    try:
+        pending = whole_question() if revoked_key == "whole_tops" else fixed_question(revoked_key)
+        label = {
+            "whole_tops": "配置清单计数口径", "total_score": "技术分总分",
+            "tri_ratio": "▲条款分值占比", "count_rule": "条款计数规则",
+            "package_plan": "分包方案", "price_deduct": "价格扣除政策",
+        }.get(revoked_key, "资料类型" if revoked_key.startswith("material_kind:") else revoked_key)
+        sug = {"fields": {}, "packages": [], "notes": [], "questions": [pending]}
+        amsg = M(demand_id=did, demand_kind="gov", role="agent",
+                 text=f"已撤销『{label}』的确认，请重新确认下面的问题。",
+                 suggestions_json=json.dumps(sug, ensure_ascii=False),
+                 created_by="agent", created_at=_now())
+        db.session.add(amsg)
+        db.session.commit()
+    except Exception as e:                                   # noqa: BLE001
+        # 事实已经撤销就是成功；重算是后续动作，失败不能
+        # 把整个撤销报成红叉，但要留下明确的下一步。
+        label = {
+            "whole_tops": "配置清单计数口径", "total_score": "技术分总分",
+            "tri_ratio": "▲条款分值占比", "count_rule": "条款计数规则",
+            "package_plan": "分包方案", "price_deduct": "价格扣除政策",
+        }.get(revoked_key, "资料类型" if revoked_key.startswith("material_kind:") else revoked_key)
+        amsg = M(demand_id=did, demand_kind="gov", role="agent",
+                 text=f"已撤销『{label}』的确认。刚才重新核对时模型没响应，"
+                      "你再发一句话或重新传一次资料，我就重算。",
+                 created_by="agent", created_at=_now())
+        db.session.add(amsg)
+        db.session.commit()  # 同一次提交保存撤销结果和可操作的失败说明
+        return jsonify({"ok": True, "data": {"agent": amsg.to_dict()},
+                        "facts": [f.to_dict() for f in _agent_facts(did)]})
+    return jsonify({"ok": True, "data": {"agent": amsg.to_dict()},
+                    "facts": [f.to_dict() for f in _agent_facts(did)]})
 
 
 @bp.route("/<int:did>/chat/<int:mid>/apply", methods=["POST"])
@@ -701,11 +951,20 @@ def demand_agent_suggest(did):
         locked = [k for k, m in meta.items() if m.get("locked") or not m.get("visible", True)]
 
     try:
+        tri_ratio_raw = (request.form.get("tri_ratio") or "").strip()
+        total_score_raw = (request.form.get("total_score") or "").strip()
+        tri_ratio = float(tri_ratio_raw) if tri_ratio_raw else None
+        total_score = float(total_score_raw) if total_score_raw else None
+        if tri_ratio is not None and not 0 <= tri_ratio <= 1:
+            raise ValueError("▲分值比例应在 0 到 1 之间")
         out = demand_agent.suggest(
             material, instruction, locked_names=locked,
             usage_ctx={"username": session.get("user", ""),
                        "display_name": session.get("display_name", ""),
-                       "feature": "采购需求Agent填写"})
+                       "feature": "采购需求Agent填写"},
+            total_score=total_score, tri_ratio=tri_ratio)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": f"分值设置不正确：{e}"}), 400
     except Exception as e:                                   # noqa: BLE001
         return jsonify({"ok": False, "error": f"Agent 没跑成：{e}"[:300]}), 500
 
@@ -713,6 +972,87 @@ def demand_agent_suggest(did):
     out["failed"] = failed + rejected
     out["material_chars"] = len(material)
     return jsonify({"ok": True, "data": out})
+
+
+@bp.route("/<int:did>/agent/steps/<action>", methods=["POST"])
+@login_required
+def demand_agent_step(did, action):
+    """分步 Agent：A-F 每步均可独立查看、独立重跑，不直接写库。
+
+    JSON 输入可带 text、rows、whole_tops、total_score、tri_ratio。action 支持
+    clauses/whole-tops/count/technical-table/business/basic-info/all（也支持 A-F）。
+    """
+    from services import demand_agent_steps as steps
+    _demand, _serr = _scoped(did)
+    if _serr:
+        return _serr
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "")
+    rows = body.get("rows")
+    aliases = {
+        "a": "clauses", "b": "whole-tops", "c": "count",
+        "d": "technical-table", "e": "business", "f": "basic-info",
+    }
+    action = aliases.get(action.lower(), action.lower())
+    usage_ctx = {"username": session.get("user", ""),
+                 "display_name": session.get("display_name", ""),
+                 "feature": f"采购需求Agent分步-{action}"}
+    try:
+        if action == "clauses":
+            if not text.strip():
+                return jsonify({"ok": False, "error": "请提供技术参数原文 text"}), 400
+            artifact = steps.parse_clauses(text)
+        elif action == "whole-tops":
+            rows = rows or steps.parse_clauses(text)
+            if not rows:
+                return jsonify({"ok": False, "error": "请提供步骤 A 的 rows 或技术参数原文"}), 400
+            artifact = steps.classify_whole_tops(rows, usage_ctx=usage_ctx)
+        elif action == "count":
+            rows = rows or steps.parse_clauses(text)
+            if not rows:
+                return jsonify({"ok": False, "error": "请提供步骤 A 的 rows 或技术参数原文"}), 400
+            total_raw = body.get("total_score")
+            total_score = float(total_raw) if total_raw not in (None, "") else None
+            ratio = body.get("tri_ratio")
+            ratio = float(ratio) if ratio is not None and ratio != "" else None
+            explicit = steps.score_settings(text) if ratio is None and text else None
+            if explicit:
+                total_score, ratio = explicit["total_score"], explicit["tri_ratio"]
+            if ratio is not None and not 0 <= ratio <= 1:
+                raise ValueError("▲分值比例应在 0 到 1 之间")
+            artifact = steps.calculate(rows, body.get("whole_tops") or (),
+                                       total_score=total_score, tri_ratio=ratio)
+        elif action == "technical-table":
+            rows = rows or steps.parse_clauses(text)
+            if not rows:
+                return jsonify({"ok": False, "error": "请提供步骤 A 的 rows 或技术参数原文"}), 400
+            artifact = steps.technical_table(rows)
+        elif action == "business":
+            if not text.strip():
+                return jsonify({"ok": False, "error": "请提供商务相关原文 text"}), 400
+            artifact = steps.business_requirements(text, usage_ctx=usage_ctx)
+        elif action == "basic-info":
+            if not text.strip():
+                return jsonify({"ok": False, "error": "请提供相关信息原文 text"}), 400
+            artifact = steps.basic_information(text, usage_ctx=usage_ctx)
+        elif action == "all":
+            if not text.strip():
+                return jsonify({"ok": False, "error": "请提供资料原文 text"}), 400
+            total_raw = body.get("total_score")
+            total_score = float(total_raw) if total_raw not in (None, "") else None
+            ratio = body.get("tri_ratio")
+            ratio = float(ratio) if ratio is not None and ratio != "" else None
+            if ratio is not None and not 0 <= ratio <= 1:
+                raise ValueError("▲分值比例应在 0 到 1 之间")
+            artifact = steps.run(text, total_score=total_score, tri_ratio=ratio,
+                                 usage_ctx=usage_ctx)
+        else:
+            return jsonify({"ok": False, "error": "未知步骤；可用 A-F 或 all"}), 404
+    except ValueError as e:
+        return jsonify({"ok": False, "error": f"输入不正确：{e}"}), 400
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify({"ok": False, "error": f"步骤 {action} 没跑成：{e}"[:300]}), 500
+    return jsonify({"ok": True, "step": action, "data": artifact})
 
 
 def _apply_agent_values(demand, body):

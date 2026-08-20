@@ -64,3 +64,6 @@ data/dept_accounts.txt
 # 科室账号明文密码与数据库备份，绝不入库
 data/dept_accounts*.txt
 pms.db.bak_*
+
+# 数据库备份与部署前快照，含真实业务数据，绝不能进仓库
+backups/

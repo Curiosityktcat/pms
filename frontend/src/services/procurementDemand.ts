@@ -254,7 +254,28 @@ export const resolveFieldDict = (values: Record<string, unknown>) =>
   } }>('/procurement-demands/field-dict/resolve', { values })
 
 // ── 采购需求 Agent：读资料给建议，人点采纳才落库 ─────────────────
-export interface AgentSuggestion { value: string; evidence: string }
+export interface AgentSuggestion { value: string; evidence: string; pending?: boolean }
+export interface AgentQuestionOption { label: string; value: unknown; suggested?: boolean }
+export interface AgentQuestion {
+  key: string
+  ask: string
+  why: string
+  kind: 'choice' | 'text' | 'number'
+  options: AgentQuestionOption[]
+  suggestion: unknown
+  suggestion_reason: string
+  confidence: 'high' | 'medium' | 'low'
+}
+export interface AgentFact {
+  id: number
+  key: string
+  value: unknown
+  source: 'user' | 'model' | 'document'
+  evidence: string
+  message_id?: number | null
+  created_by: string
+  created_at: string
+}
 export interface AgentResult {
   fields: Record<string, AgentSuggestion>
   packages: Record<string, AgentSuggestion>[]
@@ -262,6 +283,7 @@ export interface AgentResult {
   read: string[]
   failed: string[]
   material_chars: number
+  questions?: AgentQuestion[]
 }
 
 export const agentSuggest = (id: number, files: File[], text: string, instruction: string) => {
@@ -285,6 +307,7 @@ export interface ChatSuggestions {
   fields: Record<string, AgentSuggestion>
   packages: Record<string, AgentSuggestion>[]
   notes: string[]
+  questions?: AgentQuestion[]
 }
 export interface ChatMessage {
   id: number
@@ -298,13 +321,18 @@ export interface ChatMessage {
 }
 
 export const getChat = (id: number) =>
-  api.get<{ ok: boolean; data: ChatMessage[] }>(`/procurement-demands/${id}/chat`)
+  api.get<{ ok: boolean; data: ChatMessage[]; facts: AgentFact[] }>(
+    `/procurement-demands/${id}/chat`)
 
 export const sendChat = (id: number, text: string, files: File[]) => {
   const fd = new FormData()
   if (text) fd.append('text', text)
   files.forEach(f => fd.append('file', f))
-  return api.post<{ ok: boolean; data: { user: ChatMessage; agent: ChatMessage } }>(
+  return api.post<{
+    ok: boolean
+    data: { user: ChatMessage; agent: ChatMessage }
+    facts: AgentFact[]
+  }>(
     `/procurement-demands/${id}/chat`, fd,
     { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })
 }
@@ -314,6 +342,13 @@ export const applyChat = (id: number, mid: number,
                           packages: Record<string, string>[]) =>
   api.post<{ ok: boolean; applied: string[]; skipped: string[]; message: string }>(
     `/procurement-demands/${id}/chat/${mid}/apply`, { fields, packages })
+
+export const revokeAgentFact = (id: number, factId: number) =>
+  api.delete<{
+    ok: boolean
+    data: { agent: ChatMessage }
+    facts: AgentFact[]
+  }>(`/procurement-demands/${id}/facts/${factId}`, { timeout: 300000 })
 
 /** 提交前自检：缺哪些必填项。保存后提示一下，别等点了提交才知道 */
 export const checkDemand = (id: number) =>

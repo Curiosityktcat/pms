@@ -89,6 +89,7 @@ def create_app():
     from models.project_file import ProjectFile                          # noqa: F401 建表用
     from models.demand_template import DemandTemplate                    # noqa: F401 建表用
     from models.demand_chat import DemandChatMessage                     # noqa: F401 建表用
+    from models.demand_agent_fact import DemandAgentFact                 # noqa: F401 建表用
     from routes.project_monitor_api import bp as project_monitor_bp       # 项目管理器（只读进度看板）
     from routes.web_announcement_api import bp as web_announcement_bp     # 官网公告存档（只读）
     from routes.doc_intake_attach_api import bp as doc_intake_attach_bp  # 归档资料自动挂载
