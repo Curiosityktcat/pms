@@ -27,6 +27,7 @@ NODE_LABELS = {
     "doc_upload":     "代理机构上传文件",
     "doc_confirm":    "采购文件确认",
     "announce":       "采购公告发布",
+    "bid_time":       "开标时间确认",
     "bid_open":       "开标标记",
     "result":         "采购结果确认",
     "contract":       "合同签订",
@@ -39,13 +40,25 @@ NO_ANNOUNCE_METHODS = ("院内单一来源采购",)
 
 
 def nodes_for(method, has_announcement=False):
-    """该方式的节点集。单一来源默认不含 announce；但历史上真挂过采购公告的
-    项目仍然把这个节点显示出来，免得已有记录在进展图里凭空消失。"""
+    """该方式的节点集。
+
+    单一来源不挂网，采购公告那一位换成「开标时间确认」——公告本来承载的就是
+    「什么时候开标」这个信息，不挂公告就得有个地方把时间定下来，否则开标标记
+    之前是空的。历史上真挂过采购公告的项目两个节点都显示，免得已有记录消失。
+    """
     if method not in AGENCY_TRACK_METHODS:
         return list(SIMPLE_NODES)
-    if method in NO_ANNOUNCE_METHODS and not has_announcement:
-        return [k for k in AGENCY_NODES if k != "announce"]
-    return list(AGENCY_NODES)
+    if method not in NO_ANNOUNCE_METHODS:
+        return list(AGENCY_NODES)
+    keys = []
+    for k in AGENCY_NODES:
+        if k == "announce":
+            if has_announcement:        # 老数据：公告和开标时间都列出来
+                keys.append(k)
+            keys.append("bid_time")
+        else:
+            keys.append(k)
+    return keys
 # 非代理轨道（其它精简流程）的节点集
 SIMPLE_NODES = ["demand_confirm", "doc_confirm", "result", "contract"]
 
@@ -143,6 +156,11 @@ def build_progress(project):
                 nodes.append(_node(key, bool(a and a.status == "已确认"),
                                    a.confirmed_at if a else "", a.confirmed_by if a else "",
                                    ann_status=(a.status if a else "")))
+            elif key == "bid_time":
+                # 开标时间填了就算确认——经办人在「项目编辑」里填这个字段
+                bt = (project.bid_time or "").strip()
+                nodes.append(_node(key, bool(bt), bt, project.officer or "",
+                                   bid_time=bt))
             elif key == "bid_open":
                 confirmed = rnd.can_open_status == "已确认"
                 nodes.append(_node(key, confirmed,
@@ -327,6 +345,8 @@ def _stage_for(p, rnd, rn, ann_ok, res_ok, ann_any=()):
     if agency:
         if needs_ann and (p.id, rn) not in ann_ok:
             return "announce"
+        if method in NO_ANNOUNCE_METHODS and not (getattr(p, "bid_time", "") or "").strip():
+            return "bid_time"
         if rnd.can_open_status != "已确认":
             return "bid_open"
         if rnd.can_open == "流标":
@@ -349,8 +369,9 @@ def stage_map(project_ids):
 
     # 只取用得上的列：_stage_for 只看 p.id / p.method，不需要整个 Project 实体
     from types import SimpleNamespace as _NS
-    projects = {row.id: _NS(id=row.id, method=row.method) for row in db.session.execute(
-        db.select(Project.id, Project.method).where(Project.id.in_(ids))
+    projects = {row.id: _NS(id=row.id, method=row.method, bid_time=row.bid_time)
+                for row in db.session.execute(
+        db.select(Project.id, Project.method, Project.bid_time).where(Project.id.in_(ids))
     ).all()}
 
     latest = {}
