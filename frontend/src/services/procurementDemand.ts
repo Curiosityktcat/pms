@@ -223,6 +223,47 @@ export const getDemandDocStatus = (id: number) =>
 export const demandDocUrl = (id: number, download = false) =>
   `/api/procurement-demands/${id}/doc${download ? '?download=1' : ''}`
 
+export interface DemandDocBlock {
+  kind: 'text' | 'field' | 'table'
+  label: string
+  field: string | null
+  field_path: string
+  class_name: string
+  value: unknown
+  editable: boolean
+  locked?: boolean
+  required: boolean
+  control?: 'text' | 'textarea' | 'select' | 'number' | 'table'
+  options?: string[]
+  maxlen?: number | null
+  save_key?: string | null
+  lock_reason?: string
+  hint?: string
+  header?: string[]
+  rows?: unknown[][]
+  // 标的表的列规范，由后端下发（key/中文键/表头/控件）。
+  // 前端按 key 读写，不要再按列下标——表头和下标差一格会让值整体串位。
+  columns?: { key: string; cn: string; label: string; control: string }[] | null
+  package_index?: number
+  package_field?: string
+  item_index?: number
+  item_name?: string
+}
+export interface DemandDocSection {
+  key: string
+  title: string
+  incomplete: boolean
+  blocks: DemandDocBlock[]
+}
+export interface DemandDocStructure {
+  sections: DemandDocSection[]
+  packages: Record<string, unknown>[]
+  field_path_format?: string
+}
+
+export const getDemandDocHtml = (id: number) =>
+  api.get<{ ok: boolean; data: DemandDocStructure }>(`/procurement-demands/${id}/doc-html`)
+
 // ── 字段字典：条件与联动都在后端，前端只负责照着渲染 ─────────────
 export interface DictOption { label: string; text?: string }
 export interface DictField {
