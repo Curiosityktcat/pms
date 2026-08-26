@@ -50,7 +50,9 @@ function getBidTimeStatus(bidTime: string): { color: string; tip: string } {
 }
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const WEEK_HEAD = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const VIEW_KEY = 'pms_bid_view'
+const SPAN_KEY = 'pms_bid_span'   // 日历跨度：month=本月（默认）| week=本周
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 
@@ -69,9 +71,22 @@ export default function BidManagePage() {
   const [view, setView] = useState<'list' | 'calendar'>(
     () => (localStorage.getItem(VIEW_KEY) === 'calendar' ? 'calendar' : 'list'),
   )
-  const [weekOffset, setWeekOffset] = useState(0)          // 0=本周，-1 上周，+1 下周
-  // 已开标页签独立记周次：已开标的项目基本都在过去，默认落在上一周更顺手
-  const [openedWeekOffset, setOpenedWeekOffset] = useState(-1)
+  // 日历跨度：默认本月，可切回本周。offset 的单位随跨度走（月视图=月，周视图=周）
+  const [span, setSpan] = useState<'week' | 'month'>(
+    () => (localStorage.getItem(SPAN_KEY) === 'week' ? 'week' : 'month'),
+  )
+  const [offset, setOffset] = useState(0)                  // 0=本月/本周，-1 上一个，+1 下一个
+  // 已开标页签独立记偏移：已开标的项目基本都在过去，周视图默认落在上一周更顺手
+  const [openedOffset, setOpenedOffset] = useState(
+    () => (localStorage.getItem(SPAN_KEY) === 'week' ? -1 : 0),
+  )
+  const switchSpan = (s: 'week' | 'month') => {
+    setSpan(s)
+    localStorage.setItem(SPAN_KEY, s)
+    // 单位变了，偏移必须归零，否则会跳到莫名其妙的日期
+    setOffset(0)
+    setOpenedOffset(s === 'week' ? -1 : 0)
+  }
   const [dayDetail, setDayDetail] = useState<BidProject | null>(null)  // 日历里点开的项目
   const switchView = (v: 'list' | 'calendar') => {
     setView(v)
@@ -257,71 +272,107 @@ export default function BidManagePage() {
   const activeByDay = useMemo(() => groupByDay(activeProjects), [activeProjects])
   const openedByDay = useMemo(() => groupByDay(openedProjects), [openedProjects])
 
-  // 某个 offset 对应那一周的周一
-  const weekStartOf = (offset: number) => {
-    const d = new Date()
-    d.setHours(0, 0, 0, 0)
-    const dow = d.getDay()                       // 0=周日
-    d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1) + offset * 7)
-    return d
+  // offset 对应要铺的那些日子：周视图=周一~周日 7 天；月视图=整月并补齐首尾整周
+  // month 返回当前月份（0-11），月视图里用来把补齐的上/下月日期画淡；周视图为 null
+  const rangeOf = (offset: number): { days: Date[]; title: string; month: number | null } => {
+    const base = new Date()
+    base.setHours(0, 0, 0, 0)
+    const fill = (start: Date, n: number) =>
+      Array.from({ length: n }, (_, i) => {
+        const d = new Date(start)
+        d.setDate(start.getDate() + i)
+        return d
+      })
+    if (span === 'week') {
+      const dow = base.getDay()                  // 0=周日
+      base.setDate(base.getDate() - (dow === 0 ? 6 : dow - 1) + offset * 7)
+      const days = fill(base, 7)
+      const title = `${days[0].getFullYear()}年${days[0].getMonth() + 1}月${days[0].getDate()}日`
+        + ` — ${days[6].getMonth() + 1}月${days[6].getDate()}日`
+      return { days, title, month: null }
+    }
+    const mStart = new Date(base.getFullYear(), base.getMonth() + offset, 1)
+    const dim = new Date(mStart.getFullYear(), mStart.getMonth() + 1, 0).getDate()
+    const lead = mStart.getDay() === 0 ? 6 : mStart.getDay() - 1   // 月初前面要补几天
+    const gridStart = new Date(mStart)
+    gridStart.setDate(1 - lead)
+    const days = fill(gridStart, Math.ceil((lead + dim) / 7) * 7)
+    return {
+      days,
+      title: `${mStart.getFullYear()}年${mStart.getMonth() + 1}月`,
+      month: mStart.getMonth(),
+    }
   }
-  const daysOf = (start: Date) =>
-    Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(start)
-      d.setDate(start.getDate() + i)
-      return d
-    })
 
   const todayKey = dayKey(new Date())
 
-  /** 周视图日历。待开标与已开标共用，只是数据源与文案不同。 */
+  /** 日历。跨度按 span 走（本月/本周），待开标与已开标共用，只是数据源与文案不同。 */
   const renderCalendar = (
     grouped: { map: Map<string, BidProject[]>; noTime: BidProject[] },
     offset: number,
     setOffset: (fn: (w: number) => number) => void,
-    resetOffset: () => void,
     opts: { withActions: boolean; emptyWord: string },
   ) => {
-    const weekStart = weekStartOf(offset)
-    const weekDays = daysOf(weekStart)
-    const keys = new Set(weekDays.map(dayKey))
+    const { days, title, month } = rangeOf(offset)
+    const unit = span === 'week' ? '周' : '月'
+    const thisWord = span === 'week' ? '本周' : '本月'
+    const keys = new Set(days.map(dayKey))
     let outsideCount = 0
     for (const [k, arr] of grouped.map) if (!keys.has(k)) outsideCount += arr.length
     return (
     <>
       <Space wrap style={{ marginBottom: 12 }}>
-        <Button icon={<LeftOutlined />} onClick={() => setOffset(w => w - 1)}>上一周</Button>
-        <Button onClick={resetOffset} type={offset === 0 ? 'primary' : 'default'}>本周</Button>
-        <Button onClick={() => setOffset(w => w + 1)}>下一周<RightOutlined /></Button>
-        <span style={{ fontWeight: 600, fontSize: 15, marginLeft: 6 }}>
-          {weekStart.getFullYear()}年{weekStart.getMonth() + 1}月{weekStart.getDate()}日
-          {' — '}
-          {weekDays[6].getMonth() + 1}月{weekDays[6].getDate()}日
-        </span>
+        <Button icon={<LeftOutlined />} onClick={() => setOffset(w => w - 1)}>
+          {span === 'week' ? '上一周' : '上个月'}
+        </Button>
+        <Button onClick={() => setOffset(() => 0)} type={offset === 0 ? 'primary' : 'default'}>
+          {thisWord}
+        </Button>
+        <Button onClick={() => setOffset(w => w + 1)}>
+          {span === 'week' ? '下一周' : '下个月'}<RightOutlined />
+        </Button>
+        <span style={{ fontWeight: 600, fontSize: 15, marginLeft: 6 }}>{title}</span>
         {outsideCount > 0 && (
-          <Tag color="orange">本周以外还有 {outsideCount} 个{opts.emptyWord}项目，可翻周查看</Tag>
+          <Tag color="orange">
+            {thisWord}以外还有 {outsideCount} 个{opts.emptyWord}项目，可翻{unit}查看
+          </Tag>
         )}
       </Space>
 
       <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
+        {/* 月视图有好几行，顶上补一排星期表头，不然认不出是哪一列 */}
+        {span === 'month' && !isMobile && (
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(7, minmax(150px, 1fr))',
+            gap: 8, minWidth: 1100, marginBottom: 6,
+          }}>
+            {WEEK_HEAD.map(w => (
+              <div key={w} style={{ textAlign: 'center', fontSize: 12, fontWeight: 600, color: '#5f6368' }}>
+                {w}
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{
           display: 'grid',
           gridTemplateColumns: isMobile ? '1fr' : 'repeat(7, minmax(150px, 1fr))',
           gap: 8,
           minWidth: isMobile ? undefined : 1100,
         }}>
-          {weekDays.map(d => {
+          {days.map(d => {
             const k = dayKey(d)
             const items = grouped.map.get(k) || []
             const isToday = k === todayKey
             const isWeekend = d.getDay() === 0 || d.getDay() === 6
+            const outMonth = month !== null && d.getMonth() !== month   // 月视图里补齐的上/下月日期
             if (isMobile && !items.length) return null      // 手机上不占地方
             return (
               <div key={k} style={{
                 border: isToday ? '2px solid #1a73e8' : '1px solid #d4d7dc',
                 borderRadius: 8,
-                background: isToday ? '#f0f6ff' : isWeekend ? '#fafafa' : '#fff',
-                minHeight: isMobile ? undefined : 150,
+                background: isToday ? '#f0f6ff' : outMonth ? '#f7f8f9' : isWeekend ? '#fafafa' : '#fff',
+                opacity: outMonth && items.length === 0 ? 0.55 : 1,
+                minHeight: isMobile ? undefined : span === 'month' ? 118 : 150,
                 display: 'flex', flexDirection: 'column',
               }}>
                 <div style={{
@@ -343,7 +394,11 @@ export default function BidManagePage() {
                     <span style={{ fontSize: 11, color: '#5f6368', fontWeight: 600 }}>{items.length}</span>
                   )}
                 </div>
-                <div style={{ padding: 6, display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                <div style={{
+                  padding: 6, display: 'flex', flexDirection: 'column', gap: 6, flex: 1,
+                  maxHeight: !isMobile && span === 'month' ? 280 : undefined,
+                  overflowY: !isMobile && span === 'month' ? 'auto' : undefined,
+                }}>
                   {items.length === 0
                     ? <div style={{ color: '#c0c4c9', fontSize: 12, textAlign: 'center', paddingTop: 16 }}>—</div>
                     : items.map(p => {
@@ -420,6 +475,16 @@ export default function BidManagePage() {
           { label: '日历', value: 'calendar', icon: <CalendarOutlined /> },
         ]}
       />
+      {view === 'calendar' && (
+        <Segmented
+          value={span}
+          onChange={v => switchSpan(v as 'week' | 'month')}
+          options={[
+            { label: '本月', value: 'month' },
+            { label: '本周', value: 'week' },
+          ]}
+        />
+      )}
       <Select
         allowClear showSearch placeholder="按经办人筛选" style={{ width: 170 }}
         value={officerFilter} onChange={setOfficerFilter} options={officerOptions}
@@ -459,12 +524,12 @@ export default function BidManagePage() {
                 <Alert
                   type="info" showIcon style={{ marginBottom: 16 }}
                   message={view === 'calendar'
-                    ? '日历模式：按开标日期分框，同一天的项目归在一个大框里，框头显示星期与日期，越早的日期排在越前面。'
+                    ? '日历模式：默认铺本月，可在上方切成本周；同一天的项目归在一个大框里，框头显示星期与日期。'
                     : '列表模式：按开标时间升序排列，越早开标的排在越前面。可开标单击即生效；标记后开标当天仍留在此处，开标时间过后次日移入「已开标」。流标需代理机构提交原因、经办人确认后才结束本轮并开启下一次采购。'}
                 />
                 {view === 'calendar'
-                  ? renderCalendar(activeByDay, weekOffset, setWeekOffset,
-                      () => setWeekOffset(0), { withActions: true, emptyWord: '待开标' })
+                  ? renderCalendar(activeByDay, offset, setOffset,
+                      { withActions: true, emptyWord: '待开标' })
                   : (
                     <RecordCards
                       dataSource={activeProjects}
@@ -484,12 +549,12 @@ export default function BidManagePage() {
                 <Alert
                   type="success" showIcon style={{ marginBottom: 16 }}
                   message={view === 'calendar'
-                    ? '日历模式：按已开标日期排周视图。已开标的多在过去，默认停在上一周，用「上一周」继续往回翻。'
+                    ? '日历模式：按已开标日期铺排，默认本月。已开标的多在过去，用「上个月／上一周」继续往回翻。'
                     : '已标记可开标且开标时间已过的项目（归档查看），按开标时间升序排列。'}
                 />
                 {view === 'calendar'
-                  ? renderCalendar(openedByDay, openedWeekOffset, setOpenedWeekOffset,
-                      () => setOpenedWeekOffset(-1), { withActions: false, emptyWord: '已开标' })
+                  ? renderCalendar(openedByDay, openedOffset, setOpenedOffset,
+                      { withActions: false, emptyWord: '已开标' })
                   : (
                     <RecordCards
                       dataSource={openedProjects}
