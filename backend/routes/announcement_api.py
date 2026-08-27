@@ -413,8 +413,11 @@ def create_announcement():
             return jsonify({"ok": False, "error": "仅院内竞选/单一来源采购项目需要编制采购公告"}), 400
         if not project.doc_confirmed:
             return jsonify({"ok": False, "error": "采购文件尚未经办人确认，无法编制采购公告"}), 400
+        # 轮次不由前端选：一律取项目当前轮次（第几次采购是流程算出来的，
+        # 手选只会选错——第六次时前端下拉里根本没有第六次）
+        target_round = int(project.round or 1)
+        data["round_number"] = target_round
         # 每轮只能发一次：本轮已存在采购公告则拒绝重复创建
-        target_round = int(data.get("round_number") or project.round or 1)
         dup = db.session.execute(
             db.select(Announcement.id).where(
                 Announcement.project_id == project.id,

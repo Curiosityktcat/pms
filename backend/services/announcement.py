@@ -14,7 +14,7 @@ TEMPLATE_PATH = os.path.join(
     "..", "..", "医院模板", "1.盖章文件", "采购公告.docx",
 )
 
-ROUND_CN = ["", "一", "二", "三", "四", "五"]
+ROUND_CN = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
 
 
 def _r(para, idx):
@@ -40,6 +40,12 @@ def _set_para(para, text):
     para.runs[0].text = text
     for r in para.runs[1:]:
         r.text = ""
+
+
+def _round_cn(n):
+    """第几次的中文数字。超出表就退回阿拉伯数字——原来 min() 截断，
+    第六次会被写成「（第五次）」印到公告上，是错的。"""
+    return ROUND_CN[n] if 0 < n < len(ROUND_CN) else str(n)
 
 
 _CN_DIGITS = "零一二三四五六七八九"
@@ -81,7 +87,7 @@ def generate(project, ann, agency_name):
     # 以体现这是第几次竞选（第一次不带后缀）。
     round_suffix = ""
     if ann.round_number and ann.round_number > 1:
-        cn = ROUND_CN[min(ann.round_number, len(ROUND_CN) - 1)]
+        cn = _round_cn(ann.round_number)
         round_suffix = f"（第{cn}次）"
     project_name_round = project_name + round_suffix
 
@@ -218,6 +224,6 @@ def generate(project, ann, agency_name):
 def get_filename(project, ann):
     suffix = ""
     if ann.round_number and ann.round_number > 1:
-        cn = ROUND_CN[min(ann.round_number, len(ROUND_CN) - 1)]
+        cn = _round_cn(ann.round_number)
         suffix = f"（第{cn}次）"
     return f"采购公告_{project.number}{suffix}.docx"

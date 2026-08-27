@@ -10,6 +10,7 @@ import { authLogin, authMe } from '../services/auth'
 import { getPublicAnnouncements } from '../services/announcement'
 import type { Announcement } from '../services/announcement'
 import { useAuth } from '../hooks/useAuth'
+import { cnOrdinal } from '../utils/ordinal'
 
 const { Text } = Typography
 
@@ -475,7 +476,7 @@ export default function LoginPage() {
                           </div>
                           {ann.round_number > 1 && (
                             <Tag color="orange" style={{ marginTop: 2, fontSize: 10, lineHeight: '16px' }}>
-                              第{'一二三四五'[ann.round_number - 1]}次
+                              第{cnOrdinal(ann.round_number)}次
                             </Tag>
                           )}
                         </div>

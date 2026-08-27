@@ -42,6 +42,7 @@ export interface Contract {
   project_name: string
   project_amount: number | null
   project_category: string
+  award_notice_ok?: boolean   // 本项目本轮中标通知书是否已上传（未传不许办合同）
 }
 
 export const listContracts = (projectId?: number) =>

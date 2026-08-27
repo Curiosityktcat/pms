@@ -88,6 +88,7 @@ def _enrich(c: Contract):
     d["project_name"] = p.name if p else ""
     d["project_amount"] = p.amount if p else None
     d["project_category"] = p.category if p else ""
+    d["award_notice_ok"] = (p is not None and _award_notice_missing(p, c.package_no or "1") is None)
     return d
 
 def _award_notice_uploaded(project_id, round_number) -> bool:
@@ -98,6 +99,40 @@ def _award_notice_uploaded(project_id, round_number) -> bool:
             project_id=project_id, kind="award_notice", round_number=round_number or 1
         )
     ).first() is not None
+
+
+def _award_notice_missing(project, package_no):
+    """中标通知书闸门：本项目有成交包却没传中标通知书 → 返回错误文案，否则 None。
+
+    原来只在「建合同」这一步、且只在包记录 status=='已中标' 时才拦，
+    于是通知书没传照样能一路传盖章合同、走到归档。中标通知书是签合同的
+    前置凭据，创建 / 上传盖章件 / 完成归档三步都要拦。
+    无包记录的旧数据仍放行（那批项目根本没走包流程）。
+    """
+    from models.package import Package
+    try:
+        pkg_no_int = int(package_no)
+    except (TypeError, ValueError):
+        pkg_no_int = None
+    pkg = None
+    if pkg_no_int is not None:
+        pkg = db.session.execute(
+            db.select(Package).filter_by(project_id=project.id, package_no=pkg_no_int)
+        ).scalar_one_or_none()
+    # 本项目是否已有成交包（全部废标就谈不上中标通知书）
+    won = db.session.execute(
+        db.select(Package.id).where(
+            Package.project_id == project.id,
+            Package.status.in_(("已中标", "已签约")),
+        )
+    ).first()
+    if not won:
+        return None
+    rnd = (pkg.won_round if pkg and pkg.won_round else (project.round or 1))
+    if _award_notice_uploaded(project.id, rnd):
+        return None
+    return (f"包{package_no}尚未上传中标通知书，请先在「9. 采购结果确认」"
+            f"上传中标通知书后再办理合同")
 
 
 def _validate_amount(amount, project):
@@ -160,9 +195,11 @@ def create_contract():
         ).scalar_one_or_none()
         if pkg and pkg.status == "进行中":
             return jsonify({"ok": False, "error": f"包{package_no}尚未中标，无法签订合同"}), 400
-        # 闸门：中标包须先上传中标通知书方可签合同（无包记录的旧数据放行）
-        if pkg and pkg.status == "已中标" and not _award_notice_uploaded(project_id, pkg.won_round or 1):
-            return jsonify({"ok": False, "error": f"包{package_no}尚未上传中标通知书，请先在「9. 采购结果确认」上传中标通知书后再签订合同"}), 400
+
+    # 闸门：中标通知书未上传不得签合同
+    _miss = _award_notice_missing(project, package_no)
+    if _miss:
+        return jsonify({"ok": False, "error": _miss}), 400
 
     # 合同编码规则：单包 = 项目编号-HT；多包 = 项目编号-包N-HT（采购部约定）
     _pkg_total = db.session.scalar(
@@ -254,6 +291,9 @@ def upload_file(cid):
     c, _project, err = _scoped(cid)
     if err:
         return err
+    _miss = _award_notice_missing(_project, c.package_no or "1")
+    if _miss:
+        return jsonify({"ok": False, "error": _miss}), 400
     # 同附件口：公网大文件走 OSS 中转
     f = request.files.get("file") or upload_relay.staged_file()
     if not f or not f.filename:
@@ -351,6 +391,18 @@ def submit_contract(cid):
     elif c.status == "审核完成":
         if not _can_confirm():
             return jsonify({"ok": False, "error": "仅项目经办人或负责人可完成合同归档"}), 403
+        # 归档前置：盖章合同、三个日期、中标通知书，缺一不可——
+        # 归档是这条链路的终点，日期空着归了档，后面查合同期限就没处找了
+        if not c.file_saved_name:
+            return jsonify({"ok": False, "error": "尚未上传盖章合同，无法归档"}), 400
+        _lack = [n for n, v in (("合同签订时间", c.sign_date),
+                                ("合同生效时间", c.service_start),
+                                ("合同有效期至", c.service_end)) if not (v or "").strip()]
+        if _lack:
+            return jsonify({"ok": False, "error": "请先在「编辑信息」里填写：" + "、".join(_lack)}), 400
+        _miss = _award_notice_missing(_project, c.package_no or "1")
+        if _miss:
+            return jsonify({"ok": False, "error": _miss}), 400
         c.status = "合同上传"
         msg = "盖章合同已上传，已完成归档"
     else:

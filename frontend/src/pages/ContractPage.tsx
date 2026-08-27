@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Button, Drawer, Form, Input, Select, Radio, InputNumber,
   Card, Space, Tag, Tabs, App, Typography, Row, Col, Upload, Tooltip,
-  Divider, Modal, Descriptions, Alert,
+  Modal, Descriptions, Alert,
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined,
@@ -585,9 +585,26 @@ export default function ContractPage() {
     try {
       await uploadContractFile(record.id, file)
       message.success('合同文件上传成功')
-      loadContracts()
-    } catch { message.error('上传失败') }
-    finally { setMainUploading(false) }
+      const res = await listContracts()
+      const rows = res.data.data || []
+      setContracts(rows)
+      // 抽屉里那份也要跟着刷新，否则刚传完还显示「未上传」、预览按钮不出来
+      setUploadContract(prev => (prev ? rows.find(x => x.id === prev.id) || prev : prev))
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '上传失败')
+    } finally { setMainUploading(false) }
+  }
+
+  // 归档前置：盖章件 + 三个日期 + 中标通知书，缺哪样说哪样（与后端闸门一致）
+  const finalizeBlockers = (r: Contract): string[] => {
+    const lack: string[] = []
+    if (!r.file_name) lack.push('盖章合同')
+    if (!(r.sign_date || '').trim()) lack.push('合同签订时间')
+    if (!(r.service_start || '').trim()) lack.push('合同生效时间')
+    if (!(r.service_end || '').trim()) lack.push('合同有效期至')
+    if (r.award_notice_ok === false) lack.push('中标通知书（在「9. 采购结果确认」上传）')
+    return lack
   }
 
   // ── 合同 → 卡片数据 ──────────────────────────────────────────
@@ -618,6 +635,12 @@ export default function ContractPage() {
           },
         ]
     fields.unshift({ label: '当前处理人', value: <PendingOwnerTag p={r.pending} compact /> })
+    if (r.award_notice_ok === false) {
+      fields.push({
+        label: '中标通知书',
+        value: <Tag color="red" style={{ marginInlineEnd: 0 }}>未上传，合同环节全部锁住</Tag>,
+      })
+    }
     // 推送审签的结果要看得见——否则推完不知道有没有成、到哪一步了
     fields.push({
       label: '审签推送',
@@ -661,10 +684,17 @@ export default function ContractPage() {
         <Button size="small" icon={<EditOutlined />} onClick={() => openUploadEdit(r)}>编辑信息</Button>
         <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" showUploadList={false}
           beforeUpload={file => { handleMainFileUpload(file, r); return false }}>
-          <Button size="small" icon={<UploadOutlined />} loading={mainUploading}>
+          <Button size="small" icon={<UploadOutlined />} loading={mainUploading}
+            disabled={r.award_notice_ok === false}>
             {r.file_name ? '重新上传盖章合同' : '上传盖章合同'}
           </Button>
         </Upload>
+        {r.file_name && (
+          <Button size="small" icon={<EyeOutlined />}
+            onClick={() => setDocPreview({ open: true, url: contractFilePreviewUrl(r.id), name: r.file_name })}>
+            预览盖章合同
+          </Button>
+        )}
         {canConfirm && r.status === '待审核' && (
           <>
             {/* 这个按钮是整条链路唯一会推 rd-web 的地方——代理提交不再自动推 */}
@@ -679,7 +709,13 @@ export default function ContractPage() {
         )}
         {canConfirm && r.status === '审核完成' && (
           <>
-            <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => handleFinalize(r)}>完成归档</Button>
+            <Tooltip title={finalizeBlockers(r).length
+              ? `还缺：${finalizeBlockers(r).join('、')}`
+              : '盖章合同与签订信息齐全，可以归档'}>
+              <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />}
+                disabled={finalizeBlockers(r).length > 0}
+                onClick={() => handleFinalize(r)}>完成归档</Button>
+            </Tooltip>
             <Tooltip title="合同内容有问题，退回合同草案并写明要改什么">
               <Button size="small" danger ghost icon={<StopOutlined />}
                 onClick={() => { setRejectRow(r); setRejectReason('') }}>驳回</Button>
@@ -932,32 +968,26 @@ export default function ContractPage() {
             <Form form={uploadForm} layout="vertical" initialValues={defaultUploadValues}>
 
               {/* ── 签订信息 ── */}
-              <Card title="签订信息" size="small" style={{ marginBottom: 16 }}>
+              {/* 三个日期都是归档的硬前置：不填齐不准归档（后端同样拦一道） */}
+              <Card title="签订信息" size="small" style={{ marginBottom: 16 }}
+                extra={<Text type="secondary" style={{ fontSize: 12 }}>三项填齐才能完成归档</Text>}>
                 <Row gutter={16}>
-                  <Col span={12}>
+                  <Col span={8}>
                     <Form.Item name="sign_date" label="合同签订时间" rules={[{ required: true, message: '请填写签订时间' }]}>
                       <Input placeholder="如：2026年5月30日" />
                     </Form.Item>
                   </Col>
+                  <Col span={8}>
+                    <Form.Item name="service_start" label="合同生效时间" rules={[{ required: true, message: '请填写生效时间' }]}>
+                      <Input placeholder="如：2026年6月1日" />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item name="service_end" label="合同有效期至" rules={[{ required: true, message: '请填写有效期' }]}>
+                      <Input placeholder="如：2027年5月31日" />
+                    </Form.Item>
+                  </Col>
                 </Row>
-                {uploadContract.project_category === '服务' && (
-                  <>
-                    <Divider style={{ margin: '4px 0 12px' }} />
-                    <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>服务期限</div>
-                    <Row gutter={16}>
-                      <Col span={12}>
-                        <Form.Item name="service_start" label="开始日期">
-                          <Input placeholder="如：2026年6月1日" />
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item name="service_end" label="结束日期">
-                          <Input placeholder="如：2027年5月31日" />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                  </>
-                )}
                 <Form.Item name="notes" label="备注">
                   <TextArea rows={2} placeholder="其他备注" />
                 </Form.Item>
@@ -966,9 +996,16 @@ export default function ContractPage() {
               {/* ── 正式合同文件 ── */}
               <Card title="正式合同文件" size="small" style={{ marginBottom: 16 }}>
                 {uploadContract.file_name ? (
-                  <Space>
+                  <Space wrap>
                     <FilePdfOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
                     <span style={{ fontSize: 13 }}>{uploadContract.file_name}</span>
+                    {/* 传完要看得见传对没有——原来只有下载和重新上传 */}
+                    <Button size="small" type="link" icon={<EyeOutlined />}
+                      onClick={() => setDocPreview({
+                        open: true,
+                        url: contractFilePreviewUrl(uploadContract.id),
+                        name: uploadContract.file_name,
+                      })}>预览</Button>
                     <Button size="small" type="link" icon={<DownloadOutlined />}
                       onClick={() => window.open(contractFileUrl(uploadContract.id), '_blank')}>下载</Button>
                     <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" showUploadList={false}
@@ -980,9 +1017,14 @@ export default function ContractPage() {
                   <Space direction="vertical" size={4}>
                     <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" showUploadList={false}
                       beforeUpload={file => { handleMainFileUpload(file, uploadContract); return false }}>
-                      <Button icon={<UploadOutlined />} loading={mainUploading}>上传正式合同文件</Button>
+                      <Button icon={<UploadOutlined />} loading={mainUploading}
+                        disabled={uploadContract.award_notice_ok === false}>上传正式合同文件</Button>
                     </Upload>
-                    <Text type="secondary" style={{ fontSize: 12 }}>支持 PDF、Word、Excel、图片</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {uploadContract.award_notice_ok === false
+                        ? '本项目尚未上传中标通知书，请先在「9. 采购结果确认」上传后再传合同'
+                        : '支持 PDF、Word、Excel、图片'}
+                    </Text>
                   </Space>
                 )}
               </Card>

@@ -72,10 +72,12 @@ def generate(result, project):
     pnumber = project.number if project else ""
 
     # 第二次及以后的竞选，项目名称后追加「（第二次）」等（与采购公告格式一致）
-    ROUND_CN = ["", "一", "二", "三", "四", "五"]
+    ROUND_CN = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
     round_label = ""
     if result.round_number and result.round_number > 1:
-        cn = ROUND_CN[min(result.round_number, len(ROUND_CN) - 1)]
+        _rn = result.round_number
+        # 超出表就用阿拉伯数字；原来 min() 截断，第六次会被写成「第五次」
+        cn = ROUND_CN[_rn] if _rn < len(ROUND_CN) else str(_rn)
         round_label = f"（第{cn}次）"
 
     try:

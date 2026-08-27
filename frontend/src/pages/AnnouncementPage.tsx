@@ -24,6 +24,8 @@ import {
   QUALIFICATIONS_DEFAULT,
 } from '../services/announcement'
 import type { Announcement, AnnProject, AnnAttachment } from '../services/announcement'
+import RoundDisplay from '../components/RoundDisplay'
+import { cnOrdinal } from '../utils/ordinal'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import {
   getTemplates, createTemplate, updateTemplate, deleteTemplate,
@@ -38,14 +40,6 @@ const { Text } = Typography
 
 // 待确认排最左并默认选中——经办人一进来就看到该自己处理的
 type AnnTab = 'toconfirm' | 'rejected' | 'draft' | 'published' | 'opened'
-
-const ROUND_OPTIONS = [
-  { value: 1, label: '第一次' },
-  { value: 2, label: '第二次' },
-  { value: 3, label: '第三次' },
-  { value: 4, label: '第四次' },
-  { value: 5, label: '第五次' },
-]
 
 const STATUS_COLOR: Record<string, string> = {
   草稿: 'default',
@@ -645,7 +639,7 @@ export default function AnnouncementPage() {
   const handleGenerate = async (ann: Announcement) => {
     try {
       const res = await generateAnnouncementWord(ann.id)
-      const suffix = ann.round_number > 1 ? `（第${'一二三四五'[ann.round_number - 1]}次）` : ''
+      const suffix = ann.round_number > 1 ? `（第${cnOrdinal(ann.round_number)}次）` : ''
       const blob = new Blob([res.data], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
@@ -668,7 +662,7 @@ export default function AnnouncementPage() {
 
   // ── 列定义（待挂网） ──────────────────────────────────────────
   const roundTag = (v: number) => v > 1
-    ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[v - 1]}次</Tag>
+    ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{cnOrdinal(v)}次</Tag>
     : <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>
 
   const annToCard = (record: Announcement): RecordCardData => {
@@ -966,6 +960,8 @@ export default function AnnouncementPage() {
               onChange={(id: number) => {
                 const p = projects.find(x => x.id === id) || null
                 setSelectedProject(p)
+                // 轮次跟着项目当前轮次自动带出，不再手选
+                form.setFieldValue('round_number', p?.round || 1)
               }}
               options={projects.map(p => ({ value: p.id, label: `${p.number}  ${p.name}` }))}
             />
@@ -978,8 +974,9 @@ export default function AnnouncementPage() {
             </Descriptions>
           )}
 
-          <Form.Item label="开标次数" name="round_number" style={{ width: 180 }}>
-            <Select options={ROUND_OPTIONS} />
+          <Form.Item label="开标次数" name="round_number" style={{ width: 200 }}
+            extra="按项目当前采购轮次自动带出，不需手选">
+            <RoundDisplay />
           </Form.Item>
 
           <Divider plain>招标内容</Divider>

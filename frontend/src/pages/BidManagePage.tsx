@@ -15,6 +15,7 @@ import PendingOwnerTag from '../components/PendingOwnerTag'
 import { useAuth } from '../hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
+import { cnOrdinal } from '../utils/ordinal'
 
 // 扩展 Project 类型，包含开标管理附加字段
 interface BidProject extends Project {
@@ -167,7 +168,7 @@ export default function BidManagePage() {
       statusColor: st.color,
       tags: !rn || rn === 1
         ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>
-        : <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[rn - 1]}次</Tag>,
+        : <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{cnOrdinal(rn)}次</Tag>,
       fields: [
         { label: '当前处理人', value: <PendingOwnerTag p={row.pending} compact /> },
         { label: '经办人', value: row.officer || '—' },

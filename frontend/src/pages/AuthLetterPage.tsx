@@ -22,18 +22,12 @@ import {
 import type { AuthLetterRecord } from '../services/authLetterRecord'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import RoundDisplay from '../components/RoundDisplay'
+import { cnOrdinal } from '../utils/ordinal'
 
 const { Text } = Typography
 
 type TabKey = 'pending' | 'done'
-
-const ROUND_OPTIONS = [
-  { value: 1, label: '第一次（正常）' },
-  { value: 2, label: '第二次' },
-  { value: 3, label: '第三次' },
-  { value: 4, label: '第四次' },
-  { value: 5, label: '第五次' },
-]
 
 function personLabel(p: Person) {
   const parts = [p.name]
@@ -203,7 +197,7 @@ export default function AuthLetterPage() {
         values.bid_time_override,
       )
       const suffix = values.round_number > 1
-        ? `（第${'一二三四五'[values.round_number - 1]}次）`
+        ? `（第${cnOrdinal(values.round_number)}次）`
         : ''
       const blob = new Blob([res.data], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -269,7 +263,7 @@ export default function AuthLetterPage() {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       })
       const suffix = record.round_number > 1
-        ? `（第${'一二三四五'[record.round_number - 1]}次）`
+        ? `（第${cnOrdinal(record.round_number)}次）`
         : ''
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -309,7 +303,7 @@ export default function AuthLetterPage() {
   // 预览项目名称
   const previewName = selectedProject
     ? selectedProject.name + (roundVal > 1
-        ? `（第${'一二三四五'[roundVal - 1]}次）`
+        ? `（第${cnOrdinal(roundVal)}次）`
         : '')
     : ''
 
@@ -323,7 +317,7 @@ export default function AuthLetterPage() {
     title: row.project_name || '—',
     subtitle: row.project_number || '无编号',
     tags: row.round_number > 1
-      ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{'一二三四五'[row.round_number - 1]}次</Tag>
+      ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>第{cnOrdinal(row.round_number)}次</Tag>
       : <Tag color="blue" style={{ marginInlineEnd: 0 }}>第一次</Tag>,
     fields: [
       { label: '开标时间', value: row.bid_time },
@@ -509,8 +503,9 @@ export default function AuthLetterPage() {
 
             {/* 开标次数 + 开标时间 */}
             <div style={{ display: 'flex', gap: 16 }}>
-              <Form.Item label="开标次数" name="round_number" style={{ width: 180 }}>
-                <Select options={ROUND_OPTIONS} />
+              <Form.Item label="开标次数" name="round_number" style={{ width: 200 }}
+                extra="跟项目当前轮次走，自动带出">
+                <RoundDisplay />
               </Form.Item>
               <Form.Item
                 label="本次开标时间"
