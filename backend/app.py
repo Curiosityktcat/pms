@@ -25,6 +25,11 @@ def create_app():
     # 会话密钥：优先取环境变量 PMS_SECRET_KEY；迁移到新机时务必设置随机强密钥
     # （export PMS_SECRET_KEY=$(openssl rand -hex 32)），否则会话可被伪造。
     app.config["SECRET_KEY"] = os.environ.get("PMS_SECRET_KEY", "change-this-secret-key-please")
+
+    # 1573 和 1574 跑在同一台机上，cookie 不区分端口——两个实例都叫 session
+    # 的话，登录哪个都会把另一个顶下线。测试实例通过 PMS_SESSION_COOKIE
+    # 换个名字，两边就能同时开着；不设这个变量时行为和以前完全一样。
+    app.config["SESSION_COOKIE_NAME"] = os.environ.get("PMS_SESSION_COOKIE", "session")
     # 会话空闲超时：30 分钟无请求即失效，需重新登录（兜底；前端另有基于用户操作的空闲计时器）。
     # SESSION_REFRESH_EACH_REQUEST=True 时每次请求都会刷新 cookie 时间戳，实现“滑动”空闲过期。
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
@@ -96,6 +101,8 @@ def create_app():
     from routes.auth_letter_pending_api import bp as auth_letter_pending_bp  # 待出具授权函清单
     from routes.authorization_api import bp as authorization_bp  # 人员授权链
 
+    from routes.njyy_portal_api import bp as njyy_portal_bp
+    app.register_blueprint(njyy_portal_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
     app.register_blueprint(bid_bp)
@@ -653,21 +660,6 @@ def create_app():
                     ))
             _conn2.commit()
 
-        # 项目管理器补传表原来没有目录层级；只补列不回填，存量文件按根目录展示，
-        # 这样既保留旧行为，也让历史资料导入后能按原文件夹分组。
-        try:
-            with db.engine.connect() as _conn_pf:
-                _existing_pf = {row[1] for row in _conn_pf.execute(
-                    _text2("PRAGMA table_info(project_files)")
-                )}
-                if "folder" not in _existing_pf:
-                    _conn_pf.execute(_text2(
-                        "ALTER TABLE project_files ADD COLUMN folder TEXT DEFAULT ''"
-                    ))
-                    _conn_pf.commit()
-        except Exception as _e:                              # noqa: BLE001
-            print("[项目资料] project_files.folder 迁移失败：", _e, flush=True)
-
         # Agent 对话表补列（表建过之后再加的字段，SQLite 不会自动迁移）
         try:
             from sqlalchemy import text as _text_chat
@@ -699,6 +691,24 @@ def create_app():
                         f"ALTER TABLE contracts ADD COLUMN {_col} {_typedef}"
                     ))
             _conn_ct.commit()
+
+        # 公告表追加官网挂网字段（SQLite 不支持自动迁移）
+        with db.engine.connect() as _conn_pt:
+            _existing_pt = {row[1] for row in _conn_pt.execute(
+                _text2("PRAGMA table_info(announcements)")
+            )}
+            for _col, _typedef in [
+                ("portal_news_id", "INTEGER DEFAULT 0"),
+                ("portal_url",     "TEXT DEFAULT ''"),
+                ("portal_status",  "TEXT DEFAULT ''"),
+                ("portal_error",   "TEXT DEFAULT ''"),
+                ("portal_at",      "TEXT DEFAULT ''"),
+            ]:
+                if _col not in _existing_pt:
+                    _conn_pt.execute(_text2(
+                        f"ALTER TABLE announcements ADD COLUMN {_col} {_typedef}"
+                    ))
+            _conn_pt.commit()
 
         # 为 procurement_demands 表追加新列（SQLite 不支持自动迁移）
         new_cols = [

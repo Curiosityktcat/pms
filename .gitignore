@@ -67,3 +67,4 @@ pms.db.bak_*
 
 # 数据库备份与部署前快照，含真实业务数据，绝不能进仓库
 backups/
+.njyy_portal.json

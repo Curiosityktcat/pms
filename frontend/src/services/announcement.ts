@@ -11,6 +11,32 @@ export interface AnnProject {
   round?: number
 }
 
+export interface AnnPortal {
+  portal_status: string      // 挂网中|已挂网|挂网失败|撤网中|已撤网|官网上找不到
+  portal_url: string         // 公网详情页地址
+  portal_news_id: number     // 官网那条记录的 id
+  portal_error: string
+  portal_at?: string
+  running?: boolean
+  enabled?: boolean
+}
+
+export const getAnnPortal = (id: number) =>
+  axios.get<{ ok: boolean; data: AnnPortal }>(`/api/announcements/${id}/portal`,
+    { withCredentials: true })
+
+export const publishAnnPortal = (id: number) =>
+  axios.post<{ ok: boolean; message: string }>(`/api/announcements/${id}/portal/publish`, {},
+    { withCredentials: true })
+
+export const revokeAnnPortal = (id: number) =>
+  axios.post<{ ok: boolean; message: string }>(`/api/announcements/${id}/portal/revoke`, {},
+    { withCredentials: true })
+
+export const recheckAnnPortal = (id: number) =>
+  axios.post<{ ok: boolean; online: boolean; data: AnnPortal }>(
+    `/api/announcements/${id}/portal/recheck`, {}, { withCredentials: true })
+
 export interface Announcement {
   pending?: Pending          // 当前处理人
   id: number
@@ -36,6 +62,12 @@ export interface Announcement {
   agency_contact: string
   agency_contact_phone: string
   // 更正公告（ann_type='correction'）专用
+  // 医院官网挂网
+  portal_status?: string
+  portal_url?: string
+  portal_news_id?: number
+  portal_error?: string
+  portal_at?: string
   corr_scope: string          // 更正事项：采购公告 / 采购文件 / 采购公告、采购文件
   corr_reason: string
   corr_items_json: string     // [{item,before,after}]

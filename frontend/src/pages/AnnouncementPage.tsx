@@ -14,7 +14,7 @@ import {
   FileWordOutlined, CheckCircleOutlined, SendOutlined, RollbackOutlined,
   SaveOutlined, AppstoreOutlined, UploadOutlined, FileOutlined, StopOutlined,
   SearchOutlined, ClockCircleOutlined, CheckSquareOutlined, HourglassOutlined,
-  SortAscendingOutlined, SortDescendingOutlined,
+  SortAscendingOutlined, SortDescendingOutlined, GlobalOutlined, ReloadOutlined,
 } from '@ant-design/icons'
 import {
   getEligibleProjects, getAnnouncements, createAnnouncement, updateAnnouncement,
@@ -25,6 +25,7 @@ import {
 } from '../services/announcement'
 import type { Announcement, AnnProject, AnnAttachment } from '../services/announcement'
 import RoundDisplay from '../components/RoundDisplay'
+import { publishAnnPortal, revokeAnnPortal, recheckAnnPortal } from '../services/announcement'
 import { cnOrdinal } from '../utils/ordinal'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 import {
@@ -392,6 +393,7 @@ export default function AnnouncementPage() {
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [rejectRow, setRejectRow] = useState<Announcement | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [portalBusy, setPortalBusy] = useState<number | null>(null)
 
   const isAgency = user?.role === 'agency'
   const canConfirm = ['officer', 'assistant', 'leader'].includes(user?.role || '')
@@ -413,6 +415,14 @@ export default function AnnouncementPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  // 挂网/撤网在后台线程跑（生成列表页要几十秒），跑着的时候自动轮询刷新
+  useEffect(() => {
+    const busy = list.some(a => ['挂网中', '撤网中'].includes(a.portal_status || ''))
+    if (!busy) return
+    const t = setInterval(load, 6000)
+    return () => clearInterval(t)
+  }, [list])
 
   // 报名时间变化时自动生成备注（仅当备注为空）
   const regStart = Form.useWatch('reg_start', form) as dayjs.Dayjs | undefined
@@ -495,6 +505,21 @@ export default function AnnouncementPage() {
       setSelectedProject(projects.find(x => x.id === id) || null)
     }
   })
+
+  // ── 医院官网挂网 ────────────────────────────────────────────
+  const handlePortal = async (act: 'publish' | 'revoke' | 'recheck', record: Announcement) => {
+    setPortalBusy(record.id)
+    try {
+      const fn = act === 'publish' ? publishAnnPortal : act === 'revoke' ? revokeAnnPortal : recheckAnnPortal
+      const res = await fn(record.id)
+      const d = res.data as { message?: string; online?: boolean }
+      message.success(d.message || (d.online ? '官网上还在' : '官网上已经没有了'))
+      load()
+    } catch (err: unknown) {
+      const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(e || '操作失败')
+    } finally { setPortalBusy(null) }
+  }
 
   const openEdit = (ann: Announcement) => {
     setEditId(ann.id)
@@ -688,6 +713,28 @@ export default function AnnouncementPage() {
         value: <Text type="danger">{record.reject_reason}</Text>,
       })
     }
+    // 医院官网挂网：网址点开就是公众看到的那一页
+    const ps = record.portal_status || ''
+    if (tab === 'published' || ps) {
+      fields.push({
+        label: '医院官网',
+        value: record.portal_url
+          ? (
+            <Space size={6} wrap>
+              <a href={record.portal_url} target="_blank" rel="noreferrer">{record.portal_url}</a>
+              <Tag color={ps === '已挂网' ? 'green' : ps === '已挂网待复核' ? 'gold' : 'default'}
+                style={{ marginInlineEnd: 0 }}>{ps || '已挂网'}</Tag>
+            </Space>
+          )
+          : ps === '挂网中' || ps === '撤网中'
+            ? <Tag color="processing" style={{ marginInlineEnd: 0 }}>{ps}…</Tag>
+            : ps.includes('失败')
+              ? <Tooltip title={record.portal_error || ''}>
+                  <Tag color="red" style={{ marginInlineEnd: 0 }}>{ps}，可重试</Tag>
+                </Tooltip>
+              : <Typography.Text type="secondary" style={{ fontSize: 12 }}>未挂官网</Typography.Text>,
+      })
+    }
     const editable = ['toconfirm', 'rejected', 'draft'].includes(tab)
     return {
       key: record.id,
@@ -736,6 +783,26 @@ export default function AnnouncementPage() {
           )}
           {tab === 'published' && canConfirm && (
             <>
+              {/* 官网挂网：正常是确认发布时自动跑，这里留手动重试/撤下/复核 */}
+              {!record.portal_url && !['挂网中', '撤网中'].includes(record.portal_status || '') && (
+                <Popconfirm title="将把这条公告发布到医院官网（自动填报+审核+生成列表页），确认？"
+                  onConfirm={() => handlePortal('publish', record)}>
+                  <Button size="small" icon={<GlobalOutlined />} loading={portalBusy === record.id}>
+                    {record.portal_status?.includes('失败') ? '重挂官网' : '挂到官网'}
+                  </Button>
+                </Popconfirm>
+              )}
+              {record.portal_url && (
+                <>
+                  <Button size="small" icon={<ReloadOutlined />} loading={portalBusy === record.id}
+                    onClick={() => handlePortal('recheck', record)}>复核官网</Button>
+                  <Popconfirm title="将从医院官网删除这条公告并重新生成列表页，确认撤下？"
+                    onConfirm={() => handlePortal('revoke', record)}>
+                    <Button size="small" danger icon={<GlobalOutlined />}
+                      loading={portalBusy === record.id}>从官网撤下</Button>
+                  </Popconfirm>
+                </>
+              )}
               <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
               <Tooltip title="撤回发布，恢复为草稿">
                 <Popconfirm title="撤回后公告将从挂网页面撤下，确认撤回？" onConfirm={() => handleRevoke(record.id)}>

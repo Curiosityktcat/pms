@@ -53,6 +53,12 @@ def _get_agency_name(agency_code):
 
 def _enrich(ann):
     d = ann.to_dict()
+    # 挂网信息（to_dict 是手写字段表，这几个得在这儿补）
+    d["portal_status"] = getattr(ann, "portal_status", "") or ""
+    d["portal_url"] = getattr(ann, "portal_url", "") or ""
+    d["portal_news_id"] = getattr(ann, "portal_news_id", 0) or 0
+    d["portal_error"] = getattr(ann, "portal_error", "") or ""
+    d["portal_at"] = getattr(ann, "portal_at", "") or ""
     project = db.session.get(Project, ann.project_id)
     if project:
         d["project_name"] = project.name
@@ -657,7 +663,21 @@ def confirm_announcement(aid):
             project.bid_time = ann.response_deadline
 
     db.session.commit()
-    return jsonify({"ok": True, "message": f"公告已发布{synced_msg or '，开标时间已同步至项目'}",
+
+    # 采购公告确认发布 → 自动挂到医院官网（后台线程跑，前端轮状态）
+    portal_msg = ""
+    if ann.ann_type in ("procurement", "correction"):
+        try:
+            from routes.njyy_portal_api import start_publish
+            from flask import current_app
+            if start_publish(current_app._get_current_object(), ann,
+                             session.get("display_name", "")):
+                portal_msg = "，正在自动挂到医院官网"
+        except Exception as _e:                       # 挂网失败不能影响 PMS 里的发布
+            print("[njyy] 自动挂网启动失败:", _e, flush=True)
+
+    return jsonify({"ok": True,
+                    "message": f"公告已发布{synced_msg or '，开标时间已同步至项目'}{portal_msg}",
                     "data": _enrich(ann)})
 
 
@@ -677,7 +697,21 @@ def revoke_announcement(aid):
     alog.log(ann.project_id, _node_of(ann), "revoke",
              round_number=ann.round_number or 1, target_id=ann.id)
     db.session.commit()
-    return jsonify({"ok": True, "message": "已撤回，恢复为草稿", "data": _enrich(ann)})
+
+    # PMS 里撤回 → 官网那条也撤下来，不能只撤一半
+    portal_msg = ""
+    if ann.portal_news_id:
+        try:
+            from routes.njyy_portal_api import start_revoke
+            from flask import current_app
+            if start_revoke(current_app._get_current_object(), ann,
+                            session.get("display_name", "")):
+                portal_msg = "，正在从医院官网撤下"
+        except Exception as _e:
+            print("[njyy] 自动撤网启动失败:", _e, flush=True)
+
+    return jsonify({"ok": True, "message": f"已撤回，恢复为草稿{portal_msg}",
+                    "data": _enrich(ann)})
 
 
 # ── 生成 Word ─────────────────────────────────────────────────────

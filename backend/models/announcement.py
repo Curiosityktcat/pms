@@ -81,6 +81,13 @@ class Announcement(db.Model):
     created_at = db.Column(db.String(30), default="")
     created_by = db.Column(db.String(50), default="")
 
+    # ── 医院官网挂网（自动发布到 www.njyy.com.cn 招标采购信息栏目）──
+    portal_news_id = db.Column(db.Integer, default=0)      # 官网那条记录的 id
+    portal_url     = db.Column(db.String(200), default="")  # 公网详情页地址
+    portal_status  = db.Column(db.String(20), default="")   # 挂网中|已挂网|挂网失败|撤网中|已撤网
+    portal_error   = db.Column(db.Text, default="")         # 失败原因，给人看的
+    portal_at      = db.Column(db.String(30), default="")   # 最后一次挂网动作时间
+
     def to_dict(self):
         return {
             "id": self.id,
