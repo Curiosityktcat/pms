@@ -21,6 +21,7 @@
 ② 登录态只要不点「安全退出」就一直有效，所以 PHPSESSID 落盘复用，
    下次直接带着走；被弹回登录页才重新登录。
 """
+import concurrent.futures as cf
 import datetime
 import hashlib
 import io
@@ -229,6 +230,41 @@ def upload_file(s, cfg, filename, blob):
     return data.get("url") or ""
 
 
+def _gen_one(s, cfg, path):
+    """触发生成一个静态页。必须带 AJAX 头——不带就是 404，
+    官网前台按 X-Requested-With 区分「生成」和「浏览」，返回 {"rs":1} 才算成。"""
+    try:
+        r = s.get(cfg["base"] + path, timeout=120,
+                  headers={"X-Requested-With": "XMLHttpRequest"})
+    except Exception:
+        return False
+    return r.status_code == 200 and '"rs"' in r.text
+
+
+def gen_detail(s, cfg, news_id):
+    """只生成这一条的详情页。后台那个「生成详情页」是把全栏目 2900+ 条
+    排队让浏览器一条条打，我们只需要自己这条。"""
+    return _gen_one(s, cfg, "/News/info/id/%d" % int(news_id))
+
+
+def gen_lists(s, cfg, workers=6):
+    """重建栏目列表页。入口页返回 url_arr（149 个分页 URL），逐个触发；
+    新增/删除一条会让所有分页往后错一位，所以必须整份重建。"""
+    entry = s.get(cfg["base"] + "/managernjyy-Config-makelists-id-%d.html" % SORT_ID,
+                  timeout=300).text
+    m = re.search(r"var url_arr=(\[.*?\]);", entry, re.S)
+    if not m:
+        raise PortalError("生成列表页：没解析出待生成的 URL 列表")
+    urls = json.loads(m.group(1))
+    ok = 0
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        for r in ex.map(lambda u: _gen_one(s, cfg, u), urls):
+            ok += 1 if r else 0
+    if ok == 0:
+        raise PortalError("生成列表页：%d 个页面一个都没生成成功" % len(urls))
+    return ok, len(urls)
+
+
 def _find_id_by_title(s, cfg, title):
     """在栏目列表首页按标题找回刚建的记录 id（新记录排最前）。"""
     html = s.get(cfg["base"] + "/managernjyy-News-lists-sort-%d.html" % SORT_ID, timeout=30).text
@@ -282,11 +318,11 @@ def publish(title, content_html, attachments=None, audit=True, regenerate=True):
             _check(r.text, "审核")
             steps.append("sjksh 已审核")
             if regenerate:
-                _check(a.get(cfg["base"] + "/managernjyy-Config-makeinfo-sort-%d.html" % SORT_ID,
-                             timeout=300).text, "生成详情页")
-                _check(a.get(cfg["base"] + "/managernjyy-Config-makelists-id-%d.html" % SORT_ID,
-                             timeout=300).text, "生成列表页")
-                steps.append("已生成详情页与列表页")
+                if not gen_detail(a, cfg, news_id):
+                    raise PortalError("详情页生成失败，公众看不到这条公告")
+                steps.append("已生成详情页")
+                ok, total = gen_lists(a, cfg)
+                steps.append("已重建列表页 %d/%d" % (ok, total))
 
         url = "%s/News/info/id/%d.html" % (cfg["base"], news_id)
         return {"news_id": news_id, "url": url, "steps": steps,
@@ -294,16 +330,22 @@ def publish(title, content_html, attachments=None, audit=True, regenerate=True):
 
 
 def verify(url, title_part=""):
-    """复核：公网详情页能打开、标题对得上，才算真挂上了。"""
+    """复核：公网详情页能打开、标题对得上，才算真挂上了。
+
+    坑：后台删掉记录后，那个静态页还在，但内容被换成官网自己的
+    「信息不存在！」弹窗页，HTTP 仍是 200——只看状态码会误判成还挂着。
+    """
     try:
         r = requests.get(url, timeout=30, verify=False)
     except Exception:
         return False
     if r.status_code != 200:
         return False
+    txt = r.content.decode("utf-8", "ignore")
+    if "信息不存在" in txt or len(txt) < 1000:
+        return False
     if not title_part:
         return True
-    txt = r.content.decode("utf-8", "ignore")
     return title_part[:20] in txt
 
 
@@ -316,9 +358,8 @@ def revoke(news_id, regenerate=True):
         _check(r.text, "删除信息")
         steps.append("已删除 id=%s" % news_id)
         if regenerate:
-            _check(a.get(cfg["base"] + "/managernjyy-Config-makelists-id-%d.html" % SORT_ID,
-                         timeout=300).text, "生成列表页")
-            steps.append("已重新生成列表页")
+            ok, total = gen_lists(a, cfg)
+            steps.append("已重建列表页 %d/%d" % (ok, total))
         gone = not verify("%s/News/info/id/%d.html" % (cfg["base"], int(news_id)))
         return {"news_id": int(news_id), "steps": steps, "gone": gone}
 
