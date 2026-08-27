@@ -26,6 +26,8 @@ import {
 import { getProjects, type Project } from '../services/project'
 import { autoPushText } from '../services/rdwebApproval'
 import { useAuth } from '../hooks/useAuth'
+import CnDatePicker from '../components/CnDatePicker'
+import { parseCnDate } from '../utils/cnDate'
 import { useFocusTarget, flashRow } from '../hooks/useFocusRow'
 import FilePreviewModal, { isPreviewable } from '../components/FilePreviewModal'
 
@@ -281,6 +283,8 @@ export default function ContractPage() {
   const [uploadId, setUploadId] = useState<number | null>(null)
   const [uploadSaving, setUploadSaving] = useState(false)
   const [uploadForm] = Form.useForm()
+  // 有效期不能早于生效日——日历里直接把更早的日子灰掉
+  const serviceStartVal = Form.useWatch('service_start', uploadForm) as string | undefined
   const [uploadContract, setUploadContract] = useState<Contract | null>(null)
 
   // ── 主合同文件上传 ────────────────────────────────────────────
@@ -973,18 +977,24 @@ export default function ContractPage() {
                 extra={<Text type="secondary" style={{ fontSize: 12 }}>三项填齐才能完成归档</Text>}>
                 <Row gutter={16}>
                   <Col span={8}>
-                    <Form.Item name="sign_date" label="合同签订时间" rules={[{ required: true, message: '请填写签订时间' }]}>
-                      <Input placeholder="如：2026年5月30日" />
+                    <Form.Item name="sign_date" label="合同签订时间" rules={[{ required: true, message: '请选择签订时间' }]}>
+                      <CnDatePicker placeholder="选择签订日期" />
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name="service_start" label="合同生效时间" rules={[{ required: true, message: '请填写生效时间' }]}>
-                      <Input placeholder="如：2026年6月1日" />
+                    <Form.Item name="service_start" label="合同生效时间" rules={[{ required: true, message: '请选择生效时间' }]}>
+                      <CnDatePicker placeholder="选择生效日期" />
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item name="service_end" label="合同有效期至" rules={[{ required: true, message: '请填写有效期' }]}>
-                      <Input placeholder="如：2027年5月31日" />
+                    <Form.Item name="service_end" label="合同有效期至" rules={[{ required: true, message: '请选择有效期' }]}>
+                      <CnDatePicker
+                        placeholder="选择到期日期"
+                        disabledDate={d => {
+                          const st = parseCnDate(serviceStartVal)
+                          return !!st && d.isBefore(st, 'day')
+                        }}
+                      />
                     </Form.Item>
                   </Col>
                 </Row>
