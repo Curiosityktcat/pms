@@ -368,7 +368,7 @@ function TemplateMgrDrawer({ open, agencyCode, onClose, onApply }: TemplateMgrPr
 // 主页面
 // ─────────────────────────────────────────────────────────────────
 export default function AnnouncementPage() {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const { user } = useAuth()
   const [list, setList] = useState<Announcement[]>([])
   const [projects, setProjects] = useState<AnnProject[]>([])
@@ -643,9 +643,40 @@ export default function AnnouncementPage() {
 
   const handleConfirm = async (id: number) => {
     try {
-      await confirmAnnouncement(id)
+      const res = await confirmAnnouncement(id)
       message.success('公告已确认发布，将在登录页面公开展示')
       load()
+      // 挂医院官网是真的对外发布，得经办人自己点头才做
+      if ((res.data as { can_portal?: boolean })?.can_portal) {
+        modal.confirm({
+          title: '同时挂到医院官网？',
+          width: 520,
+          content: (
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+              <div>点「挂官网」后系统会自动完成原来手工做的那一整套：</div>
+              <div style={{ color: '#5f6368', marginTop: 6 }}>
+                填报到「招标采购信息」→ 上传公告与附件 → 审核 → 生成详情页与列表页 → 复核公网页面
+              </div>
+              <div style={{ marginTop: 8 }}>
+                约需 3 分钟，挂好后这里会显示<b>已挂官网</b>和公网网址。
+                现在不挂也行，之后在挂网管理里随时可以点「挂到官网」。
+              </div>
+            </div>
+          ),
+          okText: '挂官网',
+          cancelText: '暂不挂',
+          onOk: async () => {
+            try {
+              const r = await publishAnnPortal(id)
+              message.success(r.data.message || '已开始挂网，约需 3 分钟')
+              load()
+            } catch (err: unknown) {
+              const e = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+              message.error(e || '挂网启动失败')
+            }
+          },
+        })
+      }
     } catch (err: any) {
       message.error(err.response?.data?.error || '确认失败')
     }
@@ -747,7 +778,23 @@ export default function AnnouncementPage() {
       subtitle: record.project_number,
       statusText: isOpened ? '已开标' : record.status,
       statusColor: isOpened ? 'default' : STATUS_COLOR[record.status] || 'default',
-      tags: roundTag(record.round_number),
+      tags: (
+        <Space size={4} wrap>
+          {roundTag(record.round_number)}
+          {record.portal_url && (
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>
+              <a href={record.portal_url} target="_blank" rel="noreferrer"
+                style={{ color: 'inherit' }}>已挂官网</a>
+            </Tag>
+          )}
+          {['挂网中', '撤网中'].includes(record.portal_status || '') && (
+            <Tag color="processing" style={{ marginInlineEnd: 0 }}>{record.portal_status}…</Tag>
+          )}
+          {(record.portal_status || '').includes('失败') && (
+            <Tag color="red" style={{ marginInlineEnd: 0 }}>{record.portal_status}</Tag>
+          )}
+        </Space>
+      ),
       fields,
       actions: (
         <>

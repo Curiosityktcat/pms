@@ -664,20 +664,19 @@ def confirm_announcement(aid):
 
     db.session.commit()
 
-    # 采购公告确认发布 → 自动挂到医院官网（后台线程跑，前端轮状态）
-    portal_msg = ""
-    if ann.ann_type in ("procurement", "correction"):
+    # 挂医院官网不自动跑：确认发布后由前端弹框问一句，经办人点了才挂。
+    # 挂网会真的出现在医院官网上，这一下得让人自己拍板。
+    can_portal = False
+    if ann.ann_type in ("procurement", "correction") and not ann.portal_news_id:
         try:
-            from routes.njyy_portal_api import start_publish
-            from flask import current_app
-            if start_publish(current_app._get_current_object(), ann,
-                             session.get("display_name", "")):
-                portal_msg = "，正在自动挂到医院官网"
-        except Exception as _e:                       # 挂网失败不能影响 PMS 里的发布
-            print("[njyy] 自动挂网启动失败:", _e, flush=True)
+            from services import njyy_portal as _portal
+            can_portal = _portal.enabled()
+        except Exception as _e:
+            print("[njyy] 判断挂网可用性失败:", _e, flush=True)
 
     return jsonify({"ok": True,
-                    "message": f"公告已发布{synced_msg or '，开标时间已同步至项目'}{portal_msg}",
+                    "message": f"公告已发布{synced_msg or '，开标时间已同步至项目'}",
+                    "can_portal": can_portal,
                     "data": _enrich(ann)})
 
 

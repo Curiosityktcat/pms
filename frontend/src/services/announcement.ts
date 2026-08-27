@@ -178,8 +178,10 @@ export function deleteAnnouncement(id: number) {
 export function submitAnnouncement(id: number) {
   return axios.post<{ ok: boolean; message: string; data: Announcement }>(`/api/announcements/${id}/submit`)
 }
+/** 确认发布。can_portal=true 表示这条还能挂医院官网，前端据此弹框问一句 */
 export function confirmAnnouncement(id: number) {
-  return axios.post<{ ok: boolean; message: string; data: Announcement }>(`/api/announcements/${id}/confirm`)
+  return axios.post<{ ok: boolean; message: string; can_portal?: boolean; data: Announcement }>(
+    `/api/announcements/${id}/confirm`)
 }
 export function revokeAnnouncement(id: number) {
   return axios.post<{ ok: boolean; message: string; data: Announcement }>(`/api/announcements/${id}/revoke`)
