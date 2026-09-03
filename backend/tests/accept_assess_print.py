@@ -155,6 +155,71 @@ if r1 and len(rounds) > 1:
           not d5["start"] or not d5["end"] or d5["end"] >= d5["start"],
           f"{d5['start']} -> {d5['end']} ({d5['source']})")
 
+# ── 2c. 后续轮次只扣超期、不重复加分 ─────────────────────────────
+# 口径（黄新博 2026-09-03）：主要考核第一次的时间；后面每一轮只要超过 3 日
+# 就把超期那部分扣掉，3 日内完成的不再加分。分数 = 第一轮打分 − 各轮超期扣分之和。
+check("后续轮次 3 日内不扣也不加", svc._overrun_only(2) == (0.0, "用时 2 日，3 日内完成，不扣"),
+      str(svc._overrun_only(2)))
+check("后续轮次超 3 日按超期每日 0.3 扣",
+      svc._overrun_only(10)[0] == round(-0.3 * 7, 2), str(svc._overrun_only(10)))
+check("后续轮次超 30 日扣 30", svc._overrun_only(31)[0] == -30.0, str(svc._overrun_only(31)))
+check("该轮没时间数据就不算、不瞎扣", svc._overrun_only(None) == (0.0, None),
+      str(svc._overrun_only(None)))
+
+# 找一个真走了多轮、且后面有轮次超期的项目，验总分是「第一轮分 + 各轮扣分」
+multi = None
+for pj in db.session.execute(db.select(Project).where(
+        Project.agency_code != "")).scalars().all():
+    ns = svc._round_numbers(pj.id)
+    if len(ns) < 2:
+        continue
+    over = []
+    for n in ns[1:]:
+        st, en = svc._round_span(pj.id, n)
+        dd = svc._days_between(st, en)
+        if dd is not None and dd > 3:
+            over.append((n, dd))
+    if over:
+        multi = (pj, ns, over)
+        break
+if multi:
+    pj, ns, over = multi
+    s1, e1 = svc._round_span(pj.id, 1)
+    base_score, _ = svc._ladder(svc._days_between(s1, e1))
+    want = round(base_score + sum(svc._overrun_only(d)[0] for _, d in over), 2)
+    got = svc._doc_speed(pj.id, {})[0]
+    check("多轮总分 = 第一轮打分 − 后续各轮超期扣分之和", got == want,
+          f"[{pj.id}] {len(ns)} 轮，第一轮 {base_score:+g}，"
+          f"超期轮 {over}，应得 {want}，实得 {got}")
+else:
+    # 库里现成没有超期轮次就自己造一轮：加一个第 N+1 轮，需求 6-01 发出、
+    # 文件 6-11 才交（超期 7 日），验完删掉，不留痕。
+    from models.procurement_round import ProcurementRound as PR
+    from models.procurement_doc_attachment import ProcurementDocAttachment as PDA
+    ns = svc._round_numbers(proj.id)
+    nn = max(ns) + 1
+    tmp_r = PR(project_id=proj.id, round_number=nn,
+               demand_confirmed_at="2026-06-01T09:00:00", status="已结束",
+               created_at="2026-06-01T09:00:00")
+    tmp_a = PDA(project_id=proj.id, kind="doc", round_number=nn,
+                original_name="验收造的采购文件.docx", saved_name="accept_tmp.docx",
+                uploaded_by="accept_test", uploaded_at="2026-06-11T09:00:00")
+    db.session.add_all([tmp_r, tmp_a])
+    db.session.commit()
+    try:
+        s1, e1 = svc._round_span(proj.id, 1)
+        base_score, _ = svc._ladder(svc._days_between(s1, e1))
+        got, basis = svc._doc_speed(proj.id, {})[:2]
+        want = round(base_score - 0.3 * 7, 2)
+        check("多轮总分 = 第一轮打分 − 后续各轮超期扣分之和", got == want,
+              f"造了第 {nn} 轮超期 7 日：第一轮 {base_score:+g}，应得 {want}，实得 {got}")
+        check("超期的那一轮在依据里写明", f"第 {nn} 轮" in basis and "超期 7 日" in basis,
+              basis[:110])
+    finally:
+        db.session.delete(tmp_r)
+        db.session.delete(tmp_a)
+        db.session.commit()
+
 # 全库不该再有倒挂
 rev = 0
 for pj in db.session.execute(db.select(Project).where(

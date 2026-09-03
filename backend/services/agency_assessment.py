@@ -24,7 +24,7 @@ from models.procurement_doc_attachment import ProcurementDocAttachment
 ITEMS = [
     {"key": "doc_speed", "auto": True,
      "name": "自接到采购人发出的采购需求后，超过3日编辑完成采购文件的",
-     "standard": "自采购需求发出之日起1日内拟定完毕采购文件的加1.5分；2日内加1分，3日内加0.5分；超过3日的，每日扣0.3分，超过30日的，扣30分"},
+     "standard": "自采购需求发出之日起1日内拟定完毕采购文件的加1.5分；2日内加1分，3日内加0.5分；超过3日的，每日扣0.3分，超过30日的，扣30分（按第一轮计分；后续轮次超过3日的，超期部分另行累扣）"},
     {"key": "understand_need", "auto": False,
      "name": "未能充分理解采购人的需求，或未能对采购需求提出合理化的建议和意见，或未能指导采购人部门将合理的采购需求反映在采购文件中的",
      "standard": "每一次扣1-2分，每提出合理化的建议和意见，被采购人采用，每提出一条加1分。"},
@@ -95,7 +95,7 @@ LADDER_ITEMS = {
     "doc_speed": {
         "start_label": "采购需求发出时间",
         "end_label": "采购文件拟定完成时间",
-        "auto_hint": "系统取：需求确认时间 → 采购文件首次上传时间",
+        "auto_hint": "系统取：第 1 轮采购需求确认 → 第 1 轮首份采购文件；后续轮次超 3 日另扣",
     },
     "contract_speed": {
         "start_label": "中标（成交）通知书发出时间",
@@ -234,20 +234,93 @@ def _first_doc(pid, kind):
     return (r1 or rows)[0]
 
 
-def _demand_pushed_at(pid):
-    """第一次把采购需求发给代理机构的时间。
+def _round_span(pid, n):
+    """第 n 轮的「发出采购需求 → 交出采购文件」两个时间点。
 
-    先认第 1 轮的「采购需求确认（5.1）」——确认了代理才动手编文件，这就是发出的那一刻；
-    没有确认记录就退回第 1 轮采购需求附件的上传时间。都没有就返回 None，交给人填日历。
+    起点先认该轮的「采购需求确认（5.1）」——确认了代理才动手编文件，就是发出的那一刻；
+    没有确认记录就退回该轮采购需求附件的上传时间。终点是该轮第一份采购文件。
+    老项目导进来时 round_number 是空的，第 1 轮兜底认这些无轮次的附件。
     """
     from models.procurement_round import ProcurementRound
-    r1 = db.session.execute(
-        db.select(ProcurementRound).filter_by(project_id=pid, round_number=1)
+    rd = db.session.execute(
+        db.select(ProcurementRound).filter_by(project_id=pid, round_number=n)
     ).scalars().first()
-    if r1 and (r1.demand_confirmed_at or "").strip():
-        return r1.demand_confirmed_at
-    att = _first_doc(pid, "demand")
-    return att.uploaded_at if att else None
+
+    def _att(kind):
+        rows = db.session.execute(
+            db.select(ProcurementDocAttachment)
+            .filter_by(project_id=pid, kind=kind)
+            .order_by(ProcurementDocAttachment.id)
+        ).scalars().all()
+        hit = [r for r in rows if (r.round_number or 1) == n]
+        return hit[0].uploaded_at if hit else None
+
+    start = (rd.demand_confirmed_at or "").strip() if rd else ""
+    if not start:
+        start = _att("demand")
+    return start or None, _att("doc")
+
+
+def _round_numbers(pid):
+    """这个项目一共走了哪几轮，从小到大。没有轮次记录就当作只有第 1 轮。"""
+    from models.procurement_round import ProcurementRound
+    ns = sorted({int(r.round_number or 1) for r in db.session.execute(
+        db.select(ProcurementRound).filter_by(project_id=pid)).scalars().all()})
+    return ns or [1]
+
+
+def _overrun_only(days):
+    """后续轮次的算法：只扣超期，不给加分。
+
+    黄新博 2026-09-03 定的口径——主要考核第一次的时间，后面每一轮
+    只要超过 3 日就把超期那部分扣掉，3 日内按时完成的不再重复加分
+    （加分是奖励第一次就做对，返工做得快不算功劳）。
+    """
+    if days is None:
+        return 0.0, None
+    if days > 30:
+        return -30.0, f"用时 {days} 日，超过 30 日"
+    if days > 3:
+        return round(-0.3 * (days - 3), 2), f"用时 {days} 日，超期 {days - 3} 日"
+    return 0.0, f"用时 {days} 日，3 日内完成，不扣"
+
+
+def _doc_speed(pid, dates):
+    """采购文件编制时效 = 第一轮的阶梯分 − 后面每一轮超过 3 日的扣分之和。
+
+    第一轮是主考核（加分也在这一轮拿），后面的轮次只承担超期的责任。
+    """
+    s1, e1 = _round_span(pid, 1)
+    score, basis, src, ds, de = _ladder_with_dates("doc_speed", s1, e1, dates)
+
+    later = []
+    for n in _round_numbers(pid):
+        if n <= 1:
+            continue
+        s, e = _round_span(pid, n)
+        d = _days_between(s, e)
+        if d is None:
+            continue                       # 该轮没留下时间，算不了就不算，别瞎扣
+        if _parse(e) and _parse(s) and _parse(e).date() < _parse(s).date():
+            continue                       # 倒挂的数据同样不可信
+        pen, txt = _overrun_only(d)
+        later.append((n, pen, txt))
+
+    hit = [x for x in later if x[1]]
+    if not later:
+        return score, basis, src, ds, de
+    tail = "；".join(f"第 {n} 轮{txt}{'，扣 ' + str(abs(pen)) + ' 分' if pen else ''}"
+                     for n, pen, txt in later)
+    if score is None:
+        # 第一轮算不出来，后面轮次的扣分先摆出来，等人把第一轮日期补齐
+        return (score, f"{basis}｜后续轮次：{tail}", src, ds, de)
+    total = round(score + sum(p for _, p, _ in later), 2)
+    if hit:
+        basis = (f"第 1 轮：{basis}｜后续轮次：{tail}｜"
+                 f"合计 {score:+g} {sum(p for _, p, _ in later):+g} = {total:+g} 分")
+    else:
+        basis = f"第 1 轮：{basis}｜后续 {len(later)} 轮均未超 3 日，不扣"
+    return total, basis, src, ds, de
 
 
 def auto_scores(project, dates=None):
@@ -261,14 +334,11 @@ def auto_scores(project, dates=None):
     ladder_dates = {}
     dates = dates or {}
 
-    # ① 采购文件编制时效：第一次把采购需求发给代理 → 代理第一次把采购文件做出来。
-    #    两头都必须取**第一轮**的。projects.demand_confirmed_at 每轮都被覆盖，
+    # ① 采购文件编制时效 = 第一轮阶梯分 − 后面每轮超过 3 日的扣分之和。
+    #    第一轮两头都取第一轮自己的：projects.demand_confirmed_at 每轮都被覆盖、
     #    存的永远是最后一轮，拿它去配第一份采购文件就成了「起点比终点晚」
     #    （12 号项目一轮 6-02、二轮 6-15，判出来倒挂 13 天，全库 23 例都是这个原因）。
-    doc_first = _first_doc(pid, "doc")
-    sc, ba, src, ds, de = _ladder_with_dates(
-        "doc_speed", _demand_pushed_at(pid),
-        doc_first.uploaded_at if doc_first else None, dates)
+    sc, ba, src, ds, de = _doc_speed(pid, dates)
     out["doc_speed"] = (sc, ba)
     ladder_dates["doc_speed"] = {"start": ds, "end": de, "source": src}
 
