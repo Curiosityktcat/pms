@@ -23,6 +23,9 @@ class AgencyAssessment(db.Model):
 
     # 15 个评分项：[{key, score, note, auto_score, auto_basis}]
     items_json   = db.Column(db.Text, default="[]")
+    # 三项时效的手填起止日期：{"archive_speed": {"start": "2026-06-01", "end": "2026-06-03"}, ...}
+    # 归档这类环节发生在系统外（纸质交接单），系统时间戳算不出来，靠人填日历补
+    dates_json   = db.Column(db.Text, default="{}")
     # 一票否决：命中的条目 key 列表
     veto_json    = db.Column(db.Text, default="[]")
     veto_note    = db.Column(db.Text, default="")
@@ -54,4 +57,8 @@ class AgencyAssessment(db.Model):
             d["veto"] = json.loads(self.veto_json or "[]")
         except Exception:
             d["veto"] = []
+        try:
+            d["dates"] = json.loads(self.dates_json or "{}")
+        except Exception:
+            d["dates"] = {}
         return d

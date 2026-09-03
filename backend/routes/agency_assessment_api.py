@@ -6,8 +6,9 @@
 """
 import datetime
 import json
+from urllib.parse import quote
 
-from flask import Blueprint, request, session, jsonify
+from flask import Blueprint, Response, request, session, jsonify
 
 from models import db
 from models.agency_assessment import AgencyAssessment
@@ -16,6 +17,7 @@ from models.agency import Agency
 from routes.utils import login_required, can_view_project
 from services.permission import is_admin_user
 from services import agency_assessment as svc
+from services import agency_assessment_sheet as sheet
 
 bp = Blueprint("agency_assessment", __name__, url_prefix="/api/agency-assessments")
 
@@ -65,6 +67,7 @@ def meta():
         "items": svc.ITEMS,
         "veto_items": svc.VETO_ITEMS,
         "subj_options": list(svc.SUBJ_OPTIONS),
+        "ladder_items": svc.LADDER_ITEMS,
         "thresholds": {
             "pass_line": svc.PASS_LINE,
             "bonus_line": svc.BONUS_LINE,
@@ -157,13 +160,14 @@ def get_by_project(pid):
         if not row or row.status != "已提交":
             return jsonify({"ok": False, "error": "该项目考核尚未完成，暂不可查看"}), 404
 
-    items = svc.build_items(project, saved)
+    dates = svc.norm_dates(row.dates_json if row else None)
+    items = svc.build_items(project, saved, dates)
     data = row.to_dict() if row else {
         "id": None, "project_id": pid,
         "project_number": project.number, "project_name": project.name,
         "agency_code": project.agency_code,
         "agency_name": _agency_name(project.agency_code),
-        "veto": [], "veto_note": "",
+        "veto": [], "veto_note": "", "dates": {},
         # 综合评价给默认值「满意」——大多数项目本就正常，让人只改例外的那几项，
         # 而不是每次从空白开始逐个勾
         "subj_timeliness": svc.SUBJ_DEFAULT,
@@ -180,8 +184,11 @@ def get_by_project(pid):
 def _apply(row, data, project):
     items = data.get("items") or []
     row.items_json = svc.dump_items(items)
+    # 手填日期先落库再算分——顺序反了总分会拿旧日期算
+    dates = svc.norm_dates(data.get("dates"))
+    row.dates_json = json.dumps(dates, ensure_ascii=False)
     # 总分服务端算，不信前端传来的数
-    full = svc.build_items(project, items)
+    full = svc.build_items(project, items, dates)
     row.total_score = svc.total_of(full)
 
     veto = [v for v in (data.get("veto") or []) if v in {x["key"] for x in svc.VETO_ITEMS}]
@@ -277,3 +284,81 @@ def summary():
     return jsonify({"ok": True, "data": out,
                     "period": (out[0]["period"] if out else ""),
                     "range": {"start": start, "end": end}})
+
+@bp.route("/project/<int:pid>/preview", methods=["POST"])
+@login_required
+def preview(pid):
+    """按传来的手填日期重算三项时效的建议分（不落库）。
+
+    前端选完日历要立刻看到分数，但算分规则只能有一份——放在服务端，
+    前端不再照抄一遍阶梯，免得哪天规则改了两边对不上。
+    """
+    project = db.session.get(Project, pid)
+    if not project or not can_view_project(project):
+        return jsonify({"ok": False, "error": "项目不存在或无权访问"}), 404
+    data = request.get_json(silent=True) or {}
+    dates = svc.norm_dates(data.get("dates"))
+    items = svc.build_items(project, data.get("items") or [], dates)
+    return jsonify({"ok": True, "data": {
+        "items": items, "total_score": svc.total_of(items), "dates": dates}})
+
+
+def _sheet_data(pid):
+    """备好一份成稿用的数据；权限口径和查看考核表完全一致。"""
+    project = db.session.get(Project, pid)
+    if not project or not can_view_project(project):
+        return None, None, ("项目不存在或无权访问", 404)
+    row = db.session.execute(
+        db.select(AgencyAssessment).filter_by(project_id=pid)).scalars().first()
+    if session.get("role") == "agency":
+        # 代理机构只能拿自己项目的、且已提交的定稿，草稿不给
+        if (project.agency_code or "") != session.get("agency_code", ""):
+            return None, None, ("无权查看", 403)
+        if not row or row.status != "已提交":
+            return None, None, ("该项目考核尚未完成，暂不可导出", 404)
+
+    saved = None
+    if row:
+        try:
+            saved = json.loads(row.items_json or "[]")
+        except Exception:
+            saved = None
+    dates = svc.norm_dates(row.dates_json if row else None)
+    items = svc.build_items(project, saved, dates)
+    d = row.to_dict() if row else {
+        "project_number": project.number, "project_name": project.name,
+        "agency_name": _agency_name(project.agency_code),
+        "veto": [], "veto_note": "", "subj_timeliness": "", "subj_ability": "",
+        "subj_attitude": "", "comment": "", "status": "草稿",
+        "assessor": "", "assessed_at": "",
+    }
+    return d, items, None
+
+
+@bp.route("/project/<int:pid>/export.xlsx", methods=["GET"])
+@login_required
+def export_xlsx(pid):
+    """导出 Excel：版式与客户那份考核评价表一致，打印设置已锁成最多 2 页 A4。"""
+    d, items, err = _sheet_data(pid)
+    if err:
+        return jsonify({"ok": False, "error": err[0]}), err[1]
+    data = sheet.build_rows(d, items)
+    body = sheet.to_xlsx(data)
+    fn = quote(sheet.filename_for(d))
+    return Response(body, mimetype=(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), headers={
+        "Content-Disposition": f"attachment; filename=assessment.xlsx; filename*=UTF-8''{fn}",
+        "Content-Length": str(len(body)),
+    })
+
+
+@bp.route("/project/<int:pid>/print", methods=["GET"])
+@login_required
+def print_view(pid):
+    """打印页：打开即调打印，版心压在 2 页 A4 内，双面一张纸。"""
+    d, items, err = _sheet_data(pid)
+    if err:
+        return jsonify({"ok": False, "error": err[0]}), err[1]
+    data = sheet.build_rows(d, items)
+    html = sheet.to_print_html(data, auto_print=request.args.get("auto", "1") == "1")
+    return Response(html, mimetype="text/html; charset=utf-8")

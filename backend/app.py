@@ -919,6 +919,15 @@ def create_app():
                         ))
             conn7.commit()
 
+        # ── 代理机构考核：三项时效的手填起止日期（归档等环节发生在系统外）──
+        with db.engine.connect() as _conn_aa:
+            _exist_aa = {row[1] for row in _conn_aa.execute(
+                text("PRAGMA table_info(agency_assessments)"))}
+            if _exist_aa and "dates_json" not in _exist_aa:
+                _conn_aa.execute(text(
+                    "ALTER TABLE agency_assessments ADD COLUMN dates_json TEXT DEFAULT '{}'"))
+                _conn_aa.commit()
+
         # ── 审批驳回 / 不确认：各单据追加驳回字段（approval_logs 表由 create_all 建）──
         _rej_cols = {
             "announcements": [

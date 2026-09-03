@@ -9,7 +9,17 @@ export interface AssessItem {
   auto_basis: string          // 建议分的依据，写清楚为什么是这个分
   score: number
   note: string
+  // 三项时效（编制/拟合同/归档）才有：起止日期可手填，填了就按手填的算分
+  date_start?: string
+  date_end?: string
+  date_source?: 'manual' | 'auto' | 'none'
+  start_label?: string
+  end_label?: string
+  auto_hint?: string
 }
+
+// {"archive_speed": {"start": "2026-06-01", "end": "2026-06-03"}, ...}
+export type AssessDates = Record<string, { start?: string; end?: string }>
 
 export interface VetoItem { key: string; name: string }
 
@@ -23,6 +33,7 @@ export interface Assessment {
   items: AssessItem[]
   veto: string[]
   veto_note: string
+  dates?: AssessDates
   veto_hit?: number
   subj_timeliness: string
   subj_ability: string
@@ -38,6 +49,7 @@ export interface AssessMeta {
   items: { key: string; name: string; standard: string; auto: boolean }[]
   veto_items: VetoItem[]
   subj_options: string[]
+  ladder_items?: Record<string, { start_label: string; end_label: string; auto_hint: string }>
   thresholds: { pass_line: number; bonus_line: number; suspend_line: number; valid_months: number }
   can_assess: boolean
 }
@@ -84,3 +96,14 @@ export const revokeAssessment = (aid: number) =>
 export const getAgencySummary = (start?: string, end?: string) =>
   api.get<{ ok: boolean; data: AgencySummary[]; period?: string }>(
     '/agency-assessments/summary', { params: { start, end } })
+
+// 只重算不落库：填日历时用它拿到新的建议分，算分规则不在前端复制一份
+export const previewAssessment = (pid: number, items: AssessItem[], dates: AssessDates) =>
+  api.post<{ ok: boolean; data: { items: AssessItem[]; total_score: number } }>(
+    `/agency-assessments/project/${pid}/preview`, { items, dates })
+
+// 导出 Excel / 打印：后端出成稿，走浏览器直连（要带 cookie，所以不用 axios）
+export const assessExportUrl = (pid: number) =>
+  `${api.defaults.baseURL}/agency-assessments/project/${pid}/export.xlsx`
+export const assessPrintUrl = (pid: number) =>
+  `${api.defaults.baseURL}/agency-assessments/project/${pid}/print`

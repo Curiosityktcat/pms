@@ -87,6 +87,28 @@ SUBJ_OPTIONS = ("满意", "一般", "不满意")
 # 让人只需要改那几个例外，而不是每份表都从空白逐项勾一遍。
 SUBJ_DEFAULT = "满意"
 
+# ── 三项时效的起止日期 ─────────────────────────────────────────────
+# PMS 里有时间戳的直接算；没有的（最常见是归档——资料交接与备案送达都发生在
+# 系统外，纸质单据上）让人在考核表里用日历补一下，补了就能算分。
+# start/end 的措辞照考核表原文，人一看就知道该填哪天。
+LADDER_ITEMS = {
+    "doc_speed": {
+        "start_label": "采购需求发出时间",
+        "end_label": "采购文件拟定完成时间",
+        "auto_hint": "系统取：需求确认时间 → 采购文件首次上传时间",
+    },
+    "contract_speed": {
+        "start_label": "中标（成交）通知书发出时间",
+        "end_label": "合同拟定完成时间",
+        "auto_hint": "系统取：中标通知书上传时间 → 合同建单时间",
+    },
+    "archive_speed": {
+        "start_label": "资料交接时间",
+        "end_label": "备案资料送达时间",
+        "auto_hint": "系统取：合同上传完成时间 → 项目归档时间",
+    },
+}
+
 # ── 考核结果的处置阈值（取自考核表附注）────────────────────────────
 PASS_LINE = 90          # 低于 90 分暂停下一轮项目拟派
 BONUS_LINE = 10         # 多项目加分累计满 10 分，提前一轮拟派
@@ -135,10 +157,77 @@ def _days_between(a, b):
     return max(0, (dbb.date() - da.date()).days)
 
 
-def auto_scores(project):
-    """算出 6 个可自动评分项的建议分。返回 {key: (score, basis)}。"""
+def norm_dates(raw):
+    """把前端传来的手填日期收成 {key: {"start": "YYYY-MM-DD", "end": ...}}。
+
+    只认 LADDER_ITEMS 里的三个 key，值只留日期部分（时分秒对天数没意义），
+    解析不出来的一律丢掉——宁可回落到系统自动算，也不能拿脏值去算分。
+    """
+    out = {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        return out
+    for k in LADDER_ITEMS:
+        v = raw.get(k) or {}
+        if not isinstance(v, dict):
+            continue
+        one = {}
+        for side in ("start", "end"):
+            d = _parse(v.get(side))
+            if d:
+                one[side] = d.strftime("%Y-%m-%d")
+        if one:
+            out[k] = one
+    return out
+
+
+def _ladder_with_dates(key, auto_start, auto_end, dates):
+    """三项时效统一入口：人填了日期就按人填的算，没填才用系统时间戳。
+
+    人填的优先，是因为归档这类环节本来就发生在系统外（纸质交接单），
+    系统时间戳只是个近似；人填的日期是台账上的真日子。
+    """
+    lab = LADDER_ITEMS[key]
+    man = (dates or {}).get(key) or {}
+    ms, me = man.get("start"), man.get("end")
+    if ms and me:
+        if me < ms:
+            return (None, f"手填日期前后颠倒：{lab['start_label']} {ms} 晚于 {lab['end_label']} {me}，请核对",
+                    "none", ms, me)
+        score, basis = _ladder(_days_between(ms, me))
+        return score, f"按手填日期：{ms} → {me}，{basis}", "manual", ms, me
+    # 没填全就退回系统自动算，同时把系统认到的日期回给前端做日历默认值
+    as_ = _parse(auto_start)
+    ae_ = _parse(auto_end)
+    score, basis = _ladder(_days_between(auto_start, auto_end))
+    s_txt = as_.strftime("%Y-%m-%d") if as_ else (ms or "")
+    e_txt = ae_.strftime("%Y-%m-%d") if ae_ else (me or "")
+    # 系统时间戳倒挂（完成早于起始）不是「0 日完成」，是数据不可信——
+    # _days_between 会把负数抹成 0，白送 1.5 分。这种一律退回人工填日历。
+    if as_ and ae_ and ae_.date() < as_.date():
+        return (None,
+                f"系统时间数据异常：{lab['end_label']} {e_txt} 早于 {lab['start_label']} {s_txt}，"
+                f"请用日历补填真实日期",
+                "none", s_txt, e_txt)
+    if score is None:
+        basis = f"{basis}——请在右侧日历补填{lab['start_label']}和{lab['end_label']}"
+    return score, basis, ("auto" if score is not None else "none"), s_txt, e_txt
+
+
+def auto_scores(project, dates=None):
+    """算出 6 个可自动评分项的建议分。
+
+    返回 {key: (score, basis)}；三项时效额外带日期信息，放在 LADDER_DATES 里
+    （build_items 会取走塞进行里给前端画日历）。
+    """
     pid = project.id
     out = {}
+    ladder_dates = {}
+    dates = dates or {}
 
     # ① 采购文件编制时效：需求确认 → 采购文件首次上传
     doc_first = db.session.execute(
@@ -146,8 +235,11 @@ def auto_scores(project):
         .filter_by(project_id=pid, kind="doc")
         .order_by(ProcurementDocAttachment.id)
     ).scalars().first()
-    out["doc_speed"] = _ladder(_days_between(
-        project.demand_confirmed_at, doc_first.uploaded_at if doc_first else None))
+    sc, ba, src, ds, de = _ladder_with_dates(
+        "doc_speed", project.demand_confirmed_at,
+        doc_first.uploaded_at if doc_first else None, dates)
+    out["doc_speed"] = (sc, ba)
+    ladder_dates["doc_speed"] = {"start": ds, "end": de, "source": src}
 
     # ② 合同拟定时效：中标通知书上传 → 合同建单
     award = db.session.execute(
@@ -158,9 +250,11 @@ def auto_scores(project):
     contract = db.session.execute(
         db.select(Contract).filter_by(project_id=pid).order_by(Contract.id)
     ).scalars().first()
-    out["contract_speed"] = _ladder(_days_between(
-        award.uploaded_at if award else None,
-        contract.created_at if contract else None))
+    sc, ba, src, ds, de = _ladder_with_dates(
+        "contract_speed", award.uploaded_at if award else None,
+        contract.created_at if contract else None, dates)
+    out["contract_speed"] = (sc, ba)
+    ladder_dates["contract_speed"] = {"start": ds, "end": de, "source": src}
 
     # ③ 归档时效：合同上传完成 → 项目归档
     signed = db.session.execute(
@@ -169,7 +263,10 @@ def auto_scores(project):
     ).scalars().first()
     signed_at = signed.updated_at if signed and signed.status == "合同上传" else None
     archived_at = project.updated_at if project.status == "已归档" else None
-    out["archive_speed"] = _ladder(_days_between(signed_at, archived_at))
+    sc, ba, src, ds, de = _ladder_with_dates(
+        "archive_speed", signed_at, archived_at, dates)
+    out["archive_speed"] = (sc, ba)
+    ladder_dates["archive_speed"] = {"start": ds, "end": de, "source": src}
 
     # ④ 采购文件澄清修改：更正公告涉及"采购文件"的次数，每次扣 1.5（区间 1-2 取中）
     corr = db.session.execute(
@@ -183,13 +280,19 @@ def auto_scores(project):
         out["doc_messy"] = (0.0, "本项目无采购文件更正记录")
 
     # ⑤ 公告不规范：公告被驳回次数 + 涉及"采购公告"的更正次数
-    ann_reject = db.session.execute(
-        db.select(db.func.count(ApprovalLog.id)).where(
+    # 驳回必须落在本项目自己的公告上才算数。历史上测试脚本写死过 project_id，
+    # 留下一批 target_id 指向别家项目公告的假驳回（一个项目凭空多出十几次），
+    # 所以这里拿 target_id 去 announcements 里对一次，对不上的不计。
+    own_ann_ids = set(db.session.execute(
+        db.select(Announcement.id).filter_by(project_id=pid)).scalars().all())
+    reject_rows = db.session.execute(
+        db.select(ApprovalLog).where(
             ApprovalLog.project_id == pid,
             ApprovalLog.node.in_(("announcement", "correction")),
             ApprovalLog.action == "reject",
         )
-    ).scalar() or 0
+    ).scalars().all()
+    ann_reject = sum(1 for r in reject_rows if (r.target_id or 0) in own_ann_ids)
     ann_corr = [c for c in corr if "采购公告" in (c.corr_scope or "")]
     n = int(ann_reject) + len(ann_corr)
     if n:
@@ -200,25 +303,32 @@ def auto_scores(project):
         out["ann_irregular"] = (0.0, "公告一次通过，无驳回与更正")
 
     # ⑥ 采购文件质量（违规/重大偏差）：采购文件被驳回次数做提示，分值仍由人定
-    doc_reject = db.session.execute(
-        db.select(db.func.count(ApprovalLog.id)).where(
+    own_doc_ids = set(db.session.execute(
+        db.select(ProcurementDocAttachment.id).filter_by(project_id=pid)).scalars().all())
+    doc_reject_rows = db.session.execute(
+        db.select(ApprovalLog).where(
             ApprovalLog.project_id == pid,
             ApprovalLog.node == "doc",
             ApprovalLog.action == "reject",
         )
-    ).scalar() or 0
+    ).scalars().all()
+    # 同上：target_id 对不上本项目采购文件的不计
+    doc_reject = sum(1 for r in doc_reject_rows
+                     if (r.target_id or 0) in own_doc_ids or not r.target_id)
     # 这一项分值必须由人定（"重大偏差"的严重程度机器判断不了），
     # 但驳回次数是客观事实，摆出来供打分参考，所以建议分恒为 0、只给依据。
     out["doc_illegal"] = (0.0,
                           f"提示：采购文件被驳回 {doc_reject} 次，请核对驳回原因后据实扣分"
                           if doc_reject else "采购文件未被驳回过")
 
+    out["LADDER_DATES"] = ladder_dates
     return out
 
 
-def build_items(project, saved=None):
-    """出一份完整评分项列表：带自动建议分与人工填的分。"""
-    auto = auto_scores(project)
+def build_items(project, saved=None, dates=None):
+    """出一份完整评分项列表：带自动建议分、人工填的分、三项时效的起止日期。"""
+    auto = auto_scores(project, dates)
+    ladder_dates = auto.pop("LADDER_DATES", {})
     saved_map = {}
     if saved:
         for it in saved:
@@ -238,6 +348,14 @@ def build_items(project, saved=None):
             # 没人工填过就先用建议分（人可改）
             row["score"] = a[0] if a and a[0] is not None else 0
             row["note"] = ""
+        if k in LADDER_ITEMS:
+            d = ladder_dates.get(k, {})
+            row["date_start"] = d.get("start", "")
+            row["date_end"] = d.get("end", "")
+            row["date_source"] = d.get("source", "none")
+            row["start_label"] = LADDER_ITEMS[k]["start_label"]
+            row["end_label"] = LADDER_ITEMS[k]["end_label"]
+            row["auto_hint"] = LADDER_ITEMS[k]["auto_hint"]
         out.append(row)
     return out
 

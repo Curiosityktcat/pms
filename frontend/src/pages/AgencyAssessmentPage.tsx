@@ -17,14 +17,23 @@ import {
 import dayjs, { type Dayjs } from 'dayjs'
 import {
   AuditOutlined, WarningOutlined, ThunderboltOutlined, ReloadOutlined,
+  PrinterOutlined, FileExcelOutlined,
 } from '@ant-design/icons'
 import {
   getAssessMeta, listAssessments, listPendingProjects, getAssessment,
-  saveAssessment, revokeAssessment, getAgencySummary,
+  saveAssessment, revokeAssessment, getAgencySummary, previewAssessment,
+  assessExportUrl, assessPrintUrl,
   type Assessment, type AssessMeta, type AgencySummary, type PendingProject,
+  type AssessDates,
 } from '../services/agencyAssessment'
 
 const { Text, Paragraph } = Typography
+
+
+// 打印与导出都走后端成稿接口：新开窗口/直接下载，权限沿用登录态 cookie。
+// 打印页自己会调 window.print()，导出的 xlsx 打印设置已锁成最多 2 页 A4。
+const openPrint = (pid: number) => window.open(assessPrintUrl(pid), '_blank')
+const openExport = (pid: number) => { window.location.href = assessExportUrl(pid) }
 
 export default function AgencyAssessmentPage() {
   const { message, modal } = App.useApp()
@@ -89,6 +98,43 @@ export default function AgencyAssessmentPage() {
       ...c,
       items: c.items.map(i => i.key === key ? { ...i, [field]: v } : i),
     }))
+  }
+
+  // 时效项的起止日期：改一下就让服务端按阶梯重算，算分规则只有服务端那一份。
+  // 起止都填齐了才把建议分写进「扣分/加分」——只填一头算不出天数，写进去等于瞎填。
+  const patchDate = async (key: string, side: 'start' | 'end', v: string) => {
+    if (!cur) return
+    const dates: AssessDates = {
+      ...(cur.dates || {}),
+      [key]: { ...((cur.dates || {})[key] || {}), [side]: v },
+    }
+    const next = {
+      ...cur, dates,
+      items: cur.items.map(i => i.key === key
+        ? { ...i, [side === 'start' ? 'date_start' : 'date_end']: v } : i),
+    }
+    setCur(next)
+    try {
+      const res = await previewAssessment(cur.project_id, next.items, dates)
+      const fresh = res.data.data.items
+      setCur(c => c && ({
+        ...c,
+        items: c.items.map(i => {
+          const f = fresh.find(x => x.key === i.key)
+          if (!f) return i
+          const filled = !!(f.date_start && f.date_end)
+          return {
+            ...i,
+            auto_score: f.auto_score, auto_basis: f.auto_basis,
+            date_start: f.date_start, date_end: f.date_end, date_source: f.date_source,
+            // 日期填齐了就把算出来的分直接落进去，人还能再改
+            score: i.key === key && filled && f.auto_score != null ? f.auto_score : i.score,
+          }
+        }),
+      }))
+    } catch {
+      message.error('重算得分失败，请检查日期')
+    }
   }
 
   // 代理机构只能看不能改：后端已挡写操作，前端把输入控件一并禁用，避免白改一场
@@ -188,7 +234,7 @@ export default function AgencyAssessmentPage() {
     <Card title={<span><AuditOutlined /> 代理机构服务质量考核</span>}>
       <Alert
         type="info" showIcon style={{ marginBottom: 12 }}
-        message={`一个项目一份考核表，由该项目的经办人完成（对应考核表末尾「采购部对接人签字」）。项目走到定标/签约/归档后，系统会自动给经办人派一条「待完成代理机构服务质量考核」待办，点「去处理」直接打开本表，提交后待办自动消除。满分 100 分，得分 = 100 + 各项加扣分之和。系统对 6 个可量化项自动给出建议分（编制/拟合同/归档三项时效按天算，采购文件与公告的规范性按驳回和更正次数算），每个建议分都注明依据，可直接改。低于 ${meta?.thresholds.pass_line ?? 90} 分暂停下一轮拟派；近 ${meta?.thresholds.valid_months ?? 3} 个月累计扣分达 ${meta?.thresholds.suspend_line ?? 30} 分暂停资格 3 个月；累计加分达 ${meta?.thresholds.bonus_line ?? 10} 分可提前一轮拟派。`}
+        message={`一个项目一份考核表，由该项目的经办人完成（对应考核表末尾「采购部对接人签字」）。项目走到定标/签约/归档后，系统会自动给经办人派一条「待完成代理机构服务质量考核」待办，点「去处理」直接打开本表，提交后待办自动消除。满分 100 分，得分 = 100 + 各项加扣分之和。系统对 6 个可量化项自动给出建议分（编制/拟合同/归档三项时效按天算，采购文件与公告的规范性按驳回和更正次数算），每个建议分都注明依据，可直接改。三项时效若系统缺时间数据（归档最常见），可在「系统建议」栏用日历补填起止日期，补齐即自动算分。填完点「打印」出考核表（最多 2 页 A4，可双面打印），或「导出 Excel」拿到与院内考核表一致的表格。低于 ${meta?.thresholds.pass_line ?? 90} 分暂停下一轮拟派；近 ${meta?.thresholds.valid_months ?? 3} 个月累计扣分达 ${meta?.thresholds.suspend_line ?? 30} 分暂停资格 3 个月；累计加分达 ${meta?.thresholds.bonus_line ?? 10} 分可提前一轮拟派。`}
       />
 
       <Tabs
@@ -249,10 +295,14 @@ export default function AgencyAssessmentPage() {
             { title: '考核人', dataIndex: 'assessor', width: 100 },
             { title: '考核时间', dataIndex: 'assessed_at', width: 160, render: (v: string) => (v || '').replace('T', ' ').slice(0, 16) },
             {
-              title: '操作', width: 160, fixed: 'right',
+              title: '操作', width: 250, fixed: 'right',
               render: (_: unknown, r: Assessment) => (
                 <Space size={4}>
                   <Button size="small" onClick={() => openForm(r.project_id)}>查看</Button>
+                  <Button size="small" icon={<PrinterOutlined />}
+                    onClick={() => openPrint(r.project_id)}>打印</Button>
+                  <Button size="small" icon={<FileExcelOutlined />}
+                    onClick={() => openExport(r.project_id)}>Excel</Button>
                   {r.status === '已提交' && meta?.can_assess && (
                     <Button size="small" danger onClick={() => doRevoke(r)}>撤回</Button>
                   )}
@@ -323,12 +373,19 @@ export default function AgencyAssessmentPage() {
         title={`服务质量考核 — ${cur?.project_name || ''}`}
         width={1000}
         onCancel={() => setCur(null)}
-        footer={readonly ? (
-          <Button onClick={() => setCur(null)}>关闭</Button>
-        ) : [
-          <Button key="c" onClick={() => setCur(null)}>取消</Button>,
-          <Button key="s" loading={saving} onClick={() => doSave(false)}>保存草稿</Button>,
-          <Button key="t" type="primary" loading={saving} onClick={() => doSave(true)}>提交考核</Button>,
+        footer={[
+          // 打印/导出取的是库里已保存的那份，所以先存再打，免得打出来少了刚改的
+          <Button key="p" icon={<PrinterOutlined />}
+            onClick={() => cur && openPrint(cur.project_id)}>打印</Button>,
+          <Button key="x" icon={<FileExcelOutlined />}
+            onClick={() => cur && openExport(cur.project_id)}>导出 Excel</Button>,
+          ...(readonly ? [
+            <Button key="close" onClick={() => setCur(null)}>关闭</Button>,
+          ] : [
+            <Button key="c" onClick={() => setCur(null)}>取消</Button>,
+            <Button key="s" loading={saving} onClick={() => doSave(false)}>保存草稿</Button>,
+            <Button key="t" type="primary" loading={saving} onClick={() => doSave(true)}>提交考核</Button>,
+          ]),
         ]}
         destroyOnHidden
       >
@@ -372,19 +429,44 @@ export default function AgencyAssessmentPage() {
                   ),
                 },
                 {
-                  title: '系统建议', width: 220,
-                  render: (_: unknown, r) => r.auto_score == null && !r.auto_basis
-                    ? <Text type="secondary" style={{ fontSize: 11 }}>需人工判断</Text>
-                    : (
+                  title: '系统建议', width: 250,
+                  render: (_: unknown, r) => {
+                    // 三项时效带日历：系统时间戳算不出来的（最常见是归档，交接单在系统外），
+                    // 人在这儿把两个日子选上，服务端立刻按阶梯算出分数填进右边
+                    const cal = r.start_label ? (
+                      <div style={{ marginTop: 4 }}>
+                        {([['start', r.start_label], ['end', r.end_label]] as const).map(([side, label]) => (
+                          <div key={side} style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                            <span style={{ fontSize: 11, color: '#5f6368', width: 112, flex: 'none' }}>{label}</span>
+                            <DatePicker
+                              size="small" style={{ width: 118 }} disabled={readonly}
+                              placeholder="选日期" format="YYYY-MM-DD"
+                              value={(side === 'start' ? r.date_start : r.date_end)
+                                ? dayjs(side === 'start' ? r.date_start : r.date_end) : null}
+                              onChange={d => patchDate(r.key, side, d ? d.format('YYYY-MM-DD') : '')}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : null
+                    if (r.auto_score == null && !r.auto_basis) {
+                      return <Text type="secondary" style={{ fontSize: 11 }}>需人工判断</Text>
+                    }
+                    return (
                       <div>
                         {r.auto_score != null && (
                           <Tag color={r.auto_score > 0 ? 'green' : r.auto_score < 0 ? 'red' : 'default'}>
                             {r.auto_score > 0 ? `+${r.auto_score}` : r.auto_score}
                           </Tag>
                         )}
-                        <div style={{ fontSize: 11, color: '#5f6368', marginTop: 2, lineHeight: 1.45 }}>
+                        {r.date_source === 'manual' && <Tag color="blue">手填日期</Tag>}
+                        <div style={{
+                          fontSize: 11, marginTop: 2, lineHeight: 1.45,
+                          color: r.date_source === 'none' ? '#d4380d' : '#5f6368',
+                        }}>
                           {r.auto_basis}
                         </div>
+                        {cal}
                         {r.auto_score != null && r.score !== r.auto_score && (
                           <Button size="small" type="link" style={{ padding: 0, height: 18, fontSize: 11 }}
                             onClick={() => patchItem(r.key, 'score', r.auto_score)}>
@@ -392,7 +474,8 @@ export default function AgencyAssessmentPage() {
                           </Button>
                         )}
                       </div>
-                    ),
+                    )
+                  },
                 },
                 {
                   title: '扣分/加分', width: 110,
