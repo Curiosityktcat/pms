@@ -218,6 +218,38 @@ def _ladder_with_dates(key, auto_start, auto_end, dates):
     return score, basis, ("auto" if score is not None else "none"), s_txt, e_txt
 
 
+def _first_doc(pid, kind):
+    """取某类附件里**第一轮**的第一份；第一轮没有就退回全项目最早的一份。
+
+    老项目导进来时 round_number 是空的，所以不能只认 round_number==1。
+    """
+    rows = db.session.execute(
+        db.select(ProcurementDocAttachment)
+        .filter_by(project_id=pid, kind=kind)
+        .order_by(ProcurementDocAttachment.id)
+    ).scalars().all()
+    if not rows:
+        return None
+    r1 = [r for r in rows if (r.round_number or 1) == 1]
+    return (r1 or rows)[0]
+
+
+def _demand_pushed_at(pid):
+    """第一次把采购需求发给代理机构的时间。
+
+    先认第 1 轮的「采购需求确认（5.1）」——确认了代理才动手编文件，这就是发出的那一刻；
+    没有确认记录就退回第 1 轮采购需求附件的上传时间。都没有就返回 None，交给人填日历。
+    """
+    from models.procurement_round import ProcurementRound
+    r1 = db.session.execute(
+        db.select(ProcurementRound).filter_by(project_id=pid, round_number=1)
+    ).scalars().first()
+    if r1 and (r1.demand_confirmed_at or "").strip():
+        return r1.demand_confirmed_at
+    att = _first_doc(pid, "demand")
+    return att.uploaded_at if att else None
+
+
 def auto_scores(project, dates=None):
     """算出 6 个可自动评分项的建议分。
 
@@ -229,14 +261,13 @@ def auto_scores(project, dates=None):
     ladder_dates = {}
     dates = dates or {}
 
-    # ① 采购文件编制时效：需求确认 → 采购文件首次上传
-    doc_first = db.session.execute(
-        db.select(ProcurementDocAttachment)
-        .filter_by(project_id=pid, kind="doc")
-        .order_by(ProcurementDocAttachment.id)
-    ).scalars().first()
+    # ① 采购文件编制时效：第一次把采购需求发给代理 → 代理第一次把采购文件做出来。
+    #    两头都必须取**第一轮**的。projects.demand_confirmed_at 每轮都被覆盖，
+    #    存的永远是最后一轮，拿它去配第一份采购文件就成了「起点比终点晚」
+    #    （12 号项目一轮 6-02、二轮 6-15，判出来倒挂 13 天，全库 23 例都是这个原因）。
+    doc_first = _first_doc(pid, "doc")
     sc, ba, src, ds, de = _ladder_with_dates(
-        "doc_speed", project.demand_confirmed_at,
+        "doc_speed", _demand_pushed_at(pid),
         doc_first.uploaded_at if doc_first else None, dates)
     out["doc_speed"] = (sc, ba)
     ladder_dates["doc_speed"] = {"start": ds, "end": de, "source": src}

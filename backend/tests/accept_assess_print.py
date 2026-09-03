@@ -133,6 +133,38 @@ check("评分行带上日历要用的标签与日期",
       and row["date_source"] == "manual",
       f"{row['start_label']}/{row['end_label']}/{row['date_source']}")
 
+# ── 2b. 编制时效两头都取第一轮 ───────────────────────────────────
+# 12 号项目走了两轮：一轮 6-02 发需求、6-02 出文件；二轮 6-15 又走一遍。
+# projects.demand_confirmed_at 每轮被覆盖成 6-15，配上第一份采购文件 6-02
+# 就成了「起点比终点晚 13 天」。起点必须回到第一轮。
+from models.procurement_round import ProcurementRound  # noqa: E402
+
+r1 = db.session.execute(db.select(ProcurementRound)
+                        .filter_by(project_id=proj.id, round_number=1)).scalars().first()
+rounds = db.session.execute(db.select(ProcurementRound)
+                            .filter_by(project_id=proj.id)).scalars().all()
+if r1 and len(rounds) > 1:
+    a5 = svc.auto_scores(proj)
+    ld5 = a5.pop("LADDER_DATES")
+    d5 = ld5["doc_speed"]
+    check("编制时效起点取第一轮、不取被覆盖的项目级字段",
+          d5["start"][:10] == (r1.demand_confirmed_at or "")[:10],
+          f"起点 {d5['start']}，第一轮需求确认 {(r1.demand_confirmed_at or '')[:10]}，"
+          f"项目级字段 {(proj.demand_confirmed_at or '')[:10]}")
+    check("多轮项目不再判成时间倒挂",
+          not d5["start"] or not d5["end"] or d5["end"] >= d5["start"],
+          f"{d5['start']} -> {d5['end']} ({d5['source']})")
+
+# 全库不该再有倒挂
+rev = 0
+for pj in db.session.execute(db.select(Project).where(
+        Project.agency_code != "")).scalars().all():
+    aa = svc.auto_scores(pj)
+    for k, v in aa.pop("LADDER_DATES").items():
+        if v.get("start") and v.get("end") and v["end"] < v["start"]:
+            rev += 1
+check("全库没有「完成早于起始」的时效项", rev == 0, f"倒挂 {rev} 项")
+
 # ── 3. 导出 Excel 与打印页 ────────────────────────────────────────
 r = c.get(f"/api/agency-assessments/project/{proj.id}/export.xlsx")
 check("导出 Excel 200", r.status_code == 200, str(r.status_code))
