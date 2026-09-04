@@ -450,9 +450,16 @@ def reject_doc(pid):
         return jsonify({"ok": False, "error": "确认类型无效"}), 400
     if session.get("role", "") == "agency":
         return jsonify({"ok": False, "error": "驳回由采购人方操作，代理机构只能修改后重新提交"}), 403
+    issues = alog.norm_issues(data.get("issues"))
     reason = (data.get("reason") or "").strip()
+    # 问题清单是主，原因是摘要：逐条填了问题就不必再写一遍原因，
+    # 系统按分类拼一段给代理机构看。两样都空才拦。
+    if not reason and issues:
+        reason = "；".join(
+            f"[{alog.ISSUE_LABELS.get(i['category'], i['category'])}] {i['text']}"
+            for i in issues)
     if not reason:
-        return jsonify({"ok": False, "error": "请填写驳回原因"}), 400
+        return jsonify({"ok": False, "error": "请填写驳回原因，或逐条列出问题"}), 400
 
     rnd = _current_round(project)
     f_flag, f_by, f_at = _CONFIRM_FIELDS[kind]
@@ -469,12 +476,22 @@ def reject_doc(pid):
     setattr(rnd, f"{kind}_reject_count", cnt)
     setattr(rnd, f"{kind}_rejected_by", session.get("display_name", ""))
     setattr(rnd, f"{kind}_rejected_at", _now())
-    alog.log(pid, kind, "reject", round_number=rnd.round_number or 1, reason=reason)
+    alog.log(pid, kind, "reject", round_number=rnd.round_number or 1,
+             reason=reason, issues=issues)
     db.session.commit()
     label = "采购需求" if kind == "demand" else "采购文件"
+    n_ded = sum(1 for i in issues if i["category"] in alog.DEDUCT_KEYS)
+    tail = f"，其中 {n_ded} 条属代理机构文件问题，将计入服务质量考核" if n_ded else ""
     return jsonify({"ok": True,
-                    "message": f"已驳回{label}（第{cnt}次），代理机构可修改后重新提交",
+                    "message": f"已驳回{label}（第{cnt}次），代理机构可修改后重新提交{tail}",
                     "data": rnd.to_dict()})
+
+
+@bp.route("/reject-issue-categories", methods=["GET"])
+@login_required
+def reject_issue_categories():
+    """驳回问题的分类表，前端下拉直接用（哪一类扣分也一并给出）。"""
+    return jsonify({"ok": True, "data": alog.ISSUE_CATEGORIES})
 
 
 @bp.route("/<int:pid>/approval-logs", methods=["GET"])

@@ -7,6 +7,10 @@ key 稳定不变（前端与历史数据都靠它对齐），标题与评分标�
 人只需要复核；算不出来的（比如"未能充分理解采购人需求"）才留给人打。
 时效类三项（编制采购文件 / 拟定合同 / 资料归档）用的是同一套阶梯：
   1 日内 +1.5，2 日内 +1，3 日内 +0.5，超 3 日每日 -0.3，超 30 日 -30
+
+采购文件编制时效只算代理机构**实际在干活**的那几段（发出需求→第一版、
+每次驳回→调整版），经办人审阅等待的时间不算在代理头上；一个项目走了
+几轮就分几轮算，第一轮打分、后面的轮次只扣超期。
 """
 import datetime
 import json
@@ -33,7 +37,7 @@ ITEMS = [
      "standard": "每一次扣1-10分"},
     {"key": "doc_messy", "auto": True,
      "name": "采购文件内容混乱，前后条款表述不一致、错误较多、评分标准表述不严谨、用词不准确，易产生错误理解，需要作出3-5处澄清修改的",
-     "standard": "每一次扣1-2分"},
+     "standard": "每一次扣1-2分（系统按驳回时记下的「代理机构文件问题」条数 + 采购文件更正次数，每处扣1.5分建议；「采购需求调整」类不计）"},
     {"key": "ann_irregular", "auto": True,
      "name": "各类公告发布不规范、不及时，或公告内容与采购文件内容不一致，导致项目时间延误、造成不良影响或带来不利后果的",
      "standard": "每一次扣1-2分"},
@@ -234,6 +238,66 @@ def _first_doc(pid, kind):
     return (r1 or rows)[0]
 
 
+def _round_doc_uploads(pid, n):
+    """第 n 轮里代理机构交上来的采购文件，按时间先后。"""
+    rows = db.session.execute(
+        db.select(ProcurementDocAttachment)
+        .filter_by(project_id=pid, kind="doc")
+        .order_by(ProcurementDocAttachment.id)
+    ).scalars().all()
+    hit = [r for r in rows if (r.round_number or 1) == n]
+    return sorted(hit, key=lambda r: (r.uploaded_at or ""))
+
+
+def _doc_rejects(pid, n):
+    """第 n 轮采购文件被驳回的记录，按时间先后。"""
+    rows = db.session.execute(
+        db.select(ApprovalLog).where(
+            ApprovalLog.project_id == pid,
+            ApprovalLog.node == "doc",
+            ApprovalLog.action == "reject",
+        ).order_by(ApprovalLog.id)
+    ).scalars().all()
+    hit = [r for r in rows if (r.round_number or 1) == n]
+    return sorted(hit, key=lambda r: (r.created_at or ""))
+
+
+def _round_segments(pid, n):
+    """第 n 轮里代理机构**实际在干活**的那几段。
+
+    黄新博 2026-09-04 定的口径：
+      段一：采购人发出采购需求 → 代理做出第一版
+      段二起：经办人驳回 → 代理做出调整版
+    经办人审阅、等确认的时间不算在代理头上——那不是代理在拖。
+    用时 = 各段天数之和。
+
+    返回 [(说明, 起, 止, 天数)]；某段缺时间（比如驳回后再没交过东西）就不计。
+    """
+    segs = []
+    ups = _round_doc_uploads(pid, n)
+    start, _ = _round_span(pid, n)
+    if start and ups:
+        d = _days_between(start, ups[0].uploaded_at)
+        if d is not None:
+            segs.append(("发出采购需求 → 第一版采购文件",
+                         _fmt_day(start), _fmt_day(ups[0].uploaded_at), d))
+    for k, rj in enumerate(_doc_rejects(pid, n), start=1):
+        nxt = next((u for u in ups if (u.uploaded_at or "") > (rj.created_at or "")), None)
+        if not nxt:
+            continue          # 驳回后没再交，这段没法算，不计（也别拿今天去凑）
+        d = _days_between(rj.created_at, nxt.uploaded_at)
+        if d is None:
+            continue
+        segs.append((f"第 {k} 次驳回 → 调整版采购文件",
+                     _fmt_day(rj.created_at), _fmt_day(nxt.uploaded_at), d))
+    return segs
+
+
+def _fmt_day(ts):
+    d = _parse(ts)
+    return d.strftime("%Y-%m-%d") if d else ""
+
+
 def _round_span(pid, n):
     """第 n 轮的「发出采购需求 → 交出采购文件」两个时间点。
 
@@ -285,31 +349,53 @@ def _overrun_only(days):
     return 0.0, f"用时 {days} 日，3 日内完成，不扣"
 
 
+def _round_days(pid, n):
+    """第 n 轮代理机构的总作业天数 = 各段之和；一段都算不出来就返回 (None, 说明)。"""
+    segs = _round_segments(pid, n)
+    if not segs:
+        return None, ""
+    total = sum(x[3] for x in segs)
+    detail = "；".join(f"{lab} {a}→{b} {d} 日" for lab, a, b, d in segs)
+    if len(segs) > 1:
+        detail += f"（{' + '.join(str(x[3]) for x in segs)} = {total} 日）"
+    return total, detail
+
+
 def _doc_speed(pid, dates):
     """采购文件编制时效 = 第一轮的阶梯分 − 后面每一轮超过 3 日的扣分之和。
 
-    第一轮是主考核（加分也在这一轮拿），后面的轮次只承担超期的责任。
+    每一轮的用时都只算代理机构实际在干活的那几段（发需求→首版、
+    驳回→调整版），经办人审阅的时间不算进去。第一轮是主考核、加分
+    也在这一轮拿；后面的轮次只承担超期的责任。
     """
-    s1, e1 = _round_span(pid, 1)
-    score, basis, src, ds, de = _ladder_with_dates("doc_speed", s1, e1, dates)
+    d1, detail1 = _round_days(pid, 1)
+    if (dates or {}).get("doc_speed", {}).get("start") and \
+            (dates or {}).get("doc_speed", {}).get("end"):
+        # 人手填了日期就以人填的为准（系统没留痕的老项目靠这个补）
+        score, basis, src, ds, de = _ladder_with_dates("doc_speed", None, None, dates)
+    elif d1 is None:
+        s1, e1 = _round_span(pid, 1)
+        score, basis, src, ds, de = _ladder_with_dates("doc_speed", s1, e1, dates)
+    else:
+        score, txt = _ladder(d1)
+        basis = f"{detail1}；{txt}"
+        segs1 = _round_segments(pid, 1)
+        src, ds, de = "auto", segs1[0][1], segs1[-1][2]
 
     later = []
     for n in _round_numbers(pid):
         if n <= 1:
             continue
-        s, e = _round_span(pid, n)
-        d = _days_between(s, e)
+        d, detail = _round_days(pid, n)
         if d is None:
             continue                       # 该轮没留下时间，算不了就不算，别瞎扣
-        if _parse(e) and _parse(s) and _parse(e).date() < _parse(s).date():
-            continue                       # 倒挂的数据同样不可信
         pen, txt = _overrun_only(d)
-        later.append((n, pen, txt))
+        later.append((n, pen, f"{detail}，{txt}" if detail else txt))
 
     hit = [x for x in later if x[1]]
     if not later:
         return score, basis, src, ds, de
-    tail = "；".join(f"第 {n} 轮{txt}{'，扣 ' + str(abs(pen)) + ' 分' if pen else ''}"
+    tail = "；".join(f"第 {n} 轮：{txt}{'，扣 ' + str(abs(pen)) + ' 分' if pen else ''}"
                      for n, pen, txt in later)
     if score is None:
         # 第一轮算不出来，后面轮次的扣分先摆出来，等人把第一轮日期补齐
@@ -369,16 +455,39 @@ def auto_scores(project, dates=None):
     out["archive_speed"] = (sc, ba)
     ladder_dates["archive_speed"] = {"start": ds, "end": de, "source": src}
 
-    # ④ 采购文件澄清修改：更正公告涉及"采购文件"的次数，每次扣 1.5（区间 1-2 取中）
+    # ④ 采购文件质量：驳回时逐条记下的「代理机构文件问题」+ 涉及采购文件的更正公告，
+    #    每条/每次扣 1.5（考核表写的是「每一次扣1-2分」，取区间中值）。
+    #    分类为「采购需求调整」的不算——那是采购人自己改了需求，代理返工不该由它背。
+    from services import approval_log as alog
+    doc_issues = []
+    for rj in db.session.execute(
+        db.select(ApprovalLog).where(
+            ApprovalLog.project_id == pid,
+            ApprovalLog.node == "doc",
+            ApprovalLog.action == "reject",
+        ).order_by(ApprovalLog.id)
+    ).scalars().all():
+        doc_issues += [i for i in alog.issues_of(rj)
+                       if i.get("category") in alog.DEDUCT_KEYS]
+
     corr = db.session.execute(
         db.select(Announcement).filter_by(project_id=pid, ann_type="correction")
     ).scalars().all()
     doc_corr = [c for c in corr if "采购文件" in (c.corr_scope or "")]
-    if doc_corr:
-        out["doc_messy"] = (round(-1.5 * len(doc_corr), 2),
-                            f"发布过 {len(doc_corr)} 次涉及采购文件的更正公告，按每次扣 1.5 分建议")
+
+    n_msg = len(doc_issues) + len(doc_corr)
+    if n_msg:
+        bits = []
+        if doc_issues:
+            bits.append(f"驳回时记下 {len(doc_issues)} 条代理机构文件问题")
+        if doc_corr:
+            bits.append(f"发布过 {len(doc_corr)} 次涉及采购文件的更正公告")
+        detail = "；".join(f"{k + 1}. {i['text'][:40]}" for k, i in enumerate(doc_issues[:5]))
+        out["doc_messy"] = (round(-1.5 * n_msg, 2),
+                            f"{'、'.join(bits)}，合计 {n_msg} 处，按每处扣 1.5 分建议"
+                            + (f"（{detail}）" if detail else ""))
     else:
-        out["doc_messy"] = (0.0, "本项目无采购文件更正记录")
+        out["doc_messy"] = (0.0, "本项目无采购文件问题记录，也无采购文件更正")
 
     # ⑤ 公告不规范：公告被驳回次数 + 涉及"采购公告"的更正次数
     # 驳回必须落在本项目自己的公告上才算数。历史上测试脚本写死过 project_id，

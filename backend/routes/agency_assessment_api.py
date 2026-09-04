@@ -93,10 +93,14 @@ def list_assessments():
         conds.append(AgencyAssessment.status == request.args["status"])
     # 起止月份筛选，和机构汇总用同一套解析，两边口径保持一致
     lo, hi = svc.month_range(request.args.get("start"), request.args.get("end"))
+    # 草稿没有考核时间，拿 assessed_at 去比会被区间直接筛掉——用创建时间兜底，
+    # 让没提交的草稿也留在列表里，不至于人间蒸发。
+    when = db.func.coalesce(
+        db.func.nullif(AgencyAssessment.assessed_at, ""), AgencyAssessment.created_at)
     if lo:
-        conds.append(AgencyAssessment.assessed_at >= lo)
+        conds.append(when >= lo)
     if hi:
-        conds.append(AgencyAssessment.assessed_at < hi)
+        conds.append(when < hi)
     rows = db.session.execute(
         db.select(AgencyAssessment).where(*conds).order_by(AgencyAssessment.id.desc())
     ).scalars().all()
@@ -109,8 +113,11 @@ def pending_projects():
     """可发起考核的项目：走代理的、已到合同/归档阶段、且还没考核过的。"""
     if not _can_assess():
         return jsonify({"ok": True, "data": []})
+    # 只有「已提交」才算考核过。撤回后表退回草稿，项目必须重新出现在待考核里，
+    # 否则它在「已考核」也被区间过滤掉（草稿没有考核时间），两个页签都找不到 ——
+    # 2026-09-04「心脏脉冲电场消融导管」项目就是这么消失的。
     done = {a.project_id for a in db.session.execute(
-        db.select(AgencyAssessment)).scalars().all()}
+        db.select(AgencyAssessment).filter_by(status="已提交")).scalars().all()}
     rows = db.session.execute(db.select(Project).where(
         db.or_(Project.is_deleted == 0, Project.is_deleted.is_(None)),
         db.or_(Project.is_draft == 0, Project.is_draft.is_(None)),

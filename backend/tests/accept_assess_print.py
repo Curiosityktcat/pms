@@ -9,6 +9,7 @@
 公告的假驳回。所以这里不只验分数，还专门造一条「跨项目的驳回」，
 确认它不被计入——这类脏数据以后还会有，判据必须挡得住。
 """
+import json
 import os
 import re
 import secrets
@@ -229,6 +230,94 @@ for pj in db.session.execute(db.select(Project).where(
         if v.get("start") and v.get("end") and v["end"] < v["start"]:
             rev += 1
 check("全库没有「完成早于起始」的时效项", rev == 0, f"倒挂 {rev} 项")
+
+# ── 2d. 驳回问题清单：分类决定扣不扣分 ───────────────────────────
+from services import approval_log as alog                      # noqa: E402
+from models.approval_log import ApprovalLog as AL              # noqa: E402
+from models.procurement_doc_attachment import ProcurementDocAttachment as PDA2  # noqa: E402
+
+got = alog.norm_issues([
+    {"category": "agency_doc", "text": "评分标准前后不一致"},
+    {"category": "demand_change", "text": "科室改了配置要求"},
+    {"category": "乱填的", "text": "应当被丢掉"},
+    {"category": "agency_doc", "text": "   "},
+])
+check("问题清单只留合法分类、丢掉空描述", len(got) == 2, str(got))
+check("只有代理机构文件问题算扣分项",
+      sum(1 for i in got if i["category"] in alog.DEDUCT_KEYS) == 1, str(alog.DEDUCT_KEYS))
+
+base_msg = svc.auto_scores(proj)["doc_messy"][0]
+rj = AL(project_id=proj.id, round_number=1, node="doc", action="reject", seq=99,
+        reason="验收造的驳回", created_at="2026-09-04T09:00:00",
+        issues_json=json.dumps([
+            {"category": "agency_doc", "text": "评分标准前后不一致"},
+            {"category": "agency_doc", "text": "技术参数指向唯一品牌"},
+            {"category": "demand_change", "text": "科室临时改了配置"},
+        ], ensure_ascii=False))
+db.session.add(rj)
+db.session.commit()
+try:
+    a6 = svc.auto_scores(proj)
+    check("2 条代理机构文件问题按每条 1.5 扣、需求调整那条不扣",
+          round(a6["doc_messy"][0] - base_msg, 2) == -3.0, a6["doc_messy"][1][:100])
+
+    # 驳回后代理再交一版：这一段作业时间要计入用时
+    up = PDA2(project_id=proj.id, kind="doc", round_number=1,
+              original_name="验收造的修订版.docx", saved_name="accept_fix.docx",
+              uploaded_by="accept_test", uploaded_at="2026-09-06T09:00:00")
+    db.session.add(up)
+    db.session.commit()
+    try:
+        segs = svc._round_segments(proj.id, 1)
+        check("驳回→调整版这一段被算进作业时长",
+              any("驳回" in x[0] and x[3] == 2 for x in segs),
+              str([(x[0], x[3]) for x in segs]))
+        d1, detail = svc._round_days(proj.id, 1)
+        check("总用时 = 各段之和", d1 == sum(x[3] for x in segs), f"{d1} / {detail[:90]}")
+    finally:
+        db.session.delete(up)
+        db.session.commit()
+finally:
+    db.session.delete(rj)
+    db.session.commit()
+
+# ── 2e. 撤回后必须回到「待考核」，不能两个页签都找不到 ─────────────
+# 现场原型：「2026年心脏脉冲电场消融导管配送服务采购项目」考核完撤回后，
+# 待考核找不到（有考核记录就被排除），已考核也找不到（草稿没有考核时间，
+# 被区间筛掉），项目凭空消失。
+from models.agency_assessment import AgencyAssessment as AA    # noqa: E402
+from services.assess_ready import ready_project_ids            # noqa: E402
+
+all_proj = db.session.execute(db.select(Project).where(
+    Project.agency_code != "")).scalars().all()
+ready = ready_project_ids([x.id for x in all_proj])
+subs = {a.project_id: a for a in db.session.execute(
+    db.select(AA).filter_by(status="已提交")).scalars().all()}
+cand = next((pid for pid in ready if pid in subs), None)
+
+if cand is None:
+    print("SKIP 测试库里没有「可考核且已提交」的项目，跳过撤回可见性验证")
+else:
+    row = subs[cand]
+    keep = (row.status, row.assessed_at)
+    r = c.get("/api/agency-assessments/pending-projects")
+    before = {x["id"] for x in (r.get_json() or {}).get("data", [])}
+    check("已提交的项目不该出现在待考核", cand not in before, f"项目 {cand}")
+
+    row.status, row.assessed_at = "草稿", ""       # 模拟「撤回」
+    db.session.commit()
+    try:
+        r = c.get("/api/agency-assessments/pending-projects")
+        after = {x["id"] for x in (r.get_json() or {}).get("data", [])}
+        check("撤回成草稿后回到「待考核」", cand in after,
+              f"项目 {cand}，待考核 {len(after)} 个")
+        r = c.get("/api/agency-assessments?start=2026-01&end=2026-12")
+        pids = {x["project_id"] for x in (r.get_json() or {}).get("data", [])}
+        check("草稿在「已考核」列表里也还看得到（按创建时间归期）", cand in pids,
+              f"列表 {len(pids)} 条")
+    finally:
+        row.status, row.assessed_at = keep
+        db.session.commit()
 
 # ── 3. 导出 Excel 与打印页 ────────────────────────────────────────
 r = c.get(f"/api/agency-assessments/project/{proj.id}/export.xlsx")

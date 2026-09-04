@@ -175,3 +175,26 @@ export const aiGenerateDoc = (
 
 export const aiGenerateDocStatus = (projectId: number) =>
   api.get<{ ok: boolean; data: AiGenStatus }>(`/projects/${projectId}/ai-generate-doc/status`)
+
+// ── 驳回采购文件：逐条列问题，分类决定考核扣不扣分 ────────────────
+export interface RejectIssue { category: string; text: string }
+export interface IssueCategory { key: string; label: string; deduct: boolean }
+
+export const rejectDoc = (
+  projectId: number, kind: ConfirmKind, issues: RejectIssue[], reason = '',
+) =>
+  api.post<{ ok: boolean; message: string }>(
+    `/projects/${projectId}/doc-reject`, { kind, issues, reason })
+
+export const getRejectIssueCategories = () =>
+  api.get<{ ok: boolean; data: IssueCategory[] }>('/projects/reject-issue-categories')
+
+// 本项目的审批往返记录（驳回历史时间线，含每次的问题清单）
+export interface ApprovalLogRow {
+  id: number; node: string; node_label: string; action: string; action_label: string
+  seq: number; round_number: number; reason: string; issues: RejectIssue[]
+  operator_name: string; created_at: string
+}
+export const getApprovalLogs = (projectId: number, node?: string) =>
+  api.get<{ ok: boolean; data: ApprovalLogRow[] }>(
+    `/projects/${projectId}/approval-logs`, { params: node ? { node } : {} })

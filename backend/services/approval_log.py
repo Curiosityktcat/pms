@@ -52,8 +52,48 @@ def next_seq(project_id, node, round_number=1):
     return int(n) + 1
 
 
+# 驳回问题的分类。只有「代理机构文件问题」才进考核扣分——
+# 采购需求调整是采购人自己改了需求，代理返工不该由它背。
+ISSUE_CATEGORIES = [
+    {"key": "agency_doc", "label": "代理机构文件问题", "deduct": True},
+    {"key": "demand_change", "label": "采购需求调整", "deduct": False},
+]
+ISSUE_KEYS = {c["key"] for c in ISSUE_CATEGORIES}
+ISSUE_LABELS = {c["key"]: c["label"] for c in ISSUE_CATEGORIES}
+DEDUCT_KEYS = {c["key"] for c in ISSUE_CATEGORIES if c["deduct"]}
+
+
+def norm_issues(raw):
+    """收前端传来的问题清单：只留合法分类、去掉空描述，最多 20 条。"""
+    import json as _json
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw or "[]")
+        except Exception:
+            raw = []
+    out = []
+    for it in (raw or [])[:20]:
+        if not isinstance(it, dict):
+            continue
+        cat = (it.get("category") or "").strip()
+        txt = (it.get("text") or "").strip()
+        if cat not in ISSUE_KEYS or not txt:
+            continue
+        out.append({"category": cat, "text": txt[:500]})
+    return out
+
+
+def issues_of(row):
+    """从一条 approval_log 里取出问题清单（存的是 JSON 字符串）。"""
+    import json as _json
+    try:
+        return _json.loads(getattr(row, "issues_json", "") or "[]")
+    except Exception:
+        return []
+
+
 def log(project_id, node, action, *, round_number=1, target_id=None,
-        reason="", handling="", handling_note=""):
+        reason="", handling="", handling_note="", issues=None):
     """写一条审批记录。操作人取当前会话，调用方不用传。
 
     不 commit——由调用方在自己的事务里一起提交，避免半截状态。
@@ -70,6 +110,7 @@ def log(project_id, node, action, *, round_number=1, target_id=None,
         action=action,
         action_label=ACTION_LABELS.get(action, action),
         reason=(reason or "").strip(),
+        issues_json=__import__("json").dumps(norm_issues(issues), ensure_ascii=False),
         handling=handling or "",
         handling_note=(handling_note or "").strip(),
         operator=session.get("user", ""),

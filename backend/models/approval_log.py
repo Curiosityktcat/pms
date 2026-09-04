@@ -23,6 +23,9 @@ class ApprovalLog(db.Model):
     action        = db.Column(db.String(20), default="")   # submit|confirm|reject|resubmit|not_confirm|recheck|revoke
     action_label  = db.Column(db.String(20), default="")   # 中文动作名
     reason        = db.Column(db.Text, default="")         # 驳回 / 不确认 原由
+    # 驳回时逐条列出的问题：[{"category": "agency_doc|demand_change", "text": "..."}]
+    # 分类决定考核里扣不扣分——代理机构文件问题才扣，采购需求调整是采购人自己改的，不扣。
+    issues_json   = db.Column(db.Text, default="[]")
 
     # 仅「不确认采购结果」的复核环节使用
     handling      = db.Column(db.String(20), default="")   # 维持原结果|废标|部分废标|顺延候选人
@@ -34,4 +37,10 @@ class ApprovalLog(db.Model):
     created_at    = db.Column(db.String(30), default="")
 
     def to_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        import json
+        d = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        try:
+            d["issues"] = json.loads(self.issues_json or "[]")
+        except Exception:
+            d["issues"] = []
+        return d

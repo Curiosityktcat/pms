@@ -919,6 +919,15 @@ def create_app():
                         ))
             conn7.commit()
 
+        # ── 驳回问题清单：每次驳回逐条记问题 + 分类（决定考核扣不扣分）──
+        with db.engine.connect() as _conn_ri:
+            _exist_ri = {row[1] for row in _conn_ri.execute(
+                text("PRAGMA table_info(approval_logs)"))}
+            if _exist_ri and "issues_json" not in _exist_ri:
+                _conn_ri.execute(text(
+                    "ALTER TABLE approval_logs ADD COLUMN issues_json TEXT DEFAULT '[]'"))
+                _conn_ri.commit()
+
         # ── 代理机构考核：三项时效的手填起止日期（归档等环节发生在系统外）──
         with db.engine.connect() as _conn_aa:
             _exist_aa = {row[1] for row in _conn_aa.execute(

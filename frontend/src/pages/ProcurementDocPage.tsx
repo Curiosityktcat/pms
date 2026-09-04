@@ -3,7 +3,7 @@ import {
   Card, Button, Space, Tag, Input, Modal, Form, InputNumber, App, Typography, Alert,
   Tooltip, Popconfirm, Tabs,
 } from 'antd'
-import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined, PaperClipOutlined, ContactsOutlined, RobotOutlined } from '@ant-design/icons'
+import { FileWordOutlined, FileTextOutlined, CheckCircleOutlined, PaperClipOutlined, ContactsOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons'
 import { getProjects, type Project } from '../services/project'
 import PendingOwnerTag from '../components/PendingOwnerTag'
 import RdwebPushButton from '../components/RdwebPushButton'
@@ -13,6 +13,7 @@ import {
   getDocConfirmations, type DemandConfirmation,
 } from '../services/procurementDoc'
 import DocAttachmentsModal from '../components/DocAttachmentsModal'
+import RejectIssuesModal from '../components/RejectIssuesModal'
 import AiReviewModal from '../components/AiReviewModal'
 import AiGenerateDocModal from '../components/AiGenerateDocModal'
 import RecordCards, { type RecordCardData } from '../components/RecordCards'
@@ -202,6 +203,9 @@ export default function ProcurementDocPage() {
     }
   }
 
+  // 驳回：打回代理机构改，必须逐条写清问题（分类决定考核扣不扣分）
+  const [rejectProject, setRejectProject] = useState<Project | null>(null)
+
   const toggleConfirm = async (p: Project) => {
     try {
       const resp = await setDocConfirm(p.id, 'doc', !p.doc_confirmed)
@@ -252,7 +256,12 @@ export default function ProcurementDocPage() {
             <Button size="small" danger>撤销确认</Button>
           </Popconfirm>
         ) : (
-          <Button size="small" type="primary" ghost onClick={() => toggleConfirm(r)}>确认</Button>
+          <>
+            {/* 驳回和确认并排：文件有问题就驳回并逐条写清楚，别只在群里说一声 */}
+            <Button size="small" danger icon={<StopOutlined />}
+              onClick={() => setRejectProject(r)}>驳回</Button>
+            <Button size="small" type="primary" ghost onClick={() => toggleConfirm(r)}>确认</Button>
+          </>
         ))}
       </>
     ),
@@ -415,6 +424,20 @@ export default function ProcurementDocPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RejectIssuesModal
+
+        projectId={rejectProject?.id ?? null}
+
+        projectName={rejectProject?.name || ''}
+
+        kind="doc"
+
+        onClose={() => setRejectProject(null)}
+
+        onDone={() => { setRejectProject(null); load() }}
+
+      />
 
       <DocAttachmentsModal
         project={attachProject}
