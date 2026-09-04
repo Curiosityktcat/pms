@@ -198,3 +198,15 @@ export interface ApprovalLogRow {
 export const getApprovalLogs = (projectId: number, node?: string) =>
   api.get<{ ok: boolean; data: ApprovalLogRow[] }>(
     `/projects/${projectId}/approval-logs`, { params: node ? { node } : {} })
+
+// ── 上传留痕：只增不改，删掉的版本也留在时间线里 ──────────────────
+export interface DocUploadEvent {
+  id: number; project_id: number; round_number: number
+  kind: string; action: 'upload' | 'delete'
+  attachment_id: number | null; original_name: string; file_size: number
+  operator_name: string; created_at: string
+  alive: boolean            // 这一版现在还在不在
+}
+export const getDocEvents = (projectId: number, kind?: string) =>
+  api.get<{ ok: boolean; data: DocUploadEvent[] }>(
+    `/projects/${projectId}/doc-events`, { params: kind ? { kind } : {} })

@@ -376,6 +376,7 @@ def create_app():
         from models.hermes_task import HermesTask  # noqa: F401  Hermes 自动填报任务
         from models.approval_log import ApprovalLog  # noqa: F401  审批驳回过程留痕
         from models.agency_assessment import AgencyAssessment  # noqa: F401  代理机构考核
+        from models.doc_upload_event import DocUploadEvent  # noqa: F401  采购文件上传留痕
         db.create_all()
 
         # rd-web 常驻登录会话：起回收线程，空闲会话自动关掉释放内存。
@@ -918,6 +919,15 @@ def create_app():
                             f"ALTER TABLE {_tbl} ADD COLUMN {col} {typedef}"
                         ))
             conn7.commit()
+
+        # ── 采购文件上传留痕：给还没留痕的历史附件补上（只补缺的，反复跑无害）──
+        try:
+            from services.doc_events import backfill as _dev_backfill
+            _n_dev = _dev_backfill()
+            if _n_dev:
+                print(f"[doc_events] 已为 {_n_dev} 份历史附件补上上传留痕")
+        except Exception as _e_dev:  # noqa: BLE001
+            print(f"[doc_events] 回填跳过：{_e_dev}")
 
         # ── 驳回问题清单：每次驳回逐条记问题 + 分类（决定考核扣不扣分）──
         with db.engine.connect() as _conn_ri:

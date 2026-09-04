@@ -238,14 +238,31 @@ def _first_doc(pid, kind):
     return (r1 or rows)[0]
 
 
+class _Up:
+    """把上传留痕包成和附件一样的形状，下面的算法不用分两种数据源。"""
+    __slots__ = ("uploaded_at", "original_name")
+
+    def __init__(self, at, name):
+        self.uploaded_at, self.original_name = at, name
+
+
 def _round_doc_uploads(pid, n):
-    """第 n 轮里代理机构交上来的采购文件，按时间先后。"""
-    rows = db.session.execute(
+    """第 n 轮代理机构交上来的采购文件，按时间先后。
+
+    读的是上传留痕（doc_upload_events）而不是当前还活着的附件——
+    代理换版本时把旧的删了，第一版的时间也不能跟着没了。
+    """
+    from services import doc_events
+    rows = doc_events.uploads(pid, kind="doc", round_number=n)
+    if rows:
+        return [_Up(r.created_at, r.original_name) for r in rows]
+    # 留痕还没建起来的老数据，退回读附件
+    atts = db.session.execute(
         db.select(ProcurementDocAttachment)
         .filter_by(project_id=pid, kind="doc")
         .order_by(ProcurementDocAttachment.id)
     ).scalars().all()
-    hit = [r for r in rows if (r.round_number or 1) == n]
+    hit = [r for r in atts if (r.round_number or 1) == n]
     return sorted(hit, key=lambda r: (r.uploaded_at or ""))
 
 

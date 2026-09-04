@@ -487,6 +487,19 @@ def reject_doc(pid):
                     "data": rnd.to_dict()})
 
 
+@bp.route("/<int:pid>/doc-events", methods=["GET"])
+@login_required
+def doc_events_timeline(pid):
+    """采购文件的上传/删除时间线（含已删除的版本，考核算时效就看这个）。"""
+    project = db.session.get(Project, pid)
+    ok, err, status = _check_project_access(project)
+    if not ok:
+        return jsonify(err), status
+    from services import doc_events
+    return jsonify({"ok": True,
+                    "data": doc_events.timeline(pid, request.args.get("kind") or None)})
+
+
 @bp.route("/reject-issue-categories", methods=["GET"])
 @login_required
 def reject_issue_categories():
@@ -713,6 +726,9 @@ def upload_doc_attachment(pid):
         uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"),
     )
     db.session.add(att)
+    db.session.flush()                      # 先拿到 id，留痕要指向它
+    from services import doc_events
+    doc_events.record(att, "upload", when=att.uploaded_at)
     db.session.commit()
     return jsonify({"ok": True, "message": "上传成功", "data": att.to_dict()}), 201
 
@@ -769,9 +785,13 @@ def delete_doc_attachment(pid, aid):
             os.remove(path)
     except Exception:
         pass
+    # 文件可以删，「谁在几号交过这一版」的留痕不能删——考核算编制时效靠它，
+    # 删干净了代理机构就得为自己没犯的拖延背锅（2026-09-04 心脏脉冲项目的教训）。
+    from services import doc_events
+    doc_events.record(att, "delete")
     db.session.delete(att)
     db.session.commit()
-    return jsonify({"ok": True, "message": "已删除"})
+    return jsonify({"ok": True, "message": "已删除（上传记录保留在时间线里）"})
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -967,6 +987,10 @@ def ai_generate_doc(pid):
                     uploaded_at=datetime.datetime.now().isoformat(timespec="seconds"),
                 )
                 db.session.add(att)
+                db.session.flush()
+                from services import doc_events
+                doc_events.record(att, "upload", when=att.uploaded_at,
+                                  operator_name=att.uploaded_by)
                 db.session.commit()
                 from services import llm_usage
                 llm_usage.record(username, display, "采购文件AI生成",

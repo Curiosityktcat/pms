@@ -266,7 +266,11 @@ try:
               original_name="验收造的修订版.docx", saved_name="accept_fix.docx",
               uploaded_by="accept_test", uploaded_at="2026-09-06T09:00:00")
     db.session.add(up)
+    db.session.flush()
+    from services import doc_events as _de
+    _de.record(up, "upload", when=up.uploaded_at, operator_name="accept_test")
     db.session.commit()
+    up_id = up.id
     try:
         segs = svc._round_segments(proj.id, 1)
         check("驳回→调整版这一段被算进作业时长",
@@ -275,10 +279,59 @@ try:
         d1, detail = svc._round_days(proj.id, 1)
         check("总用时 = 各段之和", d1 == sum(x[3] for x in segs), f"{d1} / {detail[:90]}")
     finally:
+        from models.doc_upload_event import DocUploadEvent as _DUE
+        for e in db.session.execute(
+                db.select(_DUE).filter_by(attachment_id=up_id)).scalars().all():
+            db.session.delete(e)
         db.session.delete(up)
         db.session.commit()
 finally:
     db.session.delete(rj)
+    db.session.commit()
+
+# ── 2f. 上传留痕：文件删了，「第一版几号交的」也不能跟着没 ──────────
+# 现场原型：代理机构 7-02 交了第一版、7-06 换成定稿，中间那版被删掉，
+# 系统只剩 7-06，考核算成「用时 6 日」，代理白背 4 天。
+from models.doc_upload_event import DocUploadEvent as DUE   # noqa: E402
+from models.procurement_doc_attachment import ProcurementDocAttachment as PDA3  # noqa: E402
+from services import doc_events                             # noqa: E402
+
+n_back = doc_events.backfill()
+check("历史附件都补上了上传留痕（再跑一次应为 0 条）", n_back == 0, f"又补了 {n_back} 条")
+
+first = PDA3(project_id=proj.id, kind="doc", round_number=1,
+             original_name="验收造的第一版.docx", saved_name="accept_v1.docx",
+             uploaded_by="accept_test", uploaded_at="2026-09-01T09:00:00")
+db.session.add(first)
+db.session.flush()
+doc_events.record(first, "upload", when=first.uploaded_at, operator_name="accept_test")
+db.session.commit()
+fid = first.id
+try:
+    ups = doc_events.uploads(proj.id, kind="doc", round_number=1)
+    check("上传即留痕", any(u.attachment_id == fid for u in ups), f"{len(ups)} 条留痕")
+
+    # 把这一版删掉——文件没了，留痕必须还在
+    doc_events.record(first, "delete")
+    db.session.delete(first)
+    db.session.commit()
+    alive = db.session.execute(db.select(PDA3).filter_by(project_id=proj.id)).scalars().all()
+    check("附件确实删掉了", all(a.id != fid for a in alive))
+    ups2 = doc_events.uploads(proj.id, kind="doc", round_number=1)
+    check("删了文件，上传留痕还在", any(u.attachment_id == fid for u in ups2),
+          f"{len(ups2)} 条留痕")
+    ups3 = svc._round_doc_uploads(proj.id, 1)
+    check("考核算时效时仍看得见被删的那一版",
+          any((u.uploaded_at or "").startswith("2026-09-01") for u in ups3),
+          str([u.uploaded_at for u in ups3]))
+    tl = doc_events.timeline(proj.id, "doc")
+    gone = [e for e in tl if e["attachment_id"] == fid and e["action"] == "upload"]
+    check("时间线把已删版本标出来", gone and gone[0]["alive"] is False,
+          str(gone[:1]))
+finally:
+    for e in db.session.execute(
+            db.select(DUE).filter_by(attachment_id=fid)).scalars().all():
+        db.session.delete(e)
     db.session.commit()
 
 # ── 2e. 撤回后必须回到「待考核」，不能两个页签都找不到 ─────────────

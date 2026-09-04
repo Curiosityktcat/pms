@@ -10,7 +10,16 @@ SVC=${1:-pms.service}
 OLD=$(systemctl show "$SVC" -p MainPID --value)
 echo "旧 PID: $OLD"
 
-sudo systemctl restart "$SVC" || { echo "重启命令失败"; exit 1; }
+# ssh 里没有 tty，sudo 拿不到密码也存不住凭据（tty_tickets），
+# 所以先试免密，不行就从标准输入读一行密码：`echo <pw> | bash restart_pms.sh`
+if ! sudo -n systemctl restart "$SVC" 2>/dev/null; then
+  if [ -t 0 ]; then
+    sudo systemctl restart "$SVC" || { echo "重启命令失败"; exit 1; }
+  else
+    sudo -S systemctl restart "$SVC" 2>/dev/null \
+      || { echo "重启命令失败（需要 sudo 密码：echo <密码> | bash $0）"; exit 1; }
+  fi
+fi
 
 for _ in $(seq 1 20); do
   NEW=$(systemctl show "$SVC" -p MainPID --value)

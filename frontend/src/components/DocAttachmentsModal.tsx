@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
-import { Modal, Upload, Button, List, Popconfirm, Typography, Alert, Space, Checkbox, Tag, Empty } from 'antd'
+import { Modal, Upload, Button, List, Popconfirm, Typography, Alert, Space, Checkbox, Tag, Empty, Collapse, Timeline } from 'antd'
 import {
   UploadOutlined, PaperClipOutlined, DownloadOutlined, DeleteOutlined, EyeOutlined,
-  InboxOutlined,
+  InboxOutlined, HistoryOutlined,
 } from '@ant-design/icons'
 import { App } from 'antd'
 import type { Project } from '../services/project'
@@ -11,8 +11,8 @@ import { useAuth } from '../hooks/useAuth'
 import {
   listDocAttachments, deleteDocAttachment, downloadDocAttachment,
   uploadDocAttachmentUrl, docAttachmentPreviewUrl,
-  listPoolAttachments, importPoolAttachments,
-  type DocAttachment, type ConfirmKind, type PoolAttachment,
+  listPoolAttachments, importPoolAttachments, getDocEvents,
+  type DocAttachment, type ConfirmKind, type PoolAttachment, type DocUploadEvent,
 } from '../services/procurementDoc'
 import FilePreviewModal, { isPreviewable } from './FilePreviewModal'
 
@@ -46,6 +46,13 @@ export default function DocAttachmentsModal({
   const [files, setFiles] = useState<DocAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [preview, setPreview] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: '', name: '' })
+  // 上传时间线：连删掉的版本也在里面。考核算编制时效读的就是它，
+  // 摆出来让双方都看得见「第一版是几号交的」，省得事后各执一词。
+  const [events, setEvents] = useState<DocUploadEvent[]>([])
+  useEffect(() => {
+    if (!open || !project) { setEvents([]); return }
+    getDocEvents(project.id, kind).then(r => setEvents(r.data.data || [])).catch(() => setEvents([]))
+  }, [open, project, kind, files.length])
 
   // 能预览的那几件，按列表顺序排好，交给面板做「上一件 / 下一件」。
   // 一批附件常常是十几份，一件件点开关掉太费手——尤其核对的时候要来回翻。
@@ -179,6 +186,40 @@ export default function DocAttachmentsModal({
             <Button icon={<InboxOutlined />} onClick={() => setPoolOpen(true)}>从项目池选择</Button>
           )}
         </Space>
+      )}
+
+      {events.length > 0 && (
+        <Collapse
+          size="small" style={{ marginTop: 12 }} ghost
+          items={[{
+            key: 'tl',
+            label: <span><HistoryOutlined /> 上传记录（{events.filter(e => e.action === 'upload').length} 次上传，含已删除版本）</span>,
+            children: (
+              <Timeline
+                style={{ marginTop: 4 }}
+                items={events.map(e => ({
+                  color: e.action === 'delete' ? 'red' : e.alive ? 'green' : 'gray',
+                  children: (
+                    <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                      <Text strong>{(e.created_at || '').replace('T', ' ').slice(0, 16)}</Text>
+                      {'　'}
+                      <Tag color={e.action === 'delete' ? 'red' : 'blue'}>
+                        {e.action === 'delete' ? '删除' : `第 ${e.round_number} 轮上传`}
+                      </Tag>
+                      {e.operator_name}
+                      <div style={{ color: '#5f6368' }}>
+                        {e.original_name}
+                        {e.action === 'upload' && !e.alive && (
+                          <Text type="secondary">（该版本已被删除，记录保留）</Text>
+                        )}
+                      </div>
+                    </div>
+                  ),
+                }))}
+              />
+            ),
+          }]}
+        />
       )}
 
       <List
